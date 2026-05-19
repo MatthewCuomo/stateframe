@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">stateframe mark</title>
+  <desc id="desc">A futuristic data aperture containing a branching ledger tree.</desc>
+  <defs>
+    <linearGradient id="bg" x1="70" y1="44" x2="442" y2="468" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061820"/>
+      <stop offset="0.55" stop-color="#0A2934"/>
+      <stop offset="1" stop-color="#050A0E"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 238) rotate(90) scale(260 250)">
+      <stop offset="0" stop-color="#6BF3FF" stop-opacity="0.42"/>
+      <stop offset="0.46" stop-color="#1CB8CD" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#071319" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="118" y1="96" x2="396" y2="414" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D4FCFF"/>
+      <stop offset="0.35" stop-color="#4FEAFF"/>
+      <stop offset="0.72" stop-color="#16879D"/>
+      <stop offset="1" stop-color="#253C4B"/>
+    </linearGradient>
+    <linearGradient id="bladeA" x1="162" y1="100" x2="350" y2="412" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#70F4FF" stop-opacity="0.54"/>
+      <stop offset="1" stop-color="#0D5263" stop-opacity="0.28"/>
+    </linearGradient>
+    <linearGradient id="bladeB" x1="372" y1="120" x2="136" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D8FEFF" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#127E94" stop-opacity="0.2"/>
+    </linearGradient>
+    <linearGradient id="active" x1="188" y1="312" x2="332" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34DFF2"/>
+      <stop offset="0.58" stop-color="#7CF7FF"/>
+      <stop offset="1" stop-color="#FFD36A"/>
+    </linearGradient>
+    <clipPath id="coreClip">
+      <circle cx="256" cy="256" r="118"/>
+    </clipPath>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="20" flood-color="#00070A" flood-opacity="0.48"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.28 0 0 0 0 0.95 0 0 0 0 1 0 0 0 0.55 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="104" fill="url(#halo)"/>
+
+  <g opacity="0.18" stroke="#79EEFF" stroke-width="1">
+    <path d="M82 136H430"/>
+    <path d="M82 196H430"/>
+    <path d="M82 256H430"/>
+    <path d="M82 316H430"/>
+    <path d="M82 376H430"/>
+    <path d="M136 82V430"/>
+    <path d="M196 82V430"/>
+    <path d="M256 82V430"/>
+    <path d="M316 82V430"/>
+    <path d="M376 82V430"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <circle cx="256" cy="256" r="178" fill="#061923" opacity="0.92"/>
+    <circle cx="256" cy="256" r="172" fill="none" stroke="#062C38" stroke-width="24"/>
+    <circle cx="256" cy="256" r="162" fill="none" stroke="url(#ring)" stroke-width="15"/>
+
+    <g opacity="0.82">
+      <path d="M256 104A152 152 0 0 1 387 180L316 221A70 70 0 0 0 256 186Z" fill="url(#bladeA)"/>
+      <path d="M387 180A152 152 0 0 1 386 332L315 291A70 70 0 0 0 316 221Z" fill="url(#bladeB)"/>
+      <path d="M386 332A152 152 0 0 1 255 408V326A70 70 0 0 0 315 291Z" fill="url(#bladeA)"/>
+      <path d="M255 408A152 152 0 0 1 124 332L196 291A70 70 0 0 0 255 326Z" fill="url(#bladeB)"/>
+      <path d="M124 332A152 152 0 0 1 125 180L196 221A70 70 0 0 0 196 291Z" fill="url(#bladeA)"/>
+      <path d="M125 180A152 152 0 0 1 256 104V186A70 70 0 0 0 196 221Z" fill="url(#bladeB)"/>
+    </g>
+
+    <circle cx="256" cy="256" r="122" fill="#0A2530" stroke="#A9F8FF" stroke-width="2" opacity="0.95"/>
+    <g clip-path="url(#coreClip)">
+      <rect x="130" y="130" width="252" height="252" fill="#0A2630"/>
+      <rect x="130" y="130" width="252" height="252" fill="url(#halo)" opacity="0.94"/>
+      <g opacity="0.34" stroke="#B9FAFF" stroke-width="1.2">
+        <path d="M150 178H362"/>
+        <path d="M150 218H362"/>
+        <path d="M150 258H362"/>
+        <path d="M150 298H362"/>
+        <path d="M150 338H362"/>
+        <path d="M178 150V362"/>
+        <path d="M218 150V362"/>
+        <path d="M258 150V362"/>
+        <path d="M298 150V362"/>
+        <path d="M338 150V362"/>
+      </g>
+      <g opacity="0.38">
+        <rect x="166" y="298" width="22" height="54" rx="5" fill="#42DCEF"/>
+        <rect x="202" y="270" width="22" height="82" rx="5" fill="#177C91"/>
+        <rect x="318" y="238" width="22" height="114" rx="5" fill="#7CF7FF"/>
+        <rect x="344" y="286" width="22" height="66" rx="5" fill="#126375"/>
+      </g>
+      <path d="M158 184C200 154 268 151 318 184C348 204 367 236 378 272" fill="none" stroke="#E8FEFF" stroke-width="2" opacity="0.18"/>
+    </g>
+
+    <g opacity="0.88" stroke="#7EF7FF" stroke-width="3" stroke-linecap="round">
+      <path d="M256 76V98"/>
+      <path d="M256 414V436"/>
+      <path d="M76 256H98"/>
+      <path d="M414 256H436"/>
+      <path d="M128 128L144 144"/>
+      <path d="M368 368L384 384"/>
+      <path d="M384 128L368 144"/>
+      <path d="M144 368L128 384"/>
+    </g>
+
+    <g filter="url(#glow)" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M190 316L230 276L268 276L322 324" fill="none" stroke="url(#active)" stroke-width="10"/>
+      <path d="M230 276V226" fill="none" stroke="#45E8FF" stroke-width="8" opacity="0.86"/>
+      <path d="M268 276L320 224" fill="none" stroke="#45E8FF" stroke-width="8" opacity="0.78"/>
+    </g>
+    <circle cx="190" cy="316" r="16" fill="#092631" stroke="#82F6FF" stroke-width="5"/>
+    <circle cx="230" cy="276" r="16" fill="#A6FBFF" stroke="#062933" stroke-width="5"/>
+    <circle cx="230" cy="226" r="14" fill="#0A2D38" stroke="#59EFFF" stroke-width="5"/>
+    <circle cx="268" cy="276" r="16" fill="#092631" stroke="#82F6FF" stroke-width="5"/>
+    <circle cx="320" cy="224" r="14" fill="#0A2D38" stroke="#59EFFF" stroke-width="5"/>
+    <circle cx="322" cy="324" r="19" fill="#FFD36A" stroke="#FFF7C7" stroke-width="5"/>
+    <circle cx="322" cy="324" r="5" fill="#10212A"/>
+  </g>
+</svg>

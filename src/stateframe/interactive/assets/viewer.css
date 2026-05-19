@@ -1,0 +1,790 @@
+.stateframe-viewer-host {
+  display: block;
+  color: #1f2937;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.stateframe-viewer,
+.stateframe-viewer * {
+  box-sizing: border-box;
+}
+
+.stateframe-viewer {
+  position: relative;
+  width: 100%;
+  min-width: 720px;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgba(31, 41, 55, 0.08);
+  overflow: hidden;
+}
+
+.stateframe-toolbar {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(220px, 360px) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.stateframe-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.stateframe-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.stateframe-search,
+.stateframe-menu-input,
+.stateframe-inspector-input,
+.stateframe-filter-row input {
+  width: 100%;
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  font-size: 12px;
+  padding: 0 9px;
+  outline: none;
+}
+
+.stateframe-search-group {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stateframe-match-count {
+  min-width: 58px;
+  color: #64748b;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.stateframe-search:focus,
+.stateframe-menu-input:focus,
+.stateframe-inspector-input:focus,
+.stateframe-filter-row input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.stateframe-toolbar-buttons,
+.stateframe-menu-row,
+.stateframe-column-actions,
+.stateframe-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stateframe-button,
+.stateframe-tiny-button,
+.stateframe-chip {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  height: 30px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.stateframe-button:hover,
+.stateframe-tiny-button:hover,
+.stateframe-chip:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.stateframe-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.stateframe-toggle-button.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.stateframe-tiny-button {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.stateframe-active-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+  overflow-x: auto;
+}
+
+.stateframe-branch-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #ccfbf1;
+  background: #f0fdfa;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.stateframe-branch-status.is-error {
+  border-bottom-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.stateframe-active-count {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.stateframe-chip {
+  height: 24px;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.stateframe-dialog-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 72px;
+  background: rgba(15, 23, 42, 0.22);
+}
+
+.stateframe-dialog {
+  width: min(440px, calc(100% - 32px));
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.18);
+  padding: 14px;
+}
+
+.stateframe-dialog-title {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 850;
+  margin-bottom: 10px;
+}
+
+.stateframe-dialog-input,
+.stateframe-dialog-textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  padding: 8px 9px;
+}
+
+.stateframe-dialog-input {
+  height: 34px;
+}
+
+.stateframe-dialog-textarea {
+  min-height: 82px;
+  margin-top: 8px;
+  resize: vertical;
+}
+
+.stateframe-dialog-input:focus,
+.stateframe-dialog-textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.stateframe-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.stateframe-workspace {
+  display: grid;
+  grid-template-columns: 220px minmax(280px, 1fr) 320px;
+  height: var(--stateframe-viewer-height);
+  min-height: 0;
+  max-height: var(--stateframe-viewer-height);
+  overflow: hidden;
+}
+
+.stateframe-workspace-no-columns {
+  grid-template-columns: minmax(280px, 1fr) 320px;
+}
+
+.stateframe-column-panel,
+.stateframe-inspector {
+  height: var(--stateframe-viewer-height);
+  min-height: 0;
+  max-height: var(--stateframe-viewer-height);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #fbfdff;
+}
+
+.stateframe-column-panel {
+  border-right: 1px solid #e5e7eb;
+}
+
+.stateframe-inspector {
+  border-left: 1px solid #e5e7eb;
+  padding: 12px;
+}
+
+.stateframe-panel-heading,
+.stateframe-inspector-title {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.stateframe-panel-heading {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fbfdff;
+}
+
+.stateframe-column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.stateframe-column-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.stateframe-column-item.is-selected {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+}
+
+.stateframe-column-item.is-hidden {
+  opacity: 0.58;
+}
+
+.stateframe-column-name {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-column-meta {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.stateframe-grid-shell {
+  height: var(--stateframe-viewer-height);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.stateframe-grid-scroll {
+  width: 100%;
+  height: var(--stateframe-viewer-height);
+  overflow: auto;
+  position: relative;
+}
+
+.stateframe-grid-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  min-height: 42px;
+  border-bottom: 1px solid #cbd5e1;
+  background: #f8fafc;
+}
+
+.stateframe-header-cell {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  min-width: 0;
+  height: 42px;
+  border-right: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.stateframe-header-cell.is-selected {
+  background: #eef6ff;
+}
+
+.stateframe-header-cell.is-filtered {
+  box-shadow: inset 0 -2px 0 #0f766e;
+}
+
+.stateframe-header-label,
+.stateframe-header-menu-button {
+  height: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.stateframe-header-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.stateframe-header-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-header-badges {
+  display: flex;
+  gap: 4px;
+}
+
+.stateframe-badge {
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #075985;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 3px 5px;
+}
+
+.stateframe-header-menu-button {
+  color: #64748b;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.stateframe-header-menu-button:hover {
+  color: #1d4ed8;
+}
+
+.stateframe-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 3;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.stateframe-column-menu {
+  position: absolute;
+  top: 38px;
+  right: 4px;
+  z-index: 10;
+  display: grid;
+  gap: 8px;
+  width: 245px;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+}
+
+.stateframe-menu-title {
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-grid-virtual {
+  position: relative;
+}
+
+.stateframe-row {
+  position: absolute;
+  left: 0;
+  display: grid;
+  height: 32px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.stateframe-row:hover .stateframe-cell {
+  background: #f8fafc;
+}
+
+.stateframe-cell {
+  min-width: 0;
+  overflow: hidden;
+  padding: 7px 8px;
+  border-right: 1px solid #f1f5f9;
+  color: #1f2937;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-cell.is-numeric {
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.stateframe-cell.is-null {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.stateframe-cell.is-search-match {
+  background: #fef3c7;
+  color: #78350f;
+}
+
+.stateframe-cell.is-active-match {
+  background: #2563eb;
+  color: #ffffff;
+  outline: 2px solid #1d4ed8;
+  outline-offset: -2px;
+}
+
+.stateframe-index-cell {
+  background: #f8fafc;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.stateframe-inspector-subtitle {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.stateframe-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stateframe-inspector-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.stateframe-stat {
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px;
+}
+
+.stateframe-stat-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.stateframe-stat-value {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-section,
+.stateframe-inspector-filter {
+  margin-top: 14px;
+}
+
+.stateframe-section-title {
+  margin-bottom: 7px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.stateframe-filter-row {
+  align-items: stretch;
+}
+
+.stateframe-histogram {
+  display: flex;
+  align-items: end;
+  gap: 3px;
+  height: 82px;
+  padding: 8px 6px 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.stateframe-histogram-bar {
+  flex: 1;
+  min-width: 4px;
+  border-radius: 3px 3px 0 0;
+  background: #2563eb;
+}
+
+.stateframe-top-values,
+.stateframe-recommendations,
+.stateframe-detail-block {
+  display: grid;
+  gap: 6px;
+}
+
+.stateframe-top-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.stateframe-top-value-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-top-value-count {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.stateframe-kv {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.7fr) minmax(0, 1.3fr);
+  gap: 5px 9px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.stateframe-kv dt {
+  color: #64748b;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.stateframe-kv dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #111827;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-bullets {
+  margin: 0;
+  padding-left: 18px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.stateframe-bullets li + li {
+  margin-top: 5px;
+}
+
+.stateframe-recommendation {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.stateframe-recommendation-title {
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.stateframe-recommendation code {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: #0f766e;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-empty-state {
+  margin-top: 14px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.stateframe-ledger-tree {
+  display: grid;
+  gap: 6px;
+}
+
+.stateframe-ledger-entry {
+  border-left: 2px solid #cbd5e1;
+  padding: 7px 8px;
+  border-radius: 0 6px 6px 0;
+  background: #ffffff;
+}
+
+.stateframe-ledger-entry.is-active {
+  border-left-color: #2563eb;
+  background: #eff6ff;
+}
+
+.stateframe-ledger-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.stateframe-ledger-kind {
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+
+.stateframe-ledger-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-ledger-meta {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 980px) {
+  .stateframe-viewer {
+    min-width: 0;
+  }
+
+  .stateframe-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .stateframe-workspace,
+  .stateframe-workspace-no-columns {
+    grid-template-columns: 1fr;
+    max-height: none;
+  }
+
+  .stateframe-column-panel,
+  .stateframe-inspector {
+    max-height: 260px;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+}

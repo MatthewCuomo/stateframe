@@ -1,0 +1,32 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.env
+.env.*
+.stateframe/
+
+# Keep the public repo and package small. The corpus metadata/scripts can stay,
+# but downloaded/extracted datasets should not be committed.
+testing/**/data/
+testing/**/*.csv
+testing/**/*.csv.gz
+testing/**/*.data
+testing/**/*.geojson
+testing/**/*.gz
+testing/**/*.jsonl
+testing/**/*.parquet
+testing/**/*.tsv
+testing/**/*.xlsx
+testing/**/*.zip
+!testing/_manifest.csv

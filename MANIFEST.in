@@ -1,0 +1,19 @@
+include LICENSE
+include README.md
+include pyproject.toml
+
+graft src
+graft tests
+graft docs
+
+prune testing
+prune .github
+prune .pytest_cache
+prune .venv
+prune build
+prune dist
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store
+global-exclude .ipynb_checkpoints

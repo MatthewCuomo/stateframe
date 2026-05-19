@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stateframe"
+version = "0.2.0"
+description = "Adaptive exploratory data analysis for DataFrames and columnar datasets."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Matthew Cuomo" },
+]
+keywords = [
+    "data-science",
+    "eda",
+    "exploratory-data-analysis",
+    "pandas",
+    "profiling",
+    "notebook",
+    "dataframe",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "anywidget>=0.9",
+    "ipywidgets>=8",
+    "matplotlib>=3.8",
+    "numpy>=1.24",
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "scipy>=1.10",
+    "traitlets>=5.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=8",
+    "twine>=5",
+]
+interactive = [
+    # Compatibility alias: notebook widgets now ship with the base install.
+    "anywidget>=0.9",
+    "ipywidgets>=8",
+    "traitlets>=5.10",
+]
+ml = [
+    "scikit-learn>=1.4",
+]
+
+[project.scripts]
+stateframe = "stateframe.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/MatthewCuomo/stateframe"
+Source = "https://github.com/MatthewCuomo/stateframe"
+Issues = "https://github.com/MatthewCuomo/stateframe/issues"
+Documentation = "https://github.com/MatthewCuomo/stateframe#readme"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+stateframe = ["py.typed", "interactive/assets/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

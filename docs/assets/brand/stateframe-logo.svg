@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">stateframe logo</title>
+  <desc id="desc">The stateframe data aperture mark beside a clean futuristic wordmark.</desc>
+  <defs>
+    <linearGradient id="markBg" x1="44" y1="42" x2="276" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#061820"/>
+      <stop offset="0.55" stop-color="#0A2934"/>
+      <stop offset="1" stop-color="#050A0E"/>
+    </linearGradient>
+    <radialGradient id="markHalo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(160 160) rotate(90) scale(150 144)">
+      <stop offset="0" stop-color="#6BF3FF" stop-opacity="0.44"/>
+      <stop offset="0.48" stop-color="#1CB8CD" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#071319" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="89" y1="76" x2="233" y2="244" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D4FCFF"/>
+      <stop offset="0.35" stop-color="#4FEAFF"/>
+      <stop offset="0.72" stop-color="#16879D"/>
+      <stop offset="1" stop-color="#253C4B"/>
+    </linearGradient>
+    <linearGradient id="word" x1="344" y1="172" x2="812" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0B2631"/>
+      <stop offset="0.49" stop-color="#0B2631"/>
+      <stop offset="0.5" stop-color="#0FAEC4"/>
+      <stop offset="1" stop-color="#24D7E7"/>
+    </linearGradient>
+    <linearGradient id="active" x1="120" y1="194" x2="199" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34DFF2"/>
+      <stop offset="0.58" stop-color="#7CF7FF"/>
+      <stop offset="1" stop-color="#FFD36A"/>
+    </linearGradient>
+    <clipPath id="core">
+      <circle cx="160" cy="160" r="68"/>
+    </clipPath>
+    <filter id="logoShadow" x="-20%" y="-30%" width="150%" height="170%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#08242E" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#logoShadow)">
+    <rect x="38" y="48" width="244" height="244" rx="60" fill="url(#markBg)"/>
+    <rect x="38" y="48" width="244" height="244" rx="60" fill="url(#markHalo)"/>
+    <g opacity="0.2" stroke="#79EEFF" stroke-width="1">
+      <path d="M70 112H250"/>
+      <path d="M70 160H250"/>
+      <path d="M70 208H250"/>
+      <path d="M112 76V264"/>
+      <path d="M160 76V264"/>
+      <path d="M208 76V264"/>
+    </g>
+
+    <circle cx="160" cy="160" r="94" fill="#061923"/>
+    <circle cx="160" cy="160" r="88" fill="none" stroke="#062C38" stroke-width="14"/>
+    <circle cx="160" cy="160" r="82" fill="none" stroke="url(#ring)" stroke-width="8"/>
+    <g opacity="0.82">
+      <path d="M160 84A76 76 0 0 1 226 122L189 143A34 34 0 0 0 160 126Z" fill="#58EFFF" opacity="0.42"/>
+      <path d="M226 122A76 76 0 0 1 225 198L188 177A34 34 0 0 0 189 143Z" fill="#D8FEFF" opacity="0.26"/>
+      <path d="M225 198A76 76 0 0 1 160 236V194A34 34 0 0 0 188 177Z" fill="#58EFFF" opacity="0.34"/>
+      <path d="M160 236A76 76 0 0 1 94 198L132 177A34 34 0 0 0 160 194Z" fill="#D8FEFF" opacity="0.24"/>
+      <path d="M94 198A76 76 0 0 1 95 122L132 143A34 34 0 0 0 132 177Z" fill="#58EFFF" opacity="0.34"/>
+      <path d="M95 122A76 76 0 0 1 160 84V126A34 34 0 0 0 132 143Z" fill="#D8FEFF" opacity="0.24"/>
+    </g>
+    <circle cx="160" cy="160" r="70" fill="#0A2530" stroke="#A9F8FF" stroke-width="1.5"/>
+    <g clip-path="url(#core)">
+      <rect x="88" y="88" width="144" height="144" fill="#0A2630"/>
+      <rect x="88" y="88" width="144" height="144" fill="url(#markHalo)" opacity="0.94"/>
+      <g opacity="0.34" stroke="#B9FAFF" stroke-width="1">
+        <path d="M98 116H222"/>
+        <path d="M98 140H222"/>
+        <path d="M98 164H222"/>
+        <path d="M98 188H222"/>
+        <path d="M116 98V222"/>
+        <path d="M140 98V222"/>
+        <path d="M164 98V222"/>
+        <path d="M188 98V222"/>
+        <path d="M212 98V222"/>
+      </g>
+    </g>
+    <g stroke-linecap="round" stroke-linejoin="round">
+      <path d="M120 196L144 172L166 172L198 200" fill="none" stroke="url(#active)" stroke-width="6"/>
+      <path d="M144 172V142" fill="none" stroke="#45E8FF" stroke-width="5" opacity="0.86"/>
+      <path d="M166 172L196 142" fill="none" stroke="#45E8FF" stroke-width="5" opacity="0.78"/>
+    </g>
+    <circle cx="120" cy="196" r="9" fill="#092631" stroke="#82F6FF" stroke-width="3"/>
+    <circle cx="144" cy="172" r="9" fill="#A6FBFF" stroke="#062933" stroke-width="3"/>
+    <circle cx="144" cy="142" r="8" fill="#0A2D38" stroke="#59EFFF" stroke-width="3"/>
+    <circle cx="166" cy="172" r="9" fill="#092631" stroke="#82F6FF" stroke-width="3"/>
+    <circle cx="196" cy="142" r="8" fill="#0A2D38" stroke="#59EFFF" stroke-width="3"/>
+    <circle cx="198" cy="200" r="10" fill="#FFD36A" stroke="#FFF7C7" stroke-width="3"/>
+  </g>
+
+  <text x="342" y="172" fill="url(#word)" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="112" font-weight="760" letter-spacing="0">stateframe</text>
+  <text x="348" y="224" fill="#3A5B64" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="28" font-weight="500" letter-spacing="0">adaptive EDA with a ledgered analysis tree</text>
+  <path d="M348 252H842" stroke="#D4E9EC" stroke-width="2" stroke-linecap="round"/>
+  <path d="M348 252H584" stroke="#27D5E7" stroke-width="2" stroke-linecap="round"/>
+</svg>

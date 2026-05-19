@@ -1,0 +1,411 @@
+.stateframe-ledger-host {
+  display: block;
+  color: #1f2937;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.stateframe-tree,
+.stateframe-tree * {
+  box-sizing: border-box;
+}
+
+.stateframe-tree {
+  width: 100%;
+  min-width: 760px;
+  border: 1px solid #d6dbe3;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 16px 38px rgba(31, 41, 55, 0.08);
+  overflow: hidden;
+}
+
+.stateframe-tree-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(340px, 620px);
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.stateframe-tree-title {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.stateframe-tree-subtitle {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stateframe-tree-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 130px auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.stateframe-tree-input,
+.stateframe-tree-select,
+.stateframe-tree-button {
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.stateframe-tree-input,
+.stateframe-tree-select {
+  width: 100%;
+  padding: 0 9px;
+}
+
+.stateframe-tree-button {
+  padding: 0 10px;
+  color: #334155;
+  cursor: pointer;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.stateframe-tree-input:focus,
+.stateframe-tree-select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.stateframe-tree-button:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.stateframe-tree-button.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.stateframe-tree-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #e5e7eb;
+}
+
+.stateframe-tree-stat {
+  min-width: 0;
+  padding: 9px 12px;
+  background: #ffffff;
+}
+
+.stateframe-tree-stat-value {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.stateframe-tree-stat-label {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.stateframe-tree-body {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.95fr) minmax(340px, 1.05fr);
+  height: var(--stateframe-ledger-height);
+  min-height: 0;
+  max-height: var(--stateframe-ledger-height);
+  overflow: hidden;
+}
+
+.stateframe-tree-panel,
+.stateframe-tree-detail {
+  min-height: 0;
+  max-height: var(--stateframe-ledger-height);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: #fbfdff;
+}
+
+.stateframe-tree-panel {
+  border-right: 1px solid #e5e7eb;
+}
+
+.stateframe-tree-detail {
+  padding: 12px;
+}
+
+.stateframe-tree-panel-header,
+.stateframe-tree-detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fbfdff;
+}
+
+.stateframe-tree-panel-header {
+  padding: 12px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.stateframe-tree-detail-header {
+  padding: 0 0 10px;
+}
+
+.stateframe-tree-detail-title {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.stateframe-tree-detail-subtitle {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.stateframe-tree-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.stateframe-tree-node {
+  width: 100%;
+  min-height: 54px;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.stateframe-tree-node:hover {
+  border-color: #93c5fd;
+}
+
+.stateframe-tree-node.is-in-path {
+  border-left-color: #0f766e;
+}
+
+.stateframe-tree-node.is-active {
+  background: #f0fdfa;
+}
+
+.stateframe-tree-node.is-selected {
+  border-color: #2563eb;
+  border-left-color: #2563eb;
+  background: #eff6ff;
+}
+
+.stateframe-tree-node-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.stateframe-tree-kind {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 6px;
+  text-transform: uppercase;
+}
+
+.stateframe-tree-node-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-tree-node-meta {
+  margin-top: 5px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-tree-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.stateframe-tree-section-title {
+  margin-bottom: 8px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.stateframe-tree-kv {
+  display: grid;
+  grid-template-columns: minmax(86px, 0.55fr) minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.stateframe-tree-kv dt {
+  color: #64748b;
+  font-weight: 750;
+  text-transform: capitalize;
+}
+
+.stateframe-tree-kv dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111827;
+  font-weight: 700;
+}
+
+.stateframe-tree-path,
+.stateframe-tree-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stateframe-tree-path-item,
+.stateframe-tree-pill {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-tree-path-item {
+  border-color: #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+.stateframe-tree-code,
+.stateframe-tree-json {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f766e;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 8px;
+  white-space: pre;
+}
+
+.stateframe-tree-json {
+  margin: 0;
+  color: #334155;
+}
+
+.stateframe-tree-note {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.stateframe-tree-options {
+  display: grid;
+  gap: 8px;
+}
+
+.stateframe-tree-option {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.stateframe-tree-option-title {
+  color: #111827;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.stateframe-tree-option-meta {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.stateframe-tree-option .stateframe-tree-code {
+  margin-top: 7px;
+}
+
+.stateframe-tree-empty {
+  padding: 14px 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+@media (max-width: 980px) {
+  .stateframe-tree {
+    min-width: 0;
+  }
+
+  .stateframe-tree-toolbar,
+  .stateframe-tree-controls,
+  .stateframe-tree-body,
+  .stateframe-tree-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .stateframe-tree-body,
+  .stateframe-tree-panel,
+  .stateframe-tree-detail {
+    max-height: none;
+  }
+
+  .stateframe-tree-panel {
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+}

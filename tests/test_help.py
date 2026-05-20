@@ -16,3 +16,13 @@ def test_help_renders_as_markdown_code_block():
     guide = sf.help()
 
     assert guide._repr_markdown_().startswith("```text\nStateframe quick start:")
+
+
+def test_help_getdata_explains_custom_query_sources():
+    guide = sf.help_getdata()
+
+    assert isinstance(guide, str)
+    assert "Stateframe Get Data and query-source setup:" in guide
+    assert "sf.sources.register" in guide
+    assert "sf.query" in guide
+    assert "store_query=False" in guide

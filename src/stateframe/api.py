@@ -183,6 +183,71 @@ def scan_path(
     )
 
 
+def query(
+    source: str,
+    statement: str,
+    *,
+    params: dict[str, Any] | None = None,
+    name: str | None = None,
+    target: str | None = None,
+    time: str | None = None,
+    task: str | None = None,
+    goal: str = "first-look",
+    scan_depth: str = "standard",
+    sample_size: int | None = None,
+    config: ScanConfig | None = None,
+    store_query: bool = True,
+    store_params: bool = True,
+    save_tree: bool = False,
+    **source_kwargs: Any,
+):
+    """Run a registered data-source query and start a stateframe tree.
+
+    Source providers are registered through ``sf.sources.register(...)``. The
+    provider owns credentials and connection logic; stateframe stores only the
+    query lineage needed to identify or replay the root dataset.
+    """
+
+    from stateframe import save
+    from stateframe import sources
+    from stateframe.io import coerce_dataframe
+
+    result = sources.query(
+        source,
+        statement,
+        params=params,
+        store_query=store_query,
+        store_params=store_params,
+        **source_kwargs,
+    )
+    data = coerce_dataframe(result.data)
+    dataset_name = name or result.name or source
+    profile = build_profile(
+        data,
+        name=dataset_name,
+        target=target,
+        time=time,
+        task=task,
+        goal=goal,
+        mode=scan_depth,
+        config=config,
+        sample_size=sample_size,
+        register=False,
+    )
+    profile.source = {
+        **result.source,
+        "input_kind": "query_result",
+        "rows": int(data.shape[0]),
+        "columns": int(data.shape[1]),
+    }
+    profile.dataset_name = dataset_name
+    profile.tree_name = dataset_name
+    save.register_profile(profile)
+    if save_tree:
+        profile.save_tree()
+    return profile
+
+
 def view(
     data: Any,
     *,
@@ -324,6 +389,7 @@ __all__ = [
     "ledger_view",
     "plot",
     "profile",
+    "query",
     "report",
     "scan",
     "scan_path",

@@ -52,6 +52,28 @@ def test_web_view_can_pull_selected_snapshot(tmp_path):
     assert branch_viewer.record_profile.tree_id == web.payload["trees"][0]["tree_id"]
 
 
+def test_web_view_browses_and_scans_workspace_files(tmp_path):
+    pytest.importorskip("anywidget")
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    source = data_dir / "events.csv"
+    pd.DataFrame({"x": [1, 2], "label": ["a", "b"]}).to_csv(source, index=False)
+
+    sf.workspace.configure(root=tmp_path, name="web file browser")
+    sf.workspace.init()
+
+    web = sf.web()
+    listing = web.browse_files("data")
+    profile = web.scan_file("data/events.csv")
+    web.refresh()
+
+    assert listing["entries"][0]["name"] == "events.csv"
+    assert listing["entries"][0]["can_scan"] is True
+    assert profile.source["path"] == str(source.relative_to(tmp_path))
+    assert any(tree["tree_name"] == "events" for tree in web.payload["trees"])
+
+
 def test_web_view_explains_missing_snapshot_for_dataframe_source(tmp_path):
     pytest.importorskip("anywidget")
 

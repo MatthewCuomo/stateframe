@@ -276,6 +276,41 @@ entry/state inside that tree. The web is the main one-stop UI: open the
 selected state in the embedded viewer, filter/sort/reorder/offload columns,
 then click **Save Branch** to add a new child state to the tree.
 
+The workspace also exposes a scoped file browser for dataset selection and
+future save-as flows:
+
+```python
+sf.workspace.list_files()
+sf.workspace.list_files("data")
+sf.workspace.file_info("data/realestate.csv")
+sf.workspace.validate_save_path("reports/price-plot.png")
+```
+
+Inside `sf.web()`, use **Get Data** to browse under the configured workspace
+root and scan a supported data file into a saved tree. The browser is lazy and
+workspace-scoped, so UI file operations stay inside the project root.
+
+For company warehouses, APIs, lakehouses, or custom query systems, register a
+query source and start a tree from the returned DataFrame:
+
+```python
+def run_company_query(query, params=None, **kwargs):
+    return pd.read_sql(query, company_connection, params=params)
+
+sf.sources.register("warehouse", run_company_query, display_name="Company warehouse")
+
+scan = sf.query(
+    "warehouse",
+    "select * from analytics.customers where signup_date >= :start",
+    params={"start": "2025-01-01"},
+    name="customers_2025",
+    save_tree=True,
+)
+```
+
+Use `sf.help_getdata()` for the full provider template, including custom source
+classes, previews, object browsing, and sensitive query metadata controls.
+
 When you want the selected state as a notebook variable:
 
 ```python

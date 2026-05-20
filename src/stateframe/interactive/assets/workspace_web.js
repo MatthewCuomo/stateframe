@@ -2,6 +2,7 @@ function render({ model, el, signal }) {
   let payload = model.get("payload") || {};
   let state = normalizeState(model.get("state"), payload);
   let viewer = normalizeViewer(model.get("viewer"));
+  let files = normalizeFiles(model.get("files"));
   let commandStatus = model.get("command_status") || {};
   const ui = {
     saveBranchOpen: false,
@@ -83,6 +84,11 @@ function render({ model, el, signal }) {
     draw();
   }
 
+  function onFilesChange() {
+    files = normalizeFiles(model.get("files"));
+    draw();
+  }
+
   function onCommandStatusChange() {
     commandStatus = model.get("command_status") || {};
     draw();
@@ -91,11 +97,13 @@ function render({ model, el, signal }) {
   model.on("change:payload", onPayloadChange);
   model.on("change:state", onStateChange);
   model.on("change:viewer", onViewerChange);
+  model.on("change:files", onFilesChange);
   model.on("change:command_status", onCommandStatusChange);
   signal.addEventListener("abort", () => {
     model.off("change:payload", onPayloadChange);
     model.off("change:state", onStateChange);
     model.off("change:viewer", onViewerChange);
+    model.off("change:files", onFilesChange);
     model.off("change:command_status", onCommandStatusChange);
   });
 
@@ -112,7 +120,7 @@ function render({ model, el, signal }) {
       || null;
 
     root.innerHTML = "";
-    root.appendChild(renderToolbar(payload, state, setState, sendCommand, commandStatus, setUi));
+    root.appendChild(renderToolbar(payload, state, setState, sendCommand, commandStatus, setUi, files));
 
     if (state.viewMode === "viewer") {
       root.appendChild(renderEmbeddedViewer(
@@ -124,6 +132,12 @@ function render({ model, el, signal }) {
         ui,
         setUi,
       ));
+      requestAnimationFrame(() => restoreFocus(root, ui));
+      return;
+    }
+
+    if (state.viewMode === "files") {
+      root.appendChild(renderFileBrowser(files, commandStatus, setState, sendCommand));
       requestAnimationFrame(() => restoreFocus(root, ui));
       return;
     }
@@ -152,10 +166,12 @@ function normalizeState(raw, payload) {
     ? raw.selectedEntryId
     : defaultEntryId(selectedTree);
   const sorts = new Set(["updated", "name", "entries", "states"]);
+  const modes = new Set(["web", "viewer", "files"]);
   return {
     selectedTreeId: selected,
     selectedEntryId: selectedEntry,
-    viewMode: raw?.viewMode === "viewer" ? "viewer" : "web",
+    viewMode: modes.has(raw?.viewMode) ? raw.viewMode : "web",
+    selectedFilePath: raw?.selectedFilePath || null,
     search: raw?.search || "",
     sort: sorts.has(raw?.sort) ? raw.sort : "updated",
   };
@@ -197,7 +213,22 @@ function normalizeViewerState(raw, payload) {
   };
 }
 
-function renderToolbar(payload, state, setState, sendCommand, commandStatus, setUi) {
+function normalizeFiles(raw) {
+  return {
+    status: raw?.status || "ready",
+    purpose: raw?.purpose || "open",
+    current_path: raw?.current_path || ".",
+    parent_path: raw?.parent_path || null,
+    entries: Array.isArray(raw?.entries) ? raw.entries : [],
+    entry_count: Number(raw?.entry_count || 0),
+    truncated: Boolean(raw?.truncated),
+    supported_data_suffixes: Array.isArray(raw?.supported_data_suffixes) ? raw.supported_data_suffixes : [],
+    workspace: raw?.workspace || {},
+    message: raw?.message || "",
+  };
+}
+
+function renderToolbar(payload, state, setState, sendCommand, commandStatus, setUi, files) {
   const toolbar = document.createElement("div");
   toolbar.className = "stateframe-web-toolbar";
 
@@ -207,12 +238,16 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
   title.className = "stateframe-web-title";
   title.textContent = state.viewMode === "viewer"
     ? "stateframe embedded viewer"
-    : payload.title || "stateframe workspace web";
+    : state.viewMode === "files"
+      ? "stateframe file browser"
+      : payload.title || "stateframe workspace web";
   const subtitle = document.createElement("div");
   subtitle.className = "stateframe-web-subtitle";
   const workspaceName = payload.workspace?.name || payload.settings?.name || "workspace";
   subtitle.textContent = state.viewMode === "viewer"
     ? statusText(commandStatus) || "Open state from web, shape it, then save a branch"
+    : state.viewMode === "files"
+      ? `${workspaceName} / ${files.current_path || "."}`
     : `${workspaceName} / ${payload.settings?.root || ""}`;
   titleGroup.append(title, subtitle);
 
@@ -225,6 +260,15 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
       button("Back", () => setState({ viewMode: "web" })),
       button("Save Branch", () => setUi({ saveBranchOpen: true })),
       button("Refresh", () => sendCommand("refresh")),
+    );
+  } else if (state.viewMode === "files") {
+    controls.classList.add("is-viewer");
+    const up = button("Up", () => sendCommand("browse_files", { path: files.parent_path || "." }));
+    up.disabled = !files.parent_path;
+    controls.append(
+      button("Back", () => setState({ viewMode: "web" })),
+      up,
+      button("Refresh", () => sendCommand("browse_files", { path: files.current_path || "." })),
     );
   } else {
     const search = document.createElement("input");
@@ -249,7 +293,15 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
     }
     sort.value = state.sort;
     sort.addEventListener("change", () => setState({ sort: sort.value }));
-    controls.append(search, sort, button("Refresh", () => sendCommand("refresh")));
+    controls.append(
+      search,
+      sort,
+      button("Get Data", () => {
+        setState({ viewMode: "files" });
+        sendCommand("browse_files", { path: files.current_path || "." });
+      }),
+      button("Refresh", () => sendCommand("refresh")),
+    );
   }
 
   toolbar.append(titleGroup, controls);
@@ -330,6 +382,134 @@ function renderTreeList(trees, selected, setState) {
   }
   panel.appendChild(list);
   return panel;
+}
+
+function renderFileBrowser(files, commandStatus, setState, sendCommand) {
+  const shell = document.createElement("div");
+  shell.className = "stateframe-web-files";
+
+  const header = document.createElement("div");
+  header.className = "stateframe-web-files-header";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-files-title";
+  title.textContent = files.current_path || ".";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-files-meta";
+  meta.textContent = `${formatInt(files.entry_count)} item${files.entry_count === 1 ? "" : "s"} / supported data: ${files.supported_data_suffixes.join(", ")}`;
+  const actions = document.createElement("div");
+  actions.className = "stateframe-web-action-row";
+  const root = button("Workspace Root", () => sendCommand("browse_files", { path: "." }));
+  const up = button("Up", () => sendCommand("browse_files", { path: files.parent_path || "." }));
+  up.disabled = !files.parent_path;
+  actions.append(root, up);
+  header.append(title, meta, actions);
+  shell.appendChild(header);
+
+  if (commandStatus?.status === "loading" && commandStatus.action === "browse_files") {
+    shell.appendChild(empty("Loading workspace folder..."));
+    return shell;
+  }
+  if (commandStatus?.status === "loading" && commandStatus.action === "scan_file") {
+    shell.appendChild(empty("Scanning selected dataset..."));
+    return shell;
+  }
+  if (commandStatus?.status === "error") {
+    const error = empty(commandStatus.message || "File action failed.");
+    error.classList.add("is-error");
+    shell.appendChild(error);
+  }
+  if (files.truncated) {
+    const warning = document.createElement("div");
+    warning.className = "stateframe-web-warning";
+    warning.textContent = "This folder has more entries than the browser limit. Narrow the folder before scanning.";
+    shell.appendChild(warning);
+  }
+
+  const list = document.createElement("div");
+  list.className = "stateframe-web-file-list";
+  if (files.parent_path) {
+    list.appendChild(renderFileEntry(
+      {
+        name: "..",
+        path: files.parent_path,
+        kind: "directory",
+        can_save_here: true,
+      },
+      setState,
+      sendCommand,
+    ));
+  }
+  for (const entry of files.entries || []) {
+    list.appendChild(renderFileEntry(entry, setState, sendCommand));
+  }
+  if (!list.children.length) {
+    shell.appendChild(empty("No files are visible in this workspace folder."));
+  } else {
+    shell.appendChild(list);
+  }
+  return shell;
+}
+
+function renderFileEntry(entry, setState, sendCommand) {
+  const item = document.createElement("div");
+  item.tabIndex = 0;
+  item.setAttribute("role", "button");
+  item.className = "stateframe-web-file-item";
+  if (entry.kind === "directory") item.classList.add("is-directory");
+  if (entry.can_scan) item.classList.add("is-data");
+  const openEntry = () => {
+    if (entry.kind === "directory") {
+      sendCommand("browse_files", { path: entry.path || "." });
+    } else {
+      setState({ selectedFilePath: entry.path });
+    }
+  };
+  item.addEventListener("click", openEntry);
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openEntry();
+    }
+  });
+
+  const main = document.createElement("div");
+  main.className = "stateframe-web-file-main";
+  const name = document.createElement("div");
+  name.className = "stateframe-web-file-name";
+  name.textContent = entry.name || entry.path || "";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-file-meta";
+  const kind = entry.kind === "directory" ? "folder" : entry.data_kind || entry.suffix || "file";
+  meta.textContent = entry.kind === "directory"
+    ? `${kind} / ${entry.path || "."}`
+    : `${kind} / ${formatBytes(entry.size_bytes || 0)} / ${entry.path || ""}`;
+  main.append(name, meta);
+
+  const badges = document.createElement("div");
+  badges.className = "stateframe-web-file-badges";
+  badges.append(pill(entry.kind === "directory" ? "folder" : "file"));
+  if (entry.can_scan) badges.append(pill("scan ready"));
+  if (entry.can_save_here) badges.append(pill("save target"));
+
+  const actions = document.createElement("div");
+  actions.className = "stateframe-web-file-actions";
+  if (entry.kind === "directory") {
+    const open = button("Open", (event) => {
+      event.stopPropagation();
+      sendCommand("browse_files", { path: entry.path || "." });
+    });
+    actions.append(open);
+  } else {
+    const scan = button("Scan", (event) => {
+      event.stopPropagation();
+      sendCommand("scan_file", { path: entry.path });
+    });
+    scan.disabled = !entry.can_scan;
+    actions.append(scan);
+  }
+
+  item.append(main, badges, actions);
+  return item;
 }
 
 function renderDetail(payload, tree, selectedEntry, setState, openSelectedViewer) {

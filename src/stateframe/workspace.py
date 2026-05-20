@@ -171,6 +171,39 @@ def list_trees() -> list[dict[str, Any]]:
     return current().list_trees()
 
 
+def list_files(
+    path: str | Path | None = None,
+    *,
+    include_hidden: bool = False,
+    max_entries: int = 500,
+    purpose: str = "open",
+) -> dict[str, Any]:
+    """List one directory under the active workspace root."""
+
+    return current().list_files(
+        path,
+        include_hidden=include_hidden,
+        max_entries=max_entries,
+        purpose=purpose,
+    )
+
+
+def file_info(path: str | Path) -> dict[str, Any]:
+    """Return metadata for one file or directory under the active workspace."""
+
+    return current().file_info(path)
+
+
+def validate_save_path(
+    path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Validate a future save path under the active workspace root."""
+
+    return current().validate_save_path(path, overwrite=overwrite)
+
+
 def register_profile(profile: Any) -> dict[str, Any]:
     """Register or refresh a profile in the workspace web index."""
 
@@ -326,6 +359,45 @@ class Workspace:
 
     def list_trees(self) -> list[dict[str, Any]]:
         return list(self.web().get("trees", []))
+
+    def list_files(
+        self,
+        path: str | Path | None = None,
+        *,
+        include_hidden: bool = False,
+        max_entries: int = 500,
+        purpose: str = "open",
+    ) -> dict[str, Any]:
+        """List one directory under this workspace root for UI file picking."""
+
+        from stateframe.files import list_workspace_files
+
+        return list_workspace_files(
+            self,
+            path,
+            include_hidden=include_hidden,
+            max_entries=max_entries,
+            purpose=purpose,  # type: ignore[arg-type]
+        )
+
+    def file_info(self, path: str | Path) -> dict[str, Any]:
+        """Return metadata for one file or directory under this workspace root."""
+
+        from stateframe.files import file_info as workspace_file_info
+
+        return workspace_file_info(self, path).to_dict()
+
+    def validate_save_path(
+        self,
+        path: str | Path,
+        *,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Validate a future save path under this workspace root."""
+
+        from stateframe.files import validate_save_path
+
+        return validate_save_path(self, path, overwrite=overwrite)
 
     def register_profile(
         self,

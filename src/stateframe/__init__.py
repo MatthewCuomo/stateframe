@@ -1,6 +1,8 @@
 """Public API for stateframe."""
 
 from stateframe import save as save
+from stateframe import files as files
+from stateframe import sources as sources
 from stateframe import workspace as workspace
 from stateframe.api import (
     apply_suggested_conversions,
@@ -10,6 +12,7 @@ from stateframe.api import (
     optimize_footprint,
     plot,
     profile,
+    query,
     report,
     scan,
     scan_path,
@@ -24,6 +27,7 @@ from stateframe.branch import BranchRecorder
 from stateframe.config import ScanConfig, SuggestedConfig
 from stateframe.footprint import FootprintAction, FootprintPlan
 from stateframe.help import help
+from stateframe.help import help_getdata
 from stateframe.ledger import LedgerEntry, LedgerState, LensLedger
 from stateframe.lens_registry import LensSpec, all_lenses, get_lens_spec
 from stateframe.models import (
@@ -45,6 +49,13 @@ from stateframe.models import (
     TimeCandidate,
     ValueProfile,
 )
+from stateframe.sources import (
+    DataObject,
+    DataSource,
+    DataSourceError,
+    FunctionDataSource,
+    QueryResult,
+)
 
 __all__ = [
     "BinaryProfile",
@@ -52,9 +63,13 @@ __all__ = [
     "CleaningPlan",
     "ColumnProfile",
     "DatasetSummary",
+    "DataObject",
+    "DataSource",
+    "DataSourceError",
     "EvidenceFact",
     "FootprintAction",
     "FootprintPlan",
+    "FunctionDataSource",
     "Insight",
     "Issue",
     "LedgerEntry",
@@ -64,6 +79,7 @@ __all__ = [
     "LensSpec",
     "PlotResult",
     "Profile",
+    "QueryResult",
     "Recommendation",
     "RecommendationList",
     "ScanConfig",
@@ -81,14 +97,18 @@ __all__ = [
     "all_lenses",
     "get_lens_spec",
     "help",
+    "help_getdata",
     "ledger_view",
     "optimize_footprint",
     "plot",
     "profile",
+    "query",
     "report",
     "scan",
     "scan_path",
     "save",
+    "files",
+    "sources",
     "tree_view",
     "unify_binary_flags",
     "view",

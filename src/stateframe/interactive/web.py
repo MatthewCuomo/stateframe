@@ -43,6 +43,7 @@ if anywidget is not None and traitlets is not None:
         payload = traitlets.Dict().tag(sync=True)
         state = traitlets.Dict().tag(sync=True)
         viewer = traitlets.Dict(default_value={}).tag(sync=True)
+        files = traitlets.Dict(default_value={}).tag(sync=True)
         command = traitlets.Dict(default_value={}).tag(sync=True)
         command_status = traitlets.Dict(default_value={}).tag(sync=True)
 
@@ -65,6 +66,7 @@ if anywidget is not None and traitlets is not None:
                 payload=payload,
                 state=initial_web_state(payload),
                 viewer={},
+                files=self._workspace.list_files(purpose="open"),
                 command={},
                 command_status={},
                 **kwargs,
@@ -80,6 +82,85 @@ if anywidget is not None and traitlets is not None:
             """Return the latest synced widget state."""
 
             return dict(self.state)
+
+        def browse_files(
+            self,
+            path: str | Path | None = None,
+            *,
+            include_hidden: bool = False,
+            max_entries: int = 500,
+            purpose: str = "open",
+        ) -> dict[str, Any]:
+            """List a workspace folder and sync it to the web file browser."""
+
+            listing = self._workspace.list_files(
+                path,
+                include_hidden=include_hidden,
+                max_entries=max_entries,
+                purpose=purpose,
+            )
+            self.files = listing
+            return listing
+
+        def scan_file(
+            self,
+            path: str | Path,
+            *,
+            name: str | None = None,
+            target: str | None = None,
+            time: str | None = None,
+            reader_params: dict[str, Any] | None = None,
+        ):
+            """Scan a workspace file and save it as a new tree."""
+
+            info = self._workspace.file_info(path)
+            if not info.get("can_scan"):
+                raise ValueError(f"Selected path is not a supported data file: {path}")
+
+            from stateframe.api import scan_path
+
+            profile = scan_path(
+                str(info["path"]),
+                name=name or Path(str(info["path"])).stem,
+                target=target,
+                time=time,
+                reader_params=reader_params,
+            )
+            profile.save_tree()
+            return profile
+
+        def query_data(
+            self,
+            source: str,
+            statement: str,
+            *,
+            params: dict[str, Any] | None = None,
+            name: str | None = None,
+            target: str | None = None,
+            time: str | None = None,
+            store_query: bool = True,
+            store_params: bool = True,
+            save_tree: bool = True,
+            **source_kwargs: Any,
+        ):
+            """Run a registered data-source query and add it to the workspace."""
+
+            from stateframe.api import query as query_api
+
+            profile = query_api(
+                source,
+                statement,
+                params=params,
+                name=name,
+                target=target,
+                time=time,
+                store_query=store_query,
+                store_params=store_params,
+                save_tree=save_tree,
+                **source_kwargs,
+            )
+            self.refresh()
+            return profile
 
         def selected_tree_id(self) -> str | None:
             """Return the selected tree id."""
@@ -508,10 +589,91 @@ if anywidget is not None and traitlets is not None:
                     )
                 elif action == "refresh":
                     self.refresh()
+                    self.browse_files(
+                        path=(self.files or {}).get("current_path") or ".",
+                        include_hidden=bool((self.files or {}).get("include_hidden")),
+                        max_entries=int((self.files or {}).get("max_entries") or 500),
+                        purpose=(self.files or {}).get("purpose") or "open",
+                    )
                     self.command_status = {
                         "status": "ready",
                         "action": action,
                         "message": "Workspace web refreshed",
+                    }
+                elif action == "browse_files":
+                    self.command_status = {
+                        "status": "loading",
+                        "action": action,
+                        "message": "Loading workspace files",
+                    }
+                    listing = self.browse_files(
+                        path=request.get("path") or ".",
+                        include_hidden=bool(request.get("includeHidden")),
+                        max_entries=int(request.get("maxEntries") or 500),
+                        purpose=request.get("purpose") or "open",
+                    )
+                    self.state = {
+                        **dict(self.state),
+                        "viewMode": "files",
+                        "selectedFilePath": None,
+                    }
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Listed {listing.get('current_path') or '.'}",
+                    }
+                elif action == "scan_file":
+                    self.command_status = {
+                        "status": "loading",
+                        "action": action,
+                        "message": "Scanning selected file",
+                    }
+                    profile = self.scan_file(
+                        request.get("path"),
+                        name=request.get("name") or None,
+                        target=request.get("target") or None,
+                        time=request.get("time") or None,
+                        reader_params=(
+                            request.get("readerParams")
+                            if isinstance(request.get("readerParams"), dict)
+                            else None
+                        ),
+                    )
+                    tree_id = getattr(profile, "tree_id", None)
+                    self._refresh_after_file_scan(tree_id)
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Scanned {profile.tree_name or profile.dataset_name or tree_id}",
+                        "tree_id": tree_id,
+                    }
+                elif action == "query_data":
+                    self.command_status = {
+                        "status": "loading",
+                        "action": action,
+                        "message": "Running source query",
+                    }
+                    profile = self.query_data(
+                        str(request.get("source") or ""),
+                        str(request.get("query") or ""),
+                        params=(
+                            request.get("params")
+                            if isinstance(request.get("params"), dict)
+                            else None
+                        ),
+                        name=request.get("name") or None,
+                        target=request.get("target") or None,
+                        time=request.get("time") or None,
+                        store_query=request.get("storeQuery") is not False,
+                        store_params=request.get("storeParams") is not False,
+                    )
+                    tree_id = getattr(profile, "tree_id", None)
+                    self._refresh_after_file_scan(tree_id)
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Queried {profile.tree_name or profile.dataset_name or tree_id}",
+                        "tree_id": tree_id,
                     }
             except Exception as exc:
                 self.viewer = {
@@ -524,6 +686,21 @@ if anywidget is not None and traitlets is not None:
                     "action": action,
                     "message": str(exc),
                 }
+
+        def _refresh_after_file_scan(self, selected_tree_id: str | None) -> None:
+            payload = build_web_payload(
+                self._workspace,
+                height=int(self.payload.get("view", {}).get("height") or 640),
+                title=self.payload.get("title"),
+            )
+            self.payload = payload
+            self.state = {
+                **initial_web_state(
+                    payload,
+                    selected_tree_id=selected_tree_id,
+                ),
+                "viewMode": "web",
+            }
 
         def _refresh_after_embedded_save(self, selected_entry_id: str) -> None:
             selected_tree = self.selected_tree_id()
@@ -579,6 +756,8 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
         _web_tree_record(workspace, record)
         for record in list(web.get("trees", []))
     ]
+    from stateframe import sources
+
     return {
         "version": 1,
         "title": title or "stateframe workspace web",
@@ -590,6 +769,7 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
         "updated_at": web.get("updated_at"),
         "tree_count": len(trees),
         "trees": trees,
+        "sources": sources.list_sources(),
         "settings": workspace.settings(),
     }
 

@@ -99,3 +99,39 @@ def test_scan_path_stores_workspace_relative_source_from_nested_notebook(tmp_pat
     assert scan.source["path_root"] == "workspace"
     assert scan.source["path"] == str(Path("realestate") / "data" / "events.csv")
     assert scan.source["absolute_path"] == str(source_path.resolve())
+
+
+def test_workspace_file_browser_lists_supported_data_files(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (tmp_path / "outputs").mkdir()
+    pd.DataFrame({"x": [1, 2]}).to_csv(data_dir / "events.csv", index=False)
+    (data_dir / "notes.md").write_text("# notes", encoding="utf-8")
+    (tmp_path / ".hidden.csv").write_text("x\n1\n", encoding="utf-8")
+
+    sf.workspace.configure(root=tmp_path, name="file browser")
+
+    root_listing = sf.workspace.list_files()
+    data_listing = sf.workspace.list_files("data")
+    save_path = sf.workspace.validate_save_path("outputs/plot.png")
+
+    assert root_listing["current_path"] == "."
+    assert "data" in {entry["name"] for entry in root_listing["entries"]}
+    assert ".hidden.csv" not in {entry["name"] for entry in root_listing["entries"]}
+    events = next(entry for entry in data_listing["entries"] if entry["name"] == "events.csv")
+    notes = next(entry for entry in data_listing["entries"] if entry["name"] == "notes.md")
+    assert events["can_scan"] is True
+    assert events["data_kind"] == "csv"
+    assert notes["can_scan"] is False
+    assert save_path["path"] == "outputs/plot.png"
+
+
+def test_workspace_file_browser_rejects_paths_outside_root(tmp_path):
+    sf.workspace.configure(root=tmp_path, name="file browser safety")
+
+    try:
+        sf.workspace.list_files("..")
+    except ValueError as exc:
+        assert "outside the stateframe workspace root" in str(exc)
+    else:
+        raise AssertionError("Expected workspace path escape to fail")

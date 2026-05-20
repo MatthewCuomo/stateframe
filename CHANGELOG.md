@@ -25,6 +25,13 @@ This project follows semantic versioning while the API is stabilizing:
 - Added the workspace web foundation with `sf.workspace.configure(...)`,
   `sf.workspace.list_trees()`, `sf.web()`, per-tree metadata files, editable
   tree names, and stable tree ids.
+- Added workspace-scoped file browsing helpers through `sf.workspace.list_files(...)`,
+  `sf.workspace.file_info(...)`, and `sf.workspace.validate_save_path(...)`,
+  plus initial `sf.web()` file-browser plumbing for scanning workspace data
+  files into saved trees.
+- Added the first pluggable query-source architecture with `sf.sources.register(...)`,
+  `sf.sources.preview(...)`, `sf.sources.list_objects(...)`, `sf.query(...)`,
+  and `sf.help_getdata()` for wiring company data systems into Get Data flows.
 - Added synced viewer state helpers: `current_state()`, `selected_column()`, and
   `filtered_dataframe()`.
 - Expanded the scan architecture with richer recommendation and lens plumbing.

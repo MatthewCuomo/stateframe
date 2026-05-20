@@ -49,7 +49,7 @@
 
 .stateframe-web-controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 160px auto;
+  grid-template-columns: minmax(180px, 1fr) 160px auto auto;
   gap: 8px;
 }
 
@@ -235,6 +235,101 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 9px;
+}
+
+.stateframe-web-files {
+  height: var(--stateframe-web-height);
+  min-height: 0;
+  max-height: var(--stateframe-web-height);
+  overflow: auto;
+  background: #fbfdff;
+}
+
+.stateframe-web-files-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.stateframe-web-files-title {
+  min-width: 0;
+  color: #111827;
+  font-size: 15px;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-files-meta {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.stateframe-web-file-list {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+}
+
+.stateframe-web-file-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 58px;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #94a3b8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 9px;
+  text-align: left;
+}
+
+.stateframe-web-file-item:hover {
+  border-color: #93c5fd;
+}
+
+.stateframe-web-file-item.is-directory {
+  border-left-color: #2563eb;
+}
+
+.stateframe-web-file-item.is-data {
+  border-left-color: #0f766e;
+}
+
+.stateframe-web-file-name {
+  min-width: 0;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-file-meta {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-file-badges,
+.stateframe-web-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .stateframe-web-pill {

@@ -135,3 +135,47 @@ def test_workspace_file_browser_rejects_paths_outside_root(tmp_path):
         assert "outside the stateframe workspace root" in str(exc)
     else:
         raise AssertionError("Expected workspace path escape to fail")
+
+
+def test_workspace_can_delete_branch_subtree_from_saved_tree(tmp_path):
+    sf.workspace.configure(root=tmp_path, name="delete branches")
+    scan = sf.scan(pd.DataFrame({"x": [1, 2, 3], "group": ["a", "b", "b"]}), name="events")
+    branch = scan.record_state(
+        pd.DataFrame({"x": [2, 3], "group": ["b", "b"]}),
+        title="Group B",
+        operation="test.filter",
+    )
+    leaf = scan.record_artifact(
+        title="Branch note",
+        kind="report",
+        parent_id=branch.id,
+        artifact={"kind": "report", "format": "text", "text": "note"},
+    )
+    scan.save_tree()
+
+    result = sf.workspace.delete_tree_entries(scan.tree_id, [branch.id])
+    payload = sf.workspace.load_tree(scan.tree_id)
+    ledger = payload["profile"]["ledger"]
+    entry_ids = {entry["id"] for entry in ledger["entries"]}
+    state_entry_ids = {state["entry_id"] for state in ledger["states"].values()}
+    web_record = sf.workspace.current().resolve_tree(scan.tree_id)
+
+    assert result["deleted_entry_count"] == 2
+    assert branch.id not in entry_ids
+    assert leaf.id not in entry_ids
+    assert branch.id not in state_entry_ids
+    assert ledger["root_entry_id"] in entry_ids
+    assert ledger["active_entry_id"] == ledger["root_entry_id"]
+    assert web_record["entry_count"] == 1
+
+
+def test_workspace_delete_tree_removes_it_from_web_index(tmp_path):
+    sf.workspace.configure(root=tmp_path, name="delete tree")
+    scan = sf.scan(pd.DataFrame({"x": [1]}), name="temporary")
+    tree_path = scan.save_tree().path
+
+    result = sf.workspace.delete_tree(scan.tree_id)
+
+    assert result["deleted"] is True
+    assert sf.workspace.list_trees() == []
+    assert tree_path.exists()

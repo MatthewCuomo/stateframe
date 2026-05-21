@@ -202,13 +202,17 @@ def query(
     store_query: bool = True,
     store_params: bool = True,
     save_tree: bool = False,
+    save_result: bool | None = None,
+    result_name: str | None = None,
     **source_kwargs: Any,
 ):
     """Run a registered data-source query and start a stateframe tree.
 
     Source providers are registered through ``sf.sources.register(...)``. The
-    provider owns credentials and connection logic; stateframe stores only the
-    query lineage needed to identify or replay the root dataset.
+    provider owns credentials and connection logic; stateframe stores query
+    lineage and, when ``save_tree=True``, a Parquet snapshot of the returned
+    root dataframe so saved query trees can be opened later without rerunning
+    the query. Pass ``save_result=False`` to skip the local data snapshot.
     """
 
     from stateframe import save
@@ -246,7 +250,13 @@ def query(
     profile.dataset_name = dataset_name
     profile.tree_name = dataset_name
     save.register_profile(profile)
-    if save_tree:
+    should_save_result = bool(save_tree) if save_result is None else bool(save_result)
+    if should_save_result:
+        profile.save_data(
+            name=result_name or "initial_query_result",
+            also_save_tree=save_tree,
+        )
+    elif save_tree:
         profile.save_tree()
     return profile
 

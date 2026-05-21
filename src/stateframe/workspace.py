@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -214,6 +215,27 @@ def rename_tree(tree: Any, name: str) -> dict[str, Any]:
     """Rename a workspace tree by profile, tree id, or current tree name."""
 
     return current().rename_tree(tree, name)
+
+
+def delete_tree(tree: Any, *, delete_files: bool = False) -> dict[str, Any]:
+    """Remove a tree from the workspace web index.
+
+    By default this removes the tree from the web and leaves saved data/artifact
+    files on disk. Pass ``delete_files=True`` to also remove stateframe-owned
+    tree metadata and data snapshot directories.
+    """
+
+    return current().delete_tree(tree, delete_files=delete_files)
+
+
+def delete_tree_entries(tree: Any, entry_ids: list[str] | tuple[str, ...] | set[str]) -> dict[str, Any]:
+    """Delete branch/leaf entries from a saved tree.
+
+    Deleting a branch also deletes its descendants. The root scan entry cannot
+    be deleted through this helper; delete the whole tree instead.
+    """
+
+    return current().delete_tree_entries(tree, entry_ids)
 
 
 def update_tree_source_path(
@@ -493,6 +515,74 @@ class Workspace:
             tree.tree_name = clean_name
         return updated
 
+    def delete_tree(self, tree: Any, *, delete_files: bool = False) -> dict[str, Any]:
+        """Remove a tree from the workspace web index."""
+
+        self.init()
+        web_payload = self.web()
+        records = list(web_payload.get("trees", []))
+        tree_id = self.tree_id_for_profile(tree) if hasattr(tree, "profile_id") else str(tree)
+        target = None
+        remaining = []
+        for record in records:
+            identifiers = {
+                str(record.get("tree_id")),
+                str(record.get("tree_name")),
+                str(record.get("dataset_name")),
+            }
+            if tree_id in identifiers:
+                target = record
+            else:
+                remaining.append(record)
+        if target is None:
+            raise KeyError(f"Unknown stateframe tree: {tree_id}")
+
+        web_payload["trees"] = sorted(remaining, key=lambda item: item.get("tree_name", ""))
+        web_payload["updated_at"] = _now()
+        web_payload["tree_count"] = len(remaining)
+        self._write_web(web_payload)
+
+        removed_paths: list[str] = []
+        if delete_files:
+            removed_paths = self._delete_tree_owned_files(target)
+
+        return {
+            "tree_id": target.get("tree_id"),
+            "tree_name": target.get("tree_name"),
+            "deleted": True,
+            "delete_files": bool(delete_files),
+            "removed_paths": removed_paths,
+        }
+
+    def delete_tree_entries(
+        self,
+        tree: Any,
+        entry_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> dict[str, Any]:
+        """Delete entries from a saved tree and refresh the web index record."""
+
+        self.init()
+        record = self.resolve_tree(
+            self.tree_id_for_profile(tree) if hasattr(tree, "profile_id") else str(tree)
+        )
+        tree_path = record.get("tree_path")
+        if not tree_path:
+            raise FileNotFoundError(f"No saved tree path is known for {tree!r}.")
+        saved_path = _resolve_under_root(self.root, Path(tree_path))
+        payload = json.loads(saved_path.read_text(encoding="utf-8"))
+        result = _delete_entries_from_tree_payload(payload, [str(entry_id) for entry_id in entry_ids])
+        payload["saved_at"] = _now()
+        saved_path.write_text(
+            json.dumps(payload, indent=2, default=_json_default),
+            encoding="utf-8",
+        )
+        updated_record = self._refresh_record_from_tree_payload(record, payload)
+        return {
+            **result,
+            "tree_id": updated_record.get("tree_id"),
+            "tree_name": updated_record.get("tree_name"),
+        }
+
     def update_tree_source_path(
         self,
         tree: Any,
@@ -688,6 +778,196 @@ class Workspace:
             "updated_at": _now(),
         }
 
+    def _refresh_record_from_tree_payload(
+        self,
+        record: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        web_payload = self.web()
+        records = list(web_payload.get("trees", []))
+        tree_id = str(record.get("tree_id"))
+        ledger = _saved_ledger_payload(payload)
+        states = ledger.get("states") if isinstance(ledger.get("states"), dict) else {}
+        entries = ledger.get("entries") if isinstance(ledger.get("entries"), list) else []
+        updated = {
+            **record,
+            "tree_name": payload.get("tree_name") or record.get("tree_name"),
+            "dataset_name": payload.get("dataset_name") or record.get("dataset_name"),
+            "entry_count": len(entries),
+            "state_count": len(states),
+            "root_entry_id": ledger.get("root_entry_id"),
+            "active_entry_id": ledger.get("active_entry_id"),
+            "updated_at": _now(),
+        }
+        replaced = False
+        for index, item in enumerate(records):
+            if str(item.get("tree_id")) == tree_id:
+                records[index] = updated
+                replaced = True
+                break
+        if not replaced:
+            records.append(updated)
+        web_payload["trees"] = sorted(records, key=lambda item: item.get("tree_name", ""))
+        web_payload["updated_at"] = _now()
+        web_payload["tree_count"] = len(records)
+        self._write_web(web_payload)
+        return updated
+
+    def _delete_tree_owned_files(self, record: dict[str, Any]) -> list[str]:
+        removed: list[str] = []
+        tree_path = record.get("tree_path")
+        if tree_path:
+            path = _resolve_under_root(self.root, Path(tree_path))
+            if _is_relative_to(path, self.trees_dir) and path.exists():
+                parent = path.parent
+                if path.is_file():
+                    path.unlink()
+                    removed.append(_display_path(self.root, path))
+                if parent.exists() and _is_relative_to(parent, self.trees_dir):
+                    shutil.rmtree(parent)
+                    removed.append(_display_path(self.root, parent))
+        data_dir = record.get("data_dir")
+        if data_dir:
+            path = _resolve_under_root(self.root, Path(data_dir))
+            if _is_relative_to(path, self.data_dir) and path.exists():
+                shutil.rmtree(path)
+                removed.append(_display_path(self.root, path))
+        return removed
+
+
+def _delete_entries_from_tree_payload(payload: dict[str, Any], entry_ids: list[str]) -> dict[str, Any]:
+    targets = {str(entry_id) for entry_id in entry_ids if str(entry_id).strip()}
+    if not targets:
+        raise ValueError("No tree entries were selected for deletion.")
+
+    ledgers = _ledger_payloads(payload)
+    if not ledgers:
+        raise ValueError("Saved tree has no ledger entries.")
+
+    deleted: set[str] = set()
+    active_entry_id: str | None = None
+    for ledger in ledgers:
+        result = _delete_entries_from_ledger(ledger, targets)
+        deleted.update(result["deleted_entry_ids"])
+        active_entry_id = result["active_entry_id"] or active_entry_id
+
+    if not deleted:
+        missing = ", ".join(sorted(targets))
+        raise KeyError(f"Unknown tree entries: {missing}")
+
+    return {
+        "deleted_entry_ids": sorted(deleted),
+        "deleted_entry_count": len(deleted),
+        "active_entry_id": active_entry_id,
+    }
+
+
+def _delete_entries_from_ledger(ledger: dict[str, Any], targets: set[str]) -> dict[str, Any]:
+    entries = [entry for entry in ledger.get("entries", []) or [] if isinstance(entry, dict)]
+    by_id = {str(entry.get("id")): entry for entry in entries if entry.get("id")}
+    matched = targets.intersection(by_id)
+    if not matched:
+        return {"deleted_entry_ids": set(), "active_entry_id": ledger.get("active_entry_id")}
+
+    root_id = str(ledger.get("root_entry_id") or entries[0].get("id") if entries else "")
+    if root_id in matched:
+        raise ValueError("The root scan entry cannot be deleted. Delete the whole tree instead.")
+
+    children: dict[str, list[str]] = {}
+    for entry in entries:
+        parent_id = entry.get("parent_id")
+        if parent_id:
+            children.setdefault(str(parent_id), []).append(str(entry.get("id")))
+
+    deleted = set(matched)
+    stack = list(matched)
+    while stack:
+        current = stack.pop()
+        for child_id in children.get(current, []):
+            if child_id not in deleted:
+                deleted.add(child_id)
+                stack.append(child_id)
+
+    remaining_entries = [entry for entry in entries if str(entry.get("id")) not in deleted]
+    remaining_ids = {str(entry.get("id")) for entry in remaining_entries if entry.get("id")}
+    states = ledger.get("states") if isinstance(ledger.get("states"), dict) else {}
+    remaining_states = {
+        state_id: state
+        for state_id, state in states.items()
+        if not (isinstance(state, dict) and str(state.get("entry_id")) in deleted)
+    }
+
+    active = str(ledger.get("active_entry_id") or "") or None
+    if active in deleted or active not in remaining_ids:
+        active = _nearest_surviving_parent(active, by_id, deleted, remaining_ids) or root_id
+    if active not in remaining_ids:
+        active = next(iter(remaining_ids), None)
+
+    ledger["entries"] = remaining_entries
+    ledger["states"] = remaining_states
+    ledger["active_entry_id"] = active
+    ledger["root_entry_id"] = root_id if root_id in remaining_ids else active
+    ledger["tree"] = _entry_tree(remaining_entries)
+    return {"deleted_entry_ids": deleted, "active_entry_id": active}
+
+
+def _nearest_surviving_parent(
+    entry_id: str | None,
+    by_id: dict[str, dict[str, Any]],
+    deleted: set[str],
+    remaining_ids: set[str],
+) -> str | None:
+    current = str(entry_id or "")
+    seen: set[str] = set()
+    while current and current in by_id and current not in seen:
+        seen.add(current)
+        parent_id = by_id[current].get("parent_id")
+        if not parent_id:
+            return None
+        parent = str(parent_id)
+        if parent in remaining_ids and parent not in deleted:
+            return parent
+        current = parent
+    return None
+
+
+def _entry_tree(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_parent: dict[str | None, list[dict[str, Any]]] = {}
+    entry_ids = {str(entry.get("id")) for entry in entries if entry.get("id")}
+    for entry in entries:
+        parent_id = entry.get("parent_id")
+        parent = str(parent_id) if parent_id and str(parent_id) in entry_ids else None
+        by_parent.setdefault(parent, []).append(entry)
+
+    def build(parent_id: str | None) -> list[dict[str, Any]]:
+        nodes = []
+        for entry in by_parent.get(parent_id, []):
+            nodes.append({**entry, "children": build(str(entry.get("id")))})
+        return nodes
+
+    return build(None)
+
+
+def _ledger_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    ledgers: list[dict[str, Any]] = []
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    ledger = profile.get("ledger") if isinstance(profile.get("ledger"), dict) else None
+    if ledger is not None:
+        ledgers.append(ledger)
+    profiles = payload.get("profiles") if isinstance(payload.get("profiles"), list) else []
+    for profile_payload in profiles:
+        if not isinstance(profile_payload, dict):
+            continue
+        ledger = profile_payload.get("ledger") if isinstance(profile_payload.get("ledger"), dict) else None
+        if ledger is not None and all(id(ledger) != id(item) for item in ledgers):
+            ledgers.append(ledger)
+    return ledgers
+
+
+def _saved_ledger_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ledgers = _ledger_payloads(payload)
+    return ledgers[0] if ledgers else {"entries": [], "states": {}, "root_entry_id": None, "active_entry_id": None}
+
 
 def source_fingerprint(profile: Any) -> str:
     explicit = getattr(profile, "source_fingerprint", None) or getattr(
@@ -784,6 +1064,14 @@ def _display_path(root: Path, path: Path) -> str:
         return str(resolved.relative_to(root))
     except ValueError:
         return str(resolved)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _slug(value: Any) -> str:

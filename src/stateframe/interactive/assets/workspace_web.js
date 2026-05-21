@@ -228,7 +228,7 @@ function render({ model, el, signal }) {
     const body = document.createElement("div");
     body.className = "stateframe-web-body";
     body.style.setProperty("--stateframe-web-left-width", `${state.panelWidths.webLeft}px`);
-    body.appendChild(renderTreeList(trees, selected, setState));
+    body.appendChild(renderTreeList(trees, selected, state, setState));
     body.appendChild(horizontalPanelResizer({
       className: "stateframe-web-panel-resizer",
       label: "Resize tree browser panels",
@@ -257,6 +257,12 @@ function normalizeState(raw, payload) {
   const selectedEntry = entryIds.has(raw?.selectedEntryId)
     ? raw.selectedEntryId
     : defaultEntryId(selectedTree);
+  const deleteTreeIds = Array.isArray(raw?.deleteTreeIds)
+    ? raw.deleteTreeIds.filter((id) => ids.has(id))
+    : [];
+  const deleteEntryIds = Array.isArray(raw?.deleteEntryIds)
+    ? raw.deleteEntryIds.filter((id) => entryIds.has(id) && id !== (selectedTree?.tree_detail?.root_entry_id || selectedTree?.root_entry_id))
+    : [];
   const sorts = new Set(["updated", "name", "entries", "states"]);
   const modes = new Set(["web", "viewer", "visualizer", "get_data", "files", "leaf"]);
   const tabs = new Set(["files", "query", "connections"]);
@@ -278,6 +284,9 @@ function normalizeState(raw, payload) {
       webLeft: clampNumber(raw?.panelWidths?.webLeft, 340, 260, 720),
     },
     saveMode: Boolean(raw?.saveMode),
+    deleteMode: Boolean(raw?.deleteMode),
+    deleteTreeIds,
+    deleteEntryIds,
     search: raw?.search || "",
     sort: sorts.has(raw?.sort) ? raw.sort : "updated",
   };
@@ -423,7 +432,7 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
       ? statusText(commandStatus) || "Build Plotly visuals from tracked dataframe states"
       : state.viewMode === "get_data" || state.viewMode === "files"
         ? statusText(commandStatus) || `${workspaceName} / ${files.current_path || "."}`
-        : `${workspaceName} / ${payload.settings?.root || ""}`;
+        : statusText(commandStatus) || `${workspaceName} / ${payload.settings?.root || ""}`;
   titleGroup.append(title, subtitle);
 
   const controls = document.createElement("div");
@@ -471,6 +480,8 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
       button("Refresh", () => sendCommand("browse_files", { path: files.current_path || "." })),
     );
   } else {
+    const canDelete = payload.view?.launch_mode !== "single_profile";
+    const deleteCount = deleteSelectionCount(state);
     const search = document.createElement("input");
     search.className = "stateframe-web-input";
     search.type = "search";
@@ -504,17 +515,41 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
     controls.append(
       search,
       sort,
-      button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
-      button("Visualizer", () => {
-        setState({ viewMode: "visualizer" });
-        sendCommand("open_visualizer", { height: payload.view?.height || 640, maxRows: 500 });
-      }),
-      button("Get Data", () => {
-        setState({ viewMode: "get_data", getDataTab: "files" });
-        sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" });
-      }),
-      button("Refresh", () => sendCommand("refresh")),
     );
+    if (state.deleteMode) {
+      const deleteButton = button(`Delete ${deleteCount || ""}`.trim(), () => {
+        if (!deleteCount) return;
+        const summary = deleteSelectionLabel(state);
+        if (!window.confirm(`Delete ${summary}? This removes the selected items from the workspace web. Saved data/artifact files stay on disk.`)) {
+          return;
+        }
+        sendCommand("delete_selected", {
+          treeId: state.selectedTreeId,
+          treeIds: state.deleteTreeIds || [],
+          entryIds: state.deleteEntryIds || [],
+        });
+      });
+      deleteButton.disabled = !deleteCount || (commandStatus?.status === "loading" && commandStatus?.action === "delete_selected");
+      deleteButton.classList.add("is-danger");
+      controls.append(
+        deleteButton,
+        button("Cancel Delete", () => setState({ deleteMode: false, deleteTreeIds: [], deleteEntryIds: [] })),
+      );
+    } else {
+      controls.append(
+        button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
+        button("Visualizer", () => {
+          setState({ viewMode: "visualizer" });
+          sendCommand("open_visualizer", { height: payload.view?.height || 640, maxRows: 500 });
+        }),
+        button("Get Data", () => {
+          setState({ viewMode: "get_data", getDataTab: "files" });
+          sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" });
+        }),
+      );
+      if (canDelete) controls.append(button("Delete Mode", () => setState({ deleteMode: true, deleteTreeIds: [], deleteEntryIds: [] })));
+      controls.append(button("Refresh", () => sendCommand("refresh")));
+    }
   }
 
   toolbar.append(titleGroup, controls);
@@ -551,7 +586,7 @@ function statCard(label, value) {
   return card;
 }
 
-function renderTreeList(trees, selected, setState) {
+function renderTreeList(trees, selected, state, setState) {
   const panel = document.createElement("section");
   panel.className = "stateframe-web-panel";
   panel.dataset.scrollKey = "web-tree-list";
@@ -572,10 +607,18 @@ function renderTreeList(trees, selected, setState) {
     item.type = "button";
     item.className = "stateframe-web-tree-item";
     if (tree.tree_id === selected?.tree_id) item.classList.add("is-selected");
-    item.addEventListener("click", () => setState({
-      selectedTreeId: tree.tree_id,
-      selectedEntryId: defaultEntryId(tree),
-    }));
+    if ((state.deleteTreeIds || []).includes(tree.tree_id)) item.classList.add("is-delete-selected");
+    item.addEventListener("click", () => {
+      if (state.deleteMode) {
+        setState({ deleteTreeIds: toggleArrayValue(state.deleteTreeIds || [], tree.tree_id) });
+      } else {
+        setState({
+          selectedTreeId: tree.tree_id,
+          selectedEntryId: defaultEntryId(tree),
+          deleteEntryIds: [],
+        });
+      }
+    });
 
     const title = document.createElement("div");
     title.className = "stateframe-web-tree-title";
@@ -591,6 +634,12 @@ function renderTreeList(trees, selected, setState) {
     );
     const snapshotCount = tree.tree_detail?.stats?.snapshot_count || tree.data_snapshots?.length || 0;
     if (snapshotCount) footer.append(pill(`${formatInt(snapshotCount)} snapshots`));
+    if (state.deleteMode) {
+      const marker = document.createElement("span");
+      marker.className = "stateframe-web-delete-marker";
+      marker.textContent = (state.deleteTreeIds || []).includes(tree.tree_id) ? "Selected for delete" : "Select tree";
+      footer.append(marker);
+    }
     item.append(title, meta, footer);
     list.appendChild(item);
   }
@@ -1026,6 +1075,12 @@ function renderDetail(payload, tree, selectedEntry, state, setState, openSelecte
     panel.appendChild(warning);
   }
 
+  if (state.deleteMode) {
+    const notice = document.createElement("div");
+    notice.className = "stateframe-web-delete-notice";
+    notice.textContent = "Delete mode: select trees on the left, or select branches and leaves below. Deleting a branch removes its descendants from the tree.";
+    panel.appendChild(notice);
+  }
   panel.appendChild(section("Tree Entries", renderEntries(tree, selectedEntry, state, setState)));
   if (selectedEntry) {
     panel.appendChild(section("Selected State", renderEntryDetail(tree, selectedEntry, openSelectedViewer, openSelectedVisualizer, setState)));
@@ -1100,13 +1155,32 @@ function renderEntries(tree, selectedEntry, state, setState) {
     item.className = "stateframe-web-entry-item";
     item.classList.add(...entryKindClasses(entry, "stateframe-web"));
     if (entry.id === selectedEntry?.id) item.classList.add("is-selected");
+    if ((state.deleteEntryIds || []).includes(entry.id)) item.classList.add("is-delete-selected");
     if (entry.is_active) item.classList.add("is-active");
     if (pathIds.has(entry.id) && entry.id !== selectedEntry?.id) item.classList.add("is-in-path");
     if (isCollapsed) item.classList.add("is-collapsed");
-    item.addEventListener("click", () => setState({ selectedEntryId: entry.id }));
+    item.addEventListener("click", () => {
+      if (state.deleteMode) {
+        const rootId = tree.tree_detail?.root_entry_id || tree.root_entry_id;
+        if (entry.id === rootId) return;
+        setState({ deleteEntryIds: toggleArrayValue(state.deleteEntryIds || [], entry.id) });
+      } else {
+        setState({ selectedEntryId: entry.id });
+      }
+    });
 
     const top = document.createElement("div");
     top.className = "stateframe-web-entry-top";
+    if (state.deleteMode) {
+      const rootId = tree.tree_detail?.root_entry_id || tree.root_entry_id;
+      const marker = document.createElement("span");
+      marker.className = "stateframe-web-entry-delete-marker";
+      marker.textContent = entry.id === rootId
+        ? "\u2212"
+        : ((state.deleteEntryIds || []).includes(entry.id) ? "\u2713" : "");
+      marker.title = entry.id === rootId ? "Delete the whole tree to remove the root scan." : "Select for delete";
+      top.append(marker);
+    }
     top.append(kindBadge(entry.kind), textSpan(entry.title || entry.operation || entry.id, "stateframe-web-entry-title"));
     const meta = document.createElement("div");
     meta.className = "stateframe-web-entry-meta";
@@ -1121,6 +1195,10 @@ function renderEntries(tree, selectedEntry, state, setState) {
     if (isCollapsed) footer.append(pill(`${formatInt(descendantCount(entry.id, hierarchy.byParent))} hidden`));
     if (entry.is_active) footer.append(pill("active"));
     if (entry.note) footer.append(pill("note"));
+    if (state.deleteMode && (state.deleteEntryIds || []).includes(entry.id)) {
+      const descendantTotal = descendantCount(entry.id, hierarchy.byParent);
+      footer.append(pill(descendantTotal ? `deletes ${formatInt(descendantTotal)} descendants` : "delete selected"));
+    }
     item.append(top, meta);
     if (thumbnail) item.append(thumbnail);
     item.append(footer);
@@ -3271,6 +3349,26 @@ function markDescendantsVisited(entryId, byParent, visited) {
     visited.add(entry.id);
     stack.push(...(byParent.get(entry.id) || []));
   }
+}
+
+function toggleArrayValue(values, value) {
+  const set = new Set(values || []);
+  if (set.has(value)) set.delete(value);
+  else set.add(value);
+  return Array.from(set);
+}
+
+function deleteSelectionCount(state) {
+  return (state.deleteTreeIds || []).length + (state.deleteEntryIds || []).length;
+}
+
+function deleteSelectionLabel(state) {
+  const treeCount = (state.deleteTreeIds || []).length;
+  const entryCount = (state.deleteEntryIds || []).length;
+  const parts = [];
+  if (treeCount) parts.push(`${formatInt(treeCount)} tree${treeCount === 1 ? "" : "s"}`);
+  if (entryCount) parts.push(`${formatInt(entryCount)} branch/leaf item${entryCount === 1 ? "" : "s"}`);
+  return parts.join(" and ") || "selected items";
 }
 
 function toggleEntryCollapse(entryId, state, setState) {

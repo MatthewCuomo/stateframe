@@ -28,8 +28,9 @@ def test_help_getdata_explains_custom_query_sources():
     assert "sf.query" in guide
     assert "company_query_source.py:register" in guide
     assert "Adapt your existing data entry point" in guide
-    assert "does not stream partial rows" in guide
+    assert "does not stream partial rows" in guide.replace("\n", " ")
     assert "store_query=False" in guide
+    assert "save_result=False" in guide
 
 
 def test_help_namespace_supports_get_data():

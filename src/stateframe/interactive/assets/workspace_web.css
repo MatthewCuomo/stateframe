@@ -161,6 +161,17 @@
   color: #1d4ed8;
 }
 
+.stateframe-web-button.is-danger {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b91c1c;
+}
+
+.stateframe-web-button.is-danger:hover {
+  border-color: #ef4444;
+  color: #991b1b;
+}
+
 .stateframe-web-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -738,6 +749,13 @@
   background: #eff6ff;
 }
 
+.stateframe-web-tree-item.is-delete-selected,
+.stateframe-web-entry-item.is-delete-selected {
+  border-color: #ef4444;
+  border-left-color: #dc2626;
+  background: #fff1f2;
+}
+
 .stateframe-web-entry-item.is-active:not(.is-selected) {
   background: #f0fdfa;
 }
@@ -774,6 +792,37 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
+}
+
+.stateframe-web-delete-notice {
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fff7f7;
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 9px;
+}
+
+.stateframe-web-delete-marker,
+.stateframe-web-entry-delete-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #fca5a5;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.stateframe-web-delete-marker {
+  width: auto;
+  padding: 0 6px;
 }
 
 .stateframe-web-kind {

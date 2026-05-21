@@ -135,7 +135,7 @@ __all__ = [
     "workspace",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 def load_ipython_extension(ipython):

@@ -175,9 +175,10 @@ In the widget:
             -> Run Query
 
 Stateframe sends the query text and params to your provider, waits for it to
-return, converts the result into a DataFrame, scans it, saves a tree, refreshes
-the web, and selects the new tree. The current UI shows run status while the
-provider executes; it does not stream partial rows before the provider returns.
+return, converts the result into a DataFrame, scans it, saves a Parquet snapshot
+for the root query result, saves a tree, refreshes the web, and selects the new
+tree. The current UI shows run status while the provider executes; it does not
+stream partial rows before the provider returns.
 
 
 5. Query it into a scan tree from Python
@@ -199,7 +200,9 @@ provider executes; it does not stream partial rows before the provider returns.
 
 Connection storage defaults are reflected in the UI checkboxes. For direct
 sf.query(...) calls, pass store_query=False or store_params=False explicitly
-when the query text or params are sensitive.
+when the query text or params are sensitive. Saved query trees also materialize
+the returned dataframe as Parquet by default so the viewer can reopen it later;
+pass save_result=False when you want metadata only.
 
 
 6. Quick one-cell function registration is still supported
@@ -260,9 +263,11 @@ keyring, notebook session, or company SDK.
 
 Stateframe stores source id, optional query text, optional params, param names,
 execution time, provider class, row/column counts, provider metadata, and a
-query fingerprint so the dataset root can be audited later.
+query fingerprint so the dataset root can be audited later. When save_tree=True,
+it also saves the returned dataframe as a root Parquet snapshot unless
+save_result=False is passed.
 
-Use these flags when query text or params are sensitive:
+Use these flags when query text, params, or returned rows are sensitive:
 
    scan = sf.query(
        "warehouse",
@@ -270,6 +275,7 @@ Use these flags when query text or params are sensitive:
        params=sensitive_params,
        store_query=False,
        store_params=False,
+       save_result=False,
    )
 
 

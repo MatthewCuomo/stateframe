@@ -36,6 +36,42 @@ def test_function_data_source_query_starts_saved_tree(tmp_path):
     assert scan.source["params"] == {"start": "2025-01-01"}
     assert scan.target_profile is not None
     assert any(tree["tree_name"] == "customers_2025" for tree in sf.workspace.list_trees())
+    tree_payload = sf.workspace.current().load_tree(scan.tree_id)
+    root_entry = tree_payload["profile"]["ledger"]["entries"][0]
+    snapshots = [
+        artifact
+        for artifact in root_entry["artifacts"]
+        if artifact["kind"] == "data_snapshot" and artifact["format"] == "parquet"
+    ]
+    assert snapshots
+    snapshot_path = sf.workspace.current().resolve_path(snapshots[0]["path"])
+    assert snapshot_path.exists()
+    pulled = sf.pull(root_entry["id"], tree=scan.tree_id)
+    assert list(pulled["customer_id"]) == [1, 2]
+
+    sf.sources.clear()
+
+
+def test_query_saved_tree_can_skip_result_snapshot(tmp_path):
+    sf.sources.clear()
+    sf.workspace.configure(root=tmp_path, name="query without snapshot")
+
+    sf.sources.register(
+        "warehouse",
+        lambda query, params=None, **_kwargs: pd.DataFrame({"x": [1, 2]}),
+    )
+    scan = sf.query(
+        "warehouse",
+        "select * from customers",
+        name="customers",
+        save_tree=True,
+        save_result=False,
+    )
+
+    tree_payload = sf.workspace.current().load_tree(scan.tree_id)
+    root_entry = tree_payload["profile"]["ledger"]["entries"][0]
+
+    assert root_entry["artifacts"] == []
 
     sf.sources.clear()
 

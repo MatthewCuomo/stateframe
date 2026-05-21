@@ -8,6 +8,21 @@ This project follows semantic versioning while the API is stabilizing:
 - Minor releases add features or improve diagnostics.
 - Major releases are reserved for breaking API changes after `1.0.0`.
 
+## 0.2.2 - 2026-05-21
+
+- Fixed saved query trees so `sf.query(..., save_tree=True)` and web **Get Data
+  -> Query Data** runs materialize the returned root dataframe as a Parquet
+  snapshot. Query-created trees can now reopen in the viewer and be pulled later
+  without rerunning the source query.
+- Added `save_result=False` and `result_name=...` to `sf.query(...)` for users
+  who want query lineage saved without a local copy of sensitive returned rows.
+- Added safe workspace cleanup helpers with `sf.workspace.delete_tree(...)` and
+  `sf.workspace.delete_tree_entries(...)`. Tree deletes remove the tree from the
+  workspace web index by default while leaving saved files on disk; branch/leaf
+  deletes remove the selected subtree from the saved tree metadata.
+- Added a web delete mode for selecting trees, branches, and leaves to remove
+  from the workspace web.
+
 ## 0.2.1 - 2026-05-21
 
 - Added workspace-scoped file browsing helpers through `sf.workspace.list_files(...)`,

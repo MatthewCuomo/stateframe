@@ -339,6 +339,18 @@ entry/state inside that tree. The web is the main one-stop UI: open the
 selected state in the embedded viewer, filter/sort/reorder/offload columns,
 then click **Save Branch** to add a new child state to the tree.
 
+To clean up the workspace web, use **Delete Mode** in the widget. Select trees
+from the tree list or branches/leaves from the selected tree, then confirm the
+delete action. Branch deletes remove the selected branch and its descendants
+from the saved tree metadata; tree deletes remove the tree from the web index
+by default while leaving saved data/artifact files on disk. The same cleanup is
+available from Python:
+
+```python
+sf.workspace.delete_tree("Florida Real Estate")
+sf.workspace.delete_tree_entries("Florida Real Estate", ["state-entry_abc123"])
+```
+
 The workspace also exposes a scoped file browser for dataset selection and
 future save-as flows:
 
@@ -386,7 +398,10 @@ scan = sf.query(
 ```
 
 Inside the widget, use **Get Data -> Query Data** to choose the source, name the
-returned dataset, paste SQL, and run it into a saved tree. Use
+returned dataset, paste SQL, and run it into a saved tree. Saved query trees
+materialize the returned root dataframe as Parquet so the viewer and `sf.pull()`
+can reopen it later without rerunning the query. Pass `save_result=False` to
+`sf.query(...)` when you want query metadata without a local data snapshot. Use
 `sf.help.get_data()` or `sf.help_getdata()` for the full provider adapter
 contract, UI flow, custom source classes, previews, object browsing, and
 sensitive query metadata controls.

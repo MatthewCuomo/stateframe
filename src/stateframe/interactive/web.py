@@ -1132,6 +1132,52 @@ if anywidget is not None and traitlets is not None:
             }
             return dict(updated)
 
+        def delete_selected_items(
+            self,
+            *,
+            tree_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+            entry_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+            tree_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Delete selected workspace trees and branch/leaf entries."""
+
+            if self._single_profile is not None:
+                raise ValueError("Delete mode is only available for saved workspace trees.")
+
+            selected_tree = tree_id or self.selected_tree_id()
+            trees = [str(item) for item in (tree_ids or []) if str(item or "").strip()]
+            entries = [str(item) for item in (entry_ids or []) if str(item or "").strip()]
+            if not trees and not entries:
+                raise ValueError("No trees or entries were selected for deletion.")
+
+            deleted_trees = []
+            deleted_entries: dict[str, Any] | None = None
+            for target_tree in trees:
+                deleted_trees.append(self._workspace.delete_tree(target_tree, delete_files=False))
+
+            if entries and selected_tree and selected_tree not in set(trees):
+                deleted_entries = self._workspace.delete_tree_entries(selected_tree, entries)
+
+            self.refresh()
+            remaining_trees = self.payload.get("trees", []) or []
+            next_tree = (
+                selected_tree
+                if selected_tree and any(tree.get("tree_id") == selected_tree for tree in remaining_trees)
+                else (remaining_trees[0].get("tree_id") if remaining_trees else None)
+            )
+            self.state = {
+                **initial_web_state(self.payload, selected_tree_id=next_tree),
+                "deleteMode": False,
+                "deleteTreeIds": [],
+                "deleteEntryIds": [],
+            }
+            return {
+                "deleted_trees": deleted_trees,
+                "deleted_tree_count": len(deleted_trees),
+                "deleted_entries": deleted_entries,
+                "deleted_entry_count": int((deleted_entries or {}).get("deleted_entry_count") or 0),
+            }
+
         def refresh(self) -> None:
             """Reload the active web payload."""
 
@@ -1265,6 +1311,32 @@ if anywidget is not None and traitlets is not None:
                         "status": "ready",
                         "action": action,
                         "message": f"Deleted connection {source_id}",
+                    }
+                elif action == "delete_selected":
+                    self.command_status = {
+                        "status": "loading",
+                        "action": action,
+                        "message": "Deleting selected items",
+                    }
+                    result = self.delete_selected_items(
+                        tree_ids=(
+                            request.get("treeIds")
+                            if isinstance(request.get("treeIds"), list)
+                            else []
+                        ),
+                        entry_ids=(
+                            request.get("entryIds")
+                            if isinstance(request.get("entryIds"), list)
+                            else []
+                        ),
+                        tree_id=request.get("treeId") or request.get("selectedTreeId") or None,
+                    )
+                    total = int(result.get("deleted_tree_count") or 0) + int(result.get("deleted_entry_count") or 0)
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Deleted {total} item{'' if total == 1 else 's'}",
+                        **result,
                     }
                 elif action == "refresh_sources":
                     imports = self.refresh_sources()
@@ -1616,6 +1688,9 @@ def initial_web_state(
             "webLeft": 340,
         },
         "saveMode": False,
+        "deleteMode": False,
+        "deleteTreeIds": [],
+        "deleteEntryIds": [],
         "search": "",
         "sort": "updated",
     }

@@ -320,6 +320,16 @@ class LensLedger:
                 return updated
         raise KeyError(entry_id)
 
+    def update_entry_note(self, entry_id: str, note: str) -> LedgerEntry:
+        """Replace the saved note for an existing ledger entry."""
+
+        for index, entry in enumerate(self.entries):
+            if entry.id == entry_id:
+                updated = replace(entry, note=str(note or ""))
+                self.entries[index] = updated
+                return updated
+        raise KeyError(entry_id)
+
     def attach_state_artifact(
         self,
         entry_or_state_id: str,

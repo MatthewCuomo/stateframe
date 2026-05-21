@@ -88,10 +88,12 @@ You can also run the highest-ranked low/medium-cost recommendations:
 scan.run_top_recommendations(n=5, max_cost="medium")
 ```
 
-## Interactive DataFrame Explorer
+## Interactive Web UI
 
-The interactive dataframe explorer ships with the base install. Use it directly
-in VS Code, JupyterLab, or a notebook frontend that supports widgets:
+The interactive UI ships with the base install. Stateframe is web-first:
+`sf.web()` opens the full workspace, while `sf.view(...)` and
+`scan.tree_view(...)` are focused launches into the same web UI. Use it directly
+in VS Code, JupyterLab, or any notebook frontend that supports widgets:
 
 ```powershell
 pip install stateframe
@@ -99,7 +101,7 @@ pip install stateframe
 
 Then open a sortable, filterable, searchable dataframe viewer with column
 reordering, hide/show controls, CSV export, and a stateframe-powered column
-inspector:
+inspector. These calls open the shared web UI directly in viewer mode:
 
 ```python
 viewer = sf.view(df, target="churn")
@@ -108,8 +110,8 @@ scan = sf.scan(df, target="churn")
 scan.view()
 ```
 
-Open the analysis tree as its own notebook widget to inspect the ledger,
-state checkpoints, active path, and next options from each step:
+Open the same web UI focused on one analysis tree to inspect the ledger,
+state checkpoints, active path, plot leaves, and next options from each step:
 
 ```python
 tree = scan.tree_view(height=720)
@@ -175,6 +177,67 @@ result = tree.run_recommendation(1)
 
 tree.refresh()
 ```
+
+The embedded workspace viewer also distinguishes saved data branches from plot
+leaves. When a selected state is open in `sf.web()`, the top bar shows the saved
+lineage plus the current unsaved viewer draft. Use the inspector's **Visualize**
+section to save a first-click column plot as a leaf under the selected data
+state. Plot leaves store the plot spec, viewer draft summary, replay code, and a
+PNG preview artifact.
+
+The larger Plotly visual builder is available from the workspace web and from an
+opened dataframe state. Select a state and click **Visualizer** to open a
+dashboard-style builder with a plot library, field wells, column browser,
+filters, grouped/collapsible options, render previews, and **Save Leaf**:
+
+```python
+web = sf.web(height=720)
+web.open_visualizer()
+
+spec = {
+    "kind": "bar",
+    "title": "Segment sales",
+    "fields": {"x": "segment", "y": "amount", "color": "segment"},
+    "options": {"aggregation": "sum"},
+    "filters": [{"column": "amount", "op": "greater_equal", "value": "100"}],
+}
+
+preview_artifact = web.render_visualizer(spec)
+saved_leaf = web.render_visualizer(spec, save=True, note="## Readout\nSegment mix.")
+```
+
+Visual leaves store the declarative spec, Plotly HTML/JSON artifact, source
+state, filters, options, notes, and replay code.
+
+### Code leaves
+
+Use code leaves to track arbitrary notebook analysis under a branch without
+turning it into a dataframe branch:
+
+```python
+with sf.leaf(scan, parent="Jupiter", name="Jupiter price notes", save=True) as leaf:
+    df = leaf.df
+    print("Jupiter price distribution")
+    output = df[["price"]].describe()
+```
+
+In Jupyter/IPython, load the extension once and capture a whole cell:
+
+```python
+%load_ext stateframe
+```
+
+```python
+%%sf_leaf --source scan --parent Jupiter --name "Jupiter price plot" --save
+fig = px.histogram(df, x="price")
+fig.show()
+print("Jupiter price distribution")
+```
+
+The cell magic injects `df` from the selected parent branch when possible. Code
+leaves capture terminal output, dataframe previews, matplotlib images, and
+Plotly payloads. With `--save` or `sf.save_mode(True)`, durable output files are
+stored under `stateframe_saves/` at the workspace root.
 
 ## Saving Trees And Data
 
@@ -290,14 +353,28 @@ Inside `sf.web()`, use **Get Data** to browse under the configured workspace
 root and scan a supported data file into a saved tree. The browser is lazy and
 workspace-scoped, so UI file operations stay inside the project root.
 
-For company warehouses, APIs, lakehouses, or custom query systems, register a
-query source and start a tree from the returned DataFrame:
+For company warehouses, APIs, lakehouses, or custom query systems, save a
+connection profile that points to your repo-local Python wiring file. The
+connection stores the import path, not credentials, and `sf.web()`/`sf.query()`
+auto-import it later:
 
 ```python
+# company_query_source.py
 def run_company_query(query, params=None, **kwargs):
     return pd.read_sql(query, company_connection, params=params)
 
-sf.sources.register("warehouse", run_company_query, display_name="Company warehouse")
+def register():
+    return sf.sources.register(
+        "warehouse",
+        run_company_query,
+        display_name="Company warehouse",
+    )
+
+sf.sources.save_connection(
+    "warehouse",
+    "company_query_source.py:register",
+    display_name="Company warehouse",
+)
 
 scan = sf.query(
     "warehouse",
@@ -308,8 +385,11 @@ scan = sf.query(
 )
 ```
 
-Use `sf.help_getdata()` for the full provider template, including custom source
-classes, previews, object browsing, and sensitive query metadata controls.
+Inside the widget, use **Get Data -> Query Data** to choose the source, name the
+returned dataset, paste SQL, and run it into a saved tree. Use
+`sf.help.get_data()` or `sf.help_getdata()` for the full provider adapter
+contract, UI flow, custom source classes, previews, object browsing, and
+sensitive query metadata controls.
 
 When you want the selected state as a notebook variable:
 
@@ -324,7 +404,23 @@ branch = web.pull()
 snapshot exists, it reloads the tree's base source path and replays the saved
 viewer operations along the selected path.
 
-The older separate viewer escape hatch remains available:
+For the simplest notebook handoff, use `sf.pull(...)`:
+
+```python
+# Pull whatever state or output leaf is selected in the active UI.
+thing = sf.pull()
+
+# Pull a stable branch or leaf by its copied id.
+thing = sf.pull("state-entry_abc123")
+plot = sf.pull("plot_abc123")
+```
+
+Dataframe states return pandas DataFrames. Output leaves return a renderable
+object, so a plot leaf displays in the notebook cell when `sf.pull("plot_...")`
+is the final expression. The web UI surfaces the full pull code beside each
+entry and leaf, with a copy button.
+
+You can also open the same web-backed viewer focused on the selected state:
 
 ```python
 branch_viewer = web.view_selected(height=720)

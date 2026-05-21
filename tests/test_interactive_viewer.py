@@ -5,6 +5,7 @@ import stateframe as sf
 from stateframe.interactive.serialize import (
     apply_view_state,
     build_viewer_payload,
+    summarize_draft_state,
     summarize_view_state,
     view_state_signature,
 )
@@ -105,6 +106,45 @@ def test_view_state_summary_uses_column_names_for_ledger_metadata():
     assert summary["filters"] == {"team": {"kind": "text", "mode": "equals", "value": "red"}}
     assert summary["selected_column"] == "score"
     assert "team" in signature
+
+
+def test_draft_summary_surfaces_unsaved_viewer_changes():
+    df = pd.DataFrame({"name": ["Ada", "Grace"], "team": ["red", "blue"]})
+    profile = sf.scan(df)
+    payload = build_viewer_payload(profile)
+    ids = {column["display_name"]: column["id"] for column in payload["columns"]}
+    state = {
+        "columnOrder": [ids["team"], ids["name"]],
+        "hiddenColumnIds": [ids["team"]],
+        "sorts": [{"id": ids["name"], "direction": "asc"}],
+        "filters": {ids["team"]: {"kind": "text", "mode": "equals", "value": "red"}},
+        "globalSearch": "ada",
+        "selectedColumnId": ids["name"],
+        "showIndex": True,
+        "widths": {},
+    }
+
+    summary = summarize_draft_state(payload, state)
+
+    labels = {item["kind"]: item["label"] for item in summary["pills"]}
+    assert summary["has_changes"] is True
+    assert labels["filters"] == "1 filter"
+    assert labels["search"] == "search: ada"
+    assert labels["hidden_columns"] == "1 offloaded"
+    assert labels["column_order"] == "reordered columns"
+
+
+def test_view_launches_shared_web_viewer_surface():
+    pytest.importorskip("anywidget")
+    from stateframe.interactive.web import WorkspaceWebViewer
+
+    viewer = sf.view(pd.DataFrame({"x": [1, 2, 3]}), name="numbers", max_rows=2)
+
+    assert isinstance(viewer, WorkspaceWebViewer)
+    assert viewer.state["viewMode"] == "viewer"
+    assert viewer.payload["trees"][0]["tree_name"] == "numbers"
+    assert viewer.viewer["status"] == "ready"
+    assert viewer.viewer["payload"]["view"]["displayed_row_count"] == 2
 
 
 def test_view_api_reports_missing_interactive_extra_when_not_installed():

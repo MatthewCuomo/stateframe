@@ -11,12 +11,17 @@ def test_package_version_matches_public_module_version():
 def test_interactive_assets_are_present():
     asset_dir = Path(stateframe.__file__).parent / "interactive" / "assets"
 
-    assert (asset_dir / "viewer.js").exists()
-    assert (asset_dir / "viewer.css").exists()
-    assert (asset_dir / "ledger_tree.js").exists()
-    assert (asset_dir / "ledger_tree.css").exists()
+    assert (asset_dir / "viewer_decom.js").exists()
+    assert (asset_dir / "viewer_decom.css").exists()
+    assert (asset_dir / "ledger_tree_decom.js").exists()
+    assert (asset_dir / "ledger_tree_decom.css").exists()
     assert (asset_dir / "workspace_web.js").exists()
     assert (asset_dir / "workspace_web.css").exists()
+
+    workspace_js = (asset_dir / "workspace_web.js").read_text(encoding="utf-8")
+    assert "renderPlotlyHtmlFrame" in workspace_js
+    assert "renderEntryThumbnail" in workspace_js
+    assert "plotly_json" in workspace_js
 
 
 def test_release_scaffolding_exists():

@@ -105,7 +105,7 @@ def build_ledger_payload(
     height: int = 640,
     title: str | None = None,
 ) -> dict[str, Any]:
-    """Return a JSON-safe payload for the standalone analysis-tree widget."""
+    """Return a JSON-safe payload for a focused analysis-tree view."""
 
     ledger = getattr(profile, "ledger", None)
     raw = (
@@ -170,11 +170,15 @@ def initial_view_state(payload: dict[str, Any]) -> dict[str, Any]:
         "selectedColumnId": column_order[0] if column_order else None,
         "showIndex": True,
         "widths": widths,
+        "panelWidths": {
+            "columns": 240,
+            "inspector": 320,
+        },
     }
 
 
 def initial_ledger_state(payload: dict[str, Any]) -> dict[str, Any]:
-    """State shared by the standalone analysis-tree widget."""
+    """State shared by focused analysis-tree launches."""
 
     ledger = payload.get("ledger") or {}
     entries = ledger.get("entries") or []
@@ -186,6 +190,7 @@ def initial_ledger_state(payload: dict[str, Any]) -> dict[str, Any]:
         "search": "",
         "kindFilter": "all",
         "showOnlyStateful": False,
+        "collapsedEntryIds": [],
     }
 
 
@@ -287,6 +292,68 @@ def summarize_view_state(
             "filters": normalized["filters"],
             "global_search": normalized["global_search"],
             "selected_column": normalized["selected_column"],
+        }
+    )
+
+
+def summarize_draft_state(
+    payload: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Summarize unsaved viewer changes without applying them to the full data."""
+
+    normalized = _normalized_view_state(payload, state)
+    default_order = [column.get("source_name") for column in payload.get("columns", [])]
+    changed_order = normalized["column_order"] != [str(name) for name in default_order]
+    pills: list[dict[str, Any]] = []
+    if normalized["filters"]:
+        pills.append(
+            {
+                "kind": "filters",
+                "label": f"{len(normalized['filters'])} filter"
+                + ("" if len(normalized["filters"]) == 1 else "s"),
+                "details": normalized["filters"],
+            }
+        )
+    if normalized["global_search"]:
+        pills.append(
+            {
+                "kind": "search",
+                "label": f"search: {normalized['global_search']}",
+                "details": normalized["global_search"],
+            }
+        )
+    if normalized["sorts"]:
+        pills.append(
+            {
+                "kind": "sorts",
+                "label": f"{len(normalized['sorts'])} sort"
+                + ("" if len(normalized["sorts"]) == 1 else "s"),
+                "details": normalized["sorts"],
+            }
+        )
+    if normalized["hidden_columns"]:
+        pills.append(
+            {
+                "kind": "hidden_columns",
+                "label": f"{len(normalized['hidden_columns'])} offloaded",
+                "details": normalized["hidden_columns"],
+            }
+        )
+    if changed_order:
+        pills.append(
+            {
+                "kind": "column_order",
+                "label": "reordered columns",
+                "details": normalized["column_order"],
+            }
+        )
+    return _json_safe(
+        {
+            "source": "interactive_dataframe_viewer",
+            "has_changes": bool(pills),
+            "pills": pills,
+            "normalized": normalized,
         }
     )
 

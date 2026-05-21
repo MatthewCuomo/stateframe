@@ -386,9 +386,9 @@ def _artifact_payload(artifact: Any, *, kind: str, name: str) -> dict[str, Any]:
         payload["path"] = str(artifact)
         return payload
     if hasattr(artifact, "to_plotly_json"):
-        payload["object_type"] = _object_type(artifact)
-        payload["format"] = "plotly"
-        return payload
+        from stateframe.artifacts import plotly_figure_payload
+
+        return _json_safe(plotly_figure_payload(artifact, kind=kind, name=name))
     if hasattr(artifact, "to_dict"):
         try:
             value = artifact.to_dict(include_figure=False)

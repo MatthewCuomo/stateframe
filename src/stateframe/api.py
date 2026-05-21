@@ -9,8 +9,11 @@ from stateframe.config import EvidenceSource, ExplanationLevel, GuidanceMode, Sc
 from stateframe.branch import branch
 from stateframe.profile import build_profile
 from stateframe.footprint import optimize_footprint
+from stateframe.leaf import is_save_mode, leaf, register_ipython_magics, save_mode
+from stateframe.pull import pull
 from stateframe.transforms import apply_suggested_conversions, unify_binary_flags
 from stateframe.visuals import plot
+from stateframe.visualizer import build_visual_artifact, render_visual, visual_catalog
 
 
 def connect_web(
@@ -265,7 +268,7 @@ def view(
     source_path: str | None = None,
     reader_params: dict[str, Any] | None = None,
 ):
-    """Render an interactive dataframe explorer in a notebook frontend.
+    """Render the unified web UI opened directly to a dataframe viewer.
 
     The widget dependencies ship with the base ``stateframe`` install.
     """
@@ -306,7 +309,7 @@ def ledger_view(
     height: int = 640,
     title: str | None = None,
 ):
-    """Render a notebook-native analysis tree for a stateframe ledger.
+    """Render the unified web UI opened directly to an analysis tree.
 
     The widget dependencies ship with the base ``stateframe`` install.
     """
@@ -367,6 +370,21 @@ def web_payload() -> dict[str, Any]:
     return workspace.web()
 
 
+def visualize(data_or_profile: Any, spec: dict[str, Any] | None = None):
+    """Render a Plotly visual from a declarative stateframe visual spec."""
+
+    if spec is None:
+        return visual_catalog()
+    return render_visual(data_or_profile, spec)
+
+
+def visual_artifact(data_or_profile: Any, spec: dict[str, Any]):
+    """Render a visual spec into a ledger-ready Plotly artifact tuple."""
+
+    profile_obj = data_or_profile if hasattr(data_or_profile, "ledger") and hasattr(data_or_profile, "data") else scan(data_or_profile)
+    return build_visual_artifact(profile_obj, spec)
+
+
 def _infer_data_name(data: Any) -> str | None:
     """Best-effort dataframe variable-name inference for friendly tree names."""
 
@@ -389,6 +407,7 @@ __all__ = [
     "ledger_view",
     "plot",
     "profile",
+    "pull",
     "query",
     "report",
     "scan",
@@ -397,6 +416,9 @@ __all__ = [
     "optimize_footprint",
     "unify_binary_flags",
     "view",
+    "visual_artifact",
+    "visual_catalog",
+    "visualize",
     "web",
     "web_payload",
 ]

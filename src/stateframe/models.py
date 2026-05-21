@@ -808,7 +808,7 @@ class Profile:
         theme: str = "auto",
         title: str | None = None,
     ):
-        """Render this profile in the interactive dataframe explorer."""
+        """Render this profile in the unified web UI's dataframe viewer."""
 
         from stateframe.interactive import view
 
@@ -826,7 +826,7 @@ class Profile:
         height: int = 640,
         title: str | None = None,
     ):
-        """Render the scan's ledger as a standalone notebook tree."""
+        """Render the scan's ledger in the unified web UI tree."""
 
         from stateframe.interactive import ledger_view
 
@@ -1069,6 +1069,41 @@ class Profile:
             note=note,
         )
 
+    def record_plot_leaf(
+        self,
+        *,
+        kind: str = "column",
+        column: str | None = None,
+        target: str | None = None,
+        title: str | None = None,
+        parent_id: str | None = None,
+        params: dict[str, Any] | None = None,
+        note: str = "",
+    ):
+        """Render and record a plot artifact leaf under the ledger."""
+
+        from stateframe.artifacts import build_plot_artifact
+
+        artifact, summary, code = build_plot_artifact(
+            self,
+            kind=kind,
+            column=column,
+            target=target,
+            title=title,
+            params=params,
+        )
+        return self.record_artifact(
+            title=title or artifact["title"],
+            kind="plot",
+            operation=f"plot.{kind}",
+            parent_id=parent_id,
+            artifact=artifact,
+            summary=summary,
+            code=code,
+            note=note,
+            plot_spec=artifact.get("spec"),
+        )
+
     def checkout(self, entry_or_state_id: str):
         if self.ledger is None:
             raise ValueError("This profile does not have a ledger.")
@@ -1099,6 +1134,13 @@ class Profile:
             note,
             parent_id=parent_id,
         )
+
+    def update_entry_note(self, entry_id: str, note: str):
+        """Replace the saved note on an existing ledger entry."""
+
+        if self.ledger is None:
+            raise ValueError("This profile does not have a ledger.")
+        return self.ledger.update_entry_note(entry_id, note)
 
     def ledger_path(self, entry_id: str | None = None) -> list[Any]:
         if self.ledger is None:

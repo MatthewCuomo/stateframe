@@ -1,6 +1,11 @@
 function render({ model, el, signal }) {
   const payload = model.get("payload");
   let state = normalizeState(model.get("state"), payload);
+  const ui = {
+    focus: null,
+    searchDraft: state.search || "",
+    searchTimer: null,
+  };
 
   el.classList.add("stateframe-ledger-host");
   el.style.setProperty("--stateframe-ledger-height", `${payload.view.height}px`);
@@ -10,6 +15,7 @@ function render({ model, el, signal }) {
   el.replaceChildren(root);
 
   function setState(patch) {
+    captureFocus(root, ui);
     state = normalizeState({ ...state, ...patch }, payload);
     model.set("state", state);
     model.save_changes();
@@ -18,11 +24,15 @@ function render({ model, el, signal }) {
 
   function onStateChange() {
     state = normalizeState(model.get("state"), payload);
+    if (focusedKey(root) !== "ledger-search") ui.searchDraft = state.search || "";
     draw();
   }
 
   model.on("change:state", onStateChange);
-  signal.addEventListener("abort", () => model.off("change:state", onStateChange));
+  signal.addEventListener("abort", () => {
+    model.off("change:state", onStateChange);
+    if (ui.searchTimer) clearTimeout(ui.searchTimer);
+  });
 
   function draw() {
     const ledger = payload.ledger || {};
@@ -35,7 +45,7 @@ function render({ model, el, signal }) {
       || null;
 
     root.innerHTML = "";
-    root.appendChild(renderToolbar(payload, entries, state, setState));
+    root.appendChild(renderToolbar(payload, entries, state, setState, ui));
     root.appendChild(renderStats(payload));
 
     const body = document.createElement("div");
@@ -43,6 +53,7 @@ function render({ model, el, signal }) {
     body.appendChild(renderTreePanel(payload, filtered, selected, state, setState));
     body.appendChild(renderDetailPanel(payload, selected));
     root.appendChild(body);
+    requestAnimationFrame(() => restoreFocus(root, ui));
   }
 
   draw();
@@ -62,10 +73,13 @@ function normalizeState(raw, payload) {
     search: raw?.search || "",
     kindFilter: kinds.has(raw?.kindFilter) ? raw.kindFilter : "all",
     showOnlyStateful: Boolean(raw?.showOnlyStateful),
+    collapsedEntryIds: Array.isArray(raw?.collapsedEntryIds)
+      ? raw.collapsedEntryIds.filter((id) => ids.has(id))
+      : [],
   };
 }
 
-function renderToolbar(payload, entries, state, setState) {
+function renderToolbar(payload, entries, state, setState, ui) {
   const toolbar = document.createElement("div");
   toolbar.className = "stateframe-tree-toolbar";
 
@@ -83,8 +97,16 @@ function renderToolbar(payload, entries, state, setState) {
   search.className = "stateframe-tree-input";
   search.type = "search";
   search.placeholder = "Search operations, notes, code";
-  search.value = state.search || "";
-  search.addEventListener("input", () => setState({ search: search.value }));
+  search.dataset.focusKey = "ledger-search";
+  search.value = ui.searchDraft ?? state.search ?? "";
+  search.addEventListener("input", () => {
+    ui.searchDraft = search.value;
+    if (ui.searchTimer) clearTimeout(ui.searchTimer);
+    ui.searchTimer = setTimeout(() => {
+      ui.searchTimer = null;
+      setState({ search: ui.searchDraft || "" });
+    }, 160);
+  });
 
   const kindFilter = document.createElement("select");
   kindFilter.className = "stateframe-tree-select";
@@ -163,23 +185,60 @@ function renderTreePanel(payload, entries, selected, state, setState) {
   }
 
   const pathIds = new Set((selected?.path || []).map((item) => item.id));
+  const hierarchy = buildEntryHierarchy(entries);
+  const collapsed = new Set(state.collapsedEntryIds || []);
+  const visited = new Set();
   const list = document.createElement("div");
   list.className = "stateframe-tree-list";
 
-  for (const entry of entries) {
+  function appendEntry(entry, depth, trail = new Set()) {
+    if (!entry?.id || trail.has(entry.id) || visited.has(entry.id)) return;
+    visited.add(entry.id);
+    const children = hierarchy.byParent.get(entry.id) || [];
+    const hasChildren = children.length > 0;
+    const isCollapsed = hasChildren && collapsed.has(entry.id);
+
+    const row = document.createElement("div");
+    row.className = "stateframe-tree-row";
+    if (depth > 0) row.classList.add("is-nested");
+    if (hasChildren) row.classList.add("has-children");
+    if (isCollapsed) row.classList.add("is-collapsed");
+    row.style.setProperty("--entry-depth", String(Math.min(Number(depth || 0), 8)));
+
+    if (hasChildren) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "stateframe-tree-toggle";
+      toggle.textContent = isCollapsed ? "\u25b8" : "\u25be";
+      toggle.title = isCollapsed ? "Expand branch" : "Collapse branch";
+      toggle.setAttribute("aria-label", toggle.title);
+      toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleEntryCollapse(entry.id, state, setState);
+      });
+      row.appendChild(toggle);
+    } else {
+      const spacer = document.createElement("span");
+      spacer.className = "stateframe-tree-toggle-spacer";
+      row.appendChild(spacer);
+    }
+
     const node = document.createElement("button");
     node.type = "button";
     node.className = "stateframe-tree-node";
+    node.classList.add(...entryKindClasses(entry, "stateframe-tree"));
     if (entry.id === selected?.id) node.classList.add("is-selected");
     if (entry.is_active) node.classList.add("is-active");
     if (pathIds.has(entry.id)) node.classList.add("is-in-path");
-    node.style.paddingLeft = `${12 + (entry.depth || 0) * 18}px`;
+    if (!entryMatchesFilters(entry, state)) node.classList.add("is-context-only");
+    if (isCollapsed) node.classList.add("is-collapsed");
     node.addEventListener("click", () => setState({ selectedEntryId: entry.id }));
 
     const line = document.createElement("div");
     line.className = "stateframe-tree-node-line";
     const kind = document.createElement("span");
     kind.className = "stateframe-tree-kind";
+    kind.classList.add(`stateframe-tree-kind-${safeClassName(entry.kind)}`);
     kind.textContent = entry.kind || "entry";
     const name = document.createElement("span");
     name.className = "stateframe-tree-node-title";
@@ -188,12 +247,27 @@ function renderTreePanel(payload, entries, selected, state, setState) {
 
     const meta = document.createElement("div");
     meta.className = "stateframe-tree-node-meta";
-    const stateText = entry.has_state ? " / state" : "";
-    const children = entry.child_count ? ` / ${entry.child_count} child${entry.child_count === 1 ? "" : "ren"}` : "";
-    meta.textContent = `${entry.operation || entry.kind}${stateText}${children}`;
+    const stateText = isOutputEntry(entry) ? " / output leaf" : entry.has_state ? " / state" : "";
+    const childText = entry.child_count ? ` / ${entry.child_count} child${entry.child_count === 1 ? "" : "ren"}` : "";
+    const hidden = isCollapsed ? ` / ${descendantCount(entry.id, hierarchy.byParent)} hidden` : "";
+    meta.textContent = `${entry.operation || entry.kind}${stateText}${childText}${hidden}`;
 
     node.append(line, meta);
-    list.appendChild(node);
+    row.appendChild(node);
+    list.appendChild(row);
+
+    if (!isCollapsed) {
+      const nextTrail = new Set(trail);
+      nextTrail.add(entry.id);
+      for (const child of children) appendEntry(child, depth + 1, nextTrail);
+    } else {
+      markDescendantsVisited(entry.id, hierarchy.byParent, visited);
+    }
+  }
+
+  for (const root of hierarchy.roots) appendEntry(root, 0);
+  for (const entry of entries) {
+    if (!visited.has(entry.id)) appendEntry(entry, entry.depth || 0);
   }
   panel.appendChild(list);
   return panel;
@@ -259,6 +333,9 @@ function renderDetailPanel(payload, entry) {
   if (entry.params && Object.keys(entry.params).length) {
     panel.appendChild(section("Parameters", jsonBlock(entry.params)));
   }
+  if (entry.artifacts?.length) {
+    panel.appendChild(section("Artifacts", renderArtifacts(entry.artifacts)));
+  }
   if (entry.note) {
     const note = document.createElement("div");
     note.className = "stateframe-tree-note";
@@ -275,22 +352,108 @@ function renderDetailPanel(payload, entry) {
 }
 
 function filterEntries(entries, state) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const visible = new Set();
+  for (const entry of entries) {
+    if (!entryMatchesFilters(entry, state)) continue;
+    visible.add(entry.id);
+    let parentId = entry.parent_id;
+    const seen = new Set([entry.id]);
+    while (parentId && byId.has(parentId) && !seen.has(parentId)) {
+      visible.add(parentId);
+      seen.add(parentId);
+      parentId = byId.get(parentId).parent_id;
+    }
+  }
+  return entries.filter((entry) => visible.has(entry.id));
+}
+
+function entryMatchesFilters(entry, state) {
   const query = String(state.search || "").trim().toLowerCase();
-  return entries.filter((entry) => {
-    if (state.kindFilter !== "all" && entry.kind !== state.kindFilter) return false;
-    if (state.showOnlyStateful && !entry.has_state) return false;
-    if (!query) return true;
-    const haystack = [
-      entry.title,
-      entry.kind,
-      entry.operation,
-      entry.id,
-      entry.code,
-      entry.note,
-      ...(entry.columns || []),
-    ].join(" ").toLowerCase();
-    return haystack.includes(query);
-  });
+  if (state.kindFilter !== "all" && entry.kind !== state.kindFilter) return false;
+  if (state.showOnlyStateful && !entry.has_state) return false;
+  if (!query) return true;
+  const haystack = [
+    entry.title,
+    entry.kind,
+    entry.operation,
+    entry.id,
+    entry.code,
+    entry.note,
+    ...(entry.columns || []),
+  ].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function buildEntryHierarchy(entries) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const byParent = new Map();
+  const addChild = (parentId, entry) => {
+    if (!byParent.has(parentId)) byParent.set(parentId, []);
+    byParent.get(parentId).push(entry);
+  };
+  for (const entry of entries) {
+    const parentId = entry.parent_id && entry.parent_id !== entry.id && byId.has(entry.parent_id)
+      ? entry.parent_id
+      : null;
+    addChild(parentId, entry);
+  }
+  return { roots: byParent.get(null) || [], byParent };
+}
+
+function descendantCount(entryId, byParent) {
+  const stack = [...(byParent.get(entryId) || [])];
+  const seen = new Set();
+  let count = 0;
+  while (stack.length) {
+    const entry = stack.pop();
+    if (!entry?.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    count += 1;
+    stack.push(...(byParent.get(entry.id) || []));
+  }
+  return count;
+}
+
+function markDescendantsVisited(entryId, byParent, visited) {
+  const stack = [...(byParent.get(entryId) || [])];
+  const seen = new Set();
+  while (stack.length) {
+    const entry = stack.pop();
+    if (!entry?.id || seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    visited.add(entry.id);
+    stack.push(...(byParent.get(entry.id) || []));
+  }
+}
+
+function toggleEntryCollapse(entryId, state, setState) {
+  const collapsed = new Set(state.collapsedEntryIds || []);
+  if (collapsed.has(entryId)) collapsed.delete(entryId);
+  else collapsed.add(entryId);
+  setState({ collapsedEntryIds: Array.from(collapsed) });
+}
+
+function entryKindClasses(entry, prefix) {
+  const kind = String(entry?.kind || "entry").toLowerCase();
+  const classes = [`${prefix}-entry-kind-${safeClassName(kind)}`];
+  if (kind === "plot") classes.push("is-plot-output");
+  else if (isOutputEntry(entry)) classes.push("is-artifact-output");
+  if (entry?.has_state) classes.push("is-stateful-output");
+  return classes;
+}
+
+function isOutputEntry(entry) {
+  const kind = String(entry?.kind || "").toLowerCase();
+  return kind === "plot" || kind === "artifact" || kind === "report" || hasOutputArtifact(entry);
+}
+
+function hasOutputArtifact(entry) {
+  return (entry?.artifacts || []).some((artifact) => artifact?.kind && artifact.kind !== "data_snapshot");
+}
+
+function safeClassName(value) {
+  return String(value || "entry").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
 }
 
 function renderPath(path) {
@@ -373,6 +536,155 @@ function jsonBlock(value) {
   pre.className = "stateframe-tree-json";
   pre.textContent = JSON.stringify(value, null, 2);
   return pre;
+}
+
+function renderArtifacts(artifacts) {
+  const list = document.createElement("div");
+  list.className = "stateframe-tree-artifacts";
+  for (const artifact of artifacts) {
+    if (artifact?.kind === "code_leaf") {
+      list.appendChild(renderCodeLeafArtifact(artifact));
+    } else if (artifact?.kind === "plot" && artifact.preview_data_url) {
+      const item = document.createElement("div");
+      item.className = "stateframe-tree-plot-artifact";
+      const title = document.createElement("div");
+      title.className = "stateframe-tree-plot-artifact-title";
+      title.textContent = artifact.title || artifact.plot_id || "Plot";
+      const image = document.createElement("img");
+      image.className = "stateframe-tree-plot-artifact-image";
+      image.src = artifact.preview_data_url;
+      image.alt = artifact.title || "stateframe plot leaf";
+      item.append(title, image, jsonBlock({ spec: artifact.spec, source_lens: artifact.source_lens }));
+      list.appendChild(item);
+    } else {
+      list.appendChild(jsonBlock(artifact));
+    }
+  }
+  return list;
+}
+
+function renderCodeLeafArtifact(artifact) {
+  const item = document.createElement("div");
+  item.className = "stateframe-tree-code-leaf";
+  const title = document.createElement("div");
+  title.className = "stateframe-tree-code-leaf-title";
+  title.textContent = artifact.title || "Code leaf";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-tree-code-leaf-meta";
+  meta.textContent = `${artifact.dependency || "branch"}${artifact.saved ? " / saved" : " / metadata only"}`;
+  item.append(title, meta);
+  for (const preview of artifact.previews || []) {
+    item.appendChild(renderLeafPreview(preview));
+  }
+  return item;
+}
+
+function renderLeafPreview(preview) {
+  if (preview.kind === "terminal") {
+    const pre = document.createElement("pre");
+    pre.className = "stateframe-tree-terminal-preview";
+    pre.textContent = [preview.stdout || "", preview.stderr || ""].filter(Boolean).join("\n");
+    return section("Terminal", pre);
+  }
+  if ((preview.kind === "image" || preview.kind === "matplotlib" || preview.kind === "plotly") && preview.preview_data_url) {
+    const image = document.createElement("img");
+    image.className = "stateframe-tree-leaf-image";
+    image.src = preview.preview_data_url;
+    image.alt = preview.name || "stateframe leaf preview";
+    return section(preview.name || "Preview", image);
+  }
+  if (preview.kind === "plotly") {
+    const placeholder = document.createElement("div");
+    placeholder.className = "stateframe-tree-leaf-placeholder";
+    placeholder.textContent = "Interactive Plotly output saved for the full web leaf view.";
+    return section(preview.name || "Plotly", placeholder);
+  }
+  if (preview.kind === "dataframe") {
+    return section(preview.name || "DataFrame", renderDataFramePreview(preview));
+  }
+  return section(preview.name || preview.kind || "Preview", jsonBlock(preview));
+}
+
+function renderDataFramePreview(preview) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-tree-dataframe-preview";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-tree-code-leaf-meta";
+  meta.textContent = `${formatInt(preview.row_count || 0)} rows x ${formatInt(preview.column_count || 0)} columns`;
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const tr = document.createElement("tr");
+  for (const column of (preview.columns || []).slice(0, 6)) {
+    const th = document.createElement("th");
+    th.textContent = column;
+    tr.appendChild(th);
+  }
+  thead.appendChild(tr);
+  const tbody = document.createElement("tbody");
+  for (const row of (preview.rows || []).slice(0, 8)) {
+    const bodyRow = document.createElement("tr");
+    for (const column of (preview.columns || []).slice(0, 6)) {
+      const td = document.createElement("td");
+      td.textContent = formatValue(row[column]);
+      bodyRow.appendChild(td);
+    }
+    tbody.appendChild(bodyRow);
+  }
+  table.append(thead, tbody);
+  wrap.append(meta, table);
+  return wrap;
+}
+
+// Text inputs that update synced widget state must carry a stable focus key.
+// The widget redraws after state sync, so this preserves caret position.
+function captureFocus(root, ui) {
+  const active = root.ownerDocument.activeElement;
+  if (active && root.contains(active) && active.dataset?.focusKey) {
+    ui.focus = {
+      key: active.dataset.focusKey,
+      start: readSelection(active).start,
+      end: readSelection(active).end,
+    };
+  } else {
+    ui.focus = null;
+  }
+}
+
+function restoreFocus(root, ui) {
+  if (!ui.focus?.key) return;
+  const target = root.querySelector(`[data-focus-key="${cssEscape(ui.focus.key)}"]`);
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (
+    typeof target.setSelectionRange === "function"
+    && ui.focus.start !== null
+    && ui.focus.end !== null
+  ) {
+    target.setSelectionRange(ui.focus.start, ui.focus.end);
+  }
+}
+
+function focusedKey(root) {
+  const active = root.ownerDocument.activeElement;
+  return active && root.contains(active) ? active.dataset?.focusKey || null : null;
+}
+
+function readSelection(element) {
+  try {
+    return {
+      start: element.selectionStart,
+      end: element.selectionEnd,
+    };
+  } catch (_error) {
+    return { start: null, end: null };
+  }
+}
+
+function cssEscape(value) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 function getEntry(entries, id) {

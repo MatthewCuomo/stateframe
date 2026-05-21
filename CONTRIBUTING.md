@@ -28,6 +28,17 @@ python -m pip install -e ".[dev,interactive,ml]"
 python -m pytest
 ```
 
+## Interactive Widgets
+
+- Use `docs/ui_best_practices.md` as the checklist for shared widget layout,
+  redraw, scroll, and artifact-display behavior.
+- Any text input that writes to synced widget state on `input` must use a stable
+  `data-focus-key` and the local focus/caret restore helper. These widgets
+  redraw after state sync, so missing focus keys make the first typed character
+  feel like it breaks or recreates the text box.
+- For high-frequency text input such as search, prefer a small local draft plus
+  a debounce before writing synced state.
+
 ## Build
 
 ```powershell

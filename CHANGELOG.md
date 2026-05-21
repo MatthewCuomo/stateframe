@@ -10,10 +10,10 @@ This project follows semantic versioning while the API is stabilizing:
 
 ## 0.2.0 - Unreleased
 
-- Added the interactive dataframe explorer behind the `interactive` extra.
-- Added `sf.view(...)` and `Profile.view()`.
-- Added the standalone ledger tree widget through `sf.ledger_view(...)`,
-  `sf.tree_view(...)`, `Profile.ledger_view()`, and `Profile.tree_view()`.
+- Added the interactive web UI behind the `interactive` extra.
+- Added `sf.view(...)`, `Profile.view()`, `sf.ledger_view(...)`,
+  `sf.tree_view(...)`, `Profile.ledger_view()`, and `Profile.tree_view()`
+  as focused launch modes into the same web-backed UI.
 - Viewer-shaped DataFrames returned through `viewer.pull(...)` now create
   ledger checkpoints by default, and `viewer.save_current_view(...)` creates
   explicit named branch points from UI filters, sorting, hidden columns, and
@@ -32,6 +32,32 @@ This project follows semantic versioning while the API is stabilizing:
 - Added the first pluggable query-source architecture with `sf.sources.register(...)`,
   `sf.sources.preview(...)`, `sf.sources.list_objects(...)`, `sf.query(...)`,
   and `sf.help_getdata()` for wiring company data systems into Get Data flows.
+- Added persisted query connection profiles through `sf.sources.save_connection(...)`
+  and the web **Get Data -> Query Data / Connections** flow. Saved connections
+  auto-import repo-local provider files such as `company_query_source.py:register`
+  so future `sf.web()` and `sf.query(...)` calls can use them without manual
+  notebook imports.
+- Added the first artifact-leaf workflow for plots, including `Profile.record_plot_leaf(...)`,
+  embedded web viewer lineage/draft summaries, collapsible viewer side panels,
+  and a UI action for saving a column plot as a plot leaf under the selected
+  data branch, with tree-ordered plot placement, collapsible branch sections,
+  tree guide lines, resizable web/viewer panels, and in-widget plot preview
+  rendering.
+- Improved widget text-input handling so search boxes preserve focus/caret
+  through synced-state redraws.
+- Added code leaves through `sf.leaf(...)` and the optional `%%sf_leaf` IPython
+  cell magic, including terminal/dataframe/figure/Plotly capture and optional
+  durable output saves under `stateframe_saves/`.
+- Added unified pull references through `sf.pull()` and `sf.pull("entry_id")`
+  so selected UI items, saved dataframe states, and output leaves can be pulled
+  or rendered from one notebook call. The web UI now surfaces copyable pull code
+  for each branch and leaf.
+- Added the first Plotly visualizer subsystem with declarative visual specs,
+  a web visualizer mode, plot library, field bindings, filters, grouped
+  collapsible options, render previews, and saved visual leaves under the
+  selected dataframe state.
+- Marked the older standalone viewer/tree assets as `_decom`; compatibility
+  Python entry points now mount `workspace_web.js` directly.
 - Added synced viewer state helpers: `current_state()`, `selected_column()`, and
   `filtered_dataframe()`.
 - Expanded the scan architecture with richer recommendation and lens plumbing.

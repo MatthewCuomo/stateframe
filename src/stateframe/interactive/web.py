@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import MISSING, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +15,9 @@ from stateframe.interactive.serialize import (
     apply_view_state,
     build_viewer_payload,
     initial_view_state,
+    summarize_draft_state,
     summarize_view_state,
+    view_state_signature,
 )
 
 
@@ -43,40 +47,104 @@ if anywidget is not None and traitlets is not None:
         payload = traitlets.Dict().tag(sync=True)
         state = traitlets.Dict().tag(sync=True)
         viewer = traitlets.Dict(default_value={}).tag(sync=True)
+        visualizer = traitlets.Dict(default_value={}).tag(sync=True)
         files = traitlets.Dict(default_value={}).tag(sync=True)
         command = traitlets.Dict(default_value={}).tag(sync=True)
         command_status = traitlets.Dict(default_value={}).tag(sync=True)
+        branch_request = traitlets.Dict(default_value={}).tag(sync=True)
+        branch_status = traitlets.Dict(default_value={}).tag(sync=True)
 
         def __init__(
             self,
             *,
+            profile: Any | None = None,
+            record_profile: Any | None = None,
+            ledger_parent_id: str | None = None,
+            launch_mode: str = "workspace",
+            selected_entry_id: str | None = None,
+            max_rows: int | str | None = 500,
             height: int = 640,
+            theme: str = "auto",
             title: str | None = None,
+            initial_state: dict[str, Any] | None = None,
             **kwargs: Any,
         ) -> None:
             from stateframe import workspace
 
             self._workspace = workspace.current()
+            self._launch_mode = launch_mode
+            self._single_profile = profile
             self._embedded_view_profile = None
-            self._embedded_record_profile = None
-            self._embedded_parent_id: str | None = None
+            self._embedded_record_profile = record_profile or profile
+            self._embedded_parent_id: str | None = ledger_parent_id
+            self._visualizer_view_profile = None
+            self._visualizer_record_profile = record_profile or profile
+            self._visualizer_parent_id: str | None = ledger_parent_id
             self._last_command_nonce: Any = None
-            payload = build_web_payload(self._workspace, height=height, title=title)
+            self._last_branch_request_nonce: Any = None
+            self._last_view_checkpoint_signature: str | None = None
+            self._last_view_checkpoint_entry: Any = None
+            if profile is None:
+                payload = build_web_payload(self._workspace, height=height, title=title)
+                state = initial_web_state(payload, selected_entry_id=selected_entry_id)
+            else:
+                _ensure_profile_has_live_root_state(profile)
+                payload = build_profile_web_payload(profile, height=height, title=title)
+                state = initial_web_state(
+                    payload,
+                    selected_tree_id=_profile_tree_id(profile),
+                    selected_entry_id=selected_entry_id or ledger_parent_id,
+                )
             super().__init__(
                 payload=payload,
-                state=initial_web_state(payload),
+                state=state,
                 viewer={},
+                visualizer={},
                 files=self._workspace.list_files(purpose="open"),
                 command={},
                 command_status={},
+                branch_request={},
+                branch_status={},
                 **kwargs,
             )
+            try:
+                from stateframe.pull import set_active_web_viewer
+
+                set_active_web_viewer(self)
+            except Exception:
+                pass
+            if profile is not None and launch_mode == "viewer":
+                self.open_selected_viewer(
+                    max_rows=max_rows,
+                    height=height,
+                    theme=theme,
+                    title=title,
+                    initial_state=initial_state,
+                )
 
         @property
         def workspace(self):
             """The stateframe workspace backing this web view."""
 
             return self._workspace
+
+        @property
+        def profile(self):
+            """The in-memory profile backing focused tree/viewer launches."""
+
+            return self._embedded_view_profile or self._single_profile
+
+        @property
+        def record_profile(self):
+            """The profile whose ledger receives viewer-created branches."""
+
+            return self._embedded_record_profile
+
+        @property
+        def ledger_parent_id(self) -> str | None:
+            """The ledger entry that viewer-created branches attach beneath."""
+
+            return self._embedded_parent_id
 
         def current_state(self) -> dict[str, Any]:
             """Return the latest synced widget state."""
@@ -162,6 +230,52 @@ if anywidget is not None and traitlets is not None:
             self.refresh()
             return profile
 
+        def save_source_connection(
+            self,
+            source_id: str,
+            import_path: str,
+            *,
+            display_name: str | None = None,
+            description: str = "",
+            enabled: bool = True,
+            store_query: bool = True,
+            store_params: bool = True,
+            register_now: bool = True,
+        ) -> dict[str, Any]:
+            """Save a workspace query connection and optionally import it now."""
+
+            from stateframe import sources
+
+            connection = sources.save_connection(
+                source_id,
+                import_path,
+                display_name=display_name,
+                description=description,
+                enabled=enabled,
+                store_query=store_query,
+                store_params=store_params,
+                register_now=register_now,
+            )
+            self.refresh()
+            return connection
+
+        def delete_source_connection(self, source_id: str, *, unregister_source: bool = False) -> None:
+            """Delete a saved workspace query connection."""
+
+            from stateframe import sources
+
+            sources.delete_connection(source_id, unregister_source=unregister_source)
+            self.refresh()
+
+        def refresh_sources(self) -> list[dict[str, Any]]:
+            """Import all enabled saved source connections and refresh the web payload."""
+
+            from stateframe import sources
+
+            result = sources.auto_register_connections(raise_errors=False)
+            self.refresh()
+            return result
+
         def selected_tree_id(self) -> str | None:
             """Return the selected tree id."""
 
@@ -194,6 +308,8 @@ if anywidget is not None and traitlets is not None:
         def load_selected_tree(self) -> dict[str, Any]:
             """Load the saved tree metadata for the selected tree."""
 
+            if self._single_profile is not None:
+                return _profile_tree_payload(self._single_profile)
             record = self.selected_tree_record()
             if record is None:
                 raise ValueError("No workspace tree is selected.")
@@ -221,6 +337,18 @@ if anywidget is not None and traitlets is not None:
                     return dict(entry)
             return None
 
+        def selected_entry(self):
+            """Return the selected ledger entry object when available."""
+
+            selected = self.selected_entry_id()
+            profile = self._single_profile
+            if profile is None or selected is None or getattr(profile, "ledger", None) is None:
+                return self.selected_entry_record()
+            try:
+                return profile.ledger.get(selected)
+            except KeyError:
+                return self.selected_entry_record()
+
         def selected_state_id(self) -> str | None:
             """Return the dataframe state id for the selected entry."""
 
@@ -237,6 +365,48 @@ if anywidget is not None and traitlets is not None:
             state = self.selected_tree_detail().get("states", {}).get(state_id)
             return dict(state) if isinstance(state, dict) else None
 
+        def recommendations(self):
+            """Return recommendations for the currently selected dataframe state."""
+
+            return self.selected_profile().recommendations()
+
+        def run_selected(self, lens_id: str, **params: Any):
+            """Run a lens on the selected state and record it under that node."""
+
+            selected = self.selected_entry_id()
+            if selected is None:
+                raise ValueError("No tree entry is selected.")
+            selected_profile = self.selected_profile()
+
+            from stateframe.lenses import run_lens
+
+            result = run_lens(selected_profile, lens_id, **params)
+            record_profile = self._single_profile or selected_profile
+            record_profile.lens_results[result.id] = result
+            if record_profile.ledger is not None:
+                record_profile.ledger.record_lens(
+                    selected_profile,
+                    lens_id=result.id,
+                    params=params,
+                    result=result,
+                    parent_id=selected,
+                )
+            self.refresh()
+            return result
+
+        def run_recommendation(
+            self,
+            recommendation: int | str | dict[str, Any] = 1,
+            **params: Any,
+        ):
+            """Run a selected-state recommendation and record it under the node."""
+
+            profile = self.selected_profile()
+            rec = _resolve_recommendation(profile, recommendation)
+            lens_params = _params_from_recommendation(rec)
+            lens_params.update(params)
+            return self.run_selected(rec.lens, **lens_params)
+
         def pull_selected(self) -> pd.DataFrame:
             """Load the selected state into the notebook as a DataFrame.
 
@@ -247,6 +417,14 @@ if anywidget is not None and traitlets is not None:
             entry = self.selected_entry_record()
             if entry is None:
                 raise ValueError("No tree entry is selected.")
+            if self._single_profile is not None:
+                frame = _profile_checkout(self._single_profile, str(entry["id"]))
+                return _attach_profile_context(
+                    frame,
+                    profile=self._single_profile,
+                    entry=entry,
+                    state=self.selected_state_metadata(),
+                )
             state = self.selected_state_metadata()
             artifact = _data_snapshot_artifact(entry)
             if artifact is not None:
@@ -297,10 +475,52 @@ if anywidget is not None and traitlets is not None:
 
             return self.pull_selected()
 
-        def pull(self) -> pd.DataFrame:
-            """Alias for ``pull_selected`` for the unified web workflow."""
+        def pull(
+            self,
+            name: str | None = None,
+            *,
+            message: str | None = None,
+            note: str | None = None,
+            record: bool = True,
+            title: str | None = None,
+            operation: str = "viewer.pull",
+        ) -> pd.DataFrame:
+            """Pull data from the active web context.
 
+            When a dataframe viewer is open, this returns the viewer-shaped
+            dataframe and can record it as a branch. Otherwise it returns the
+            selected saved tree state.
+            """
+
+            if self.viewer and self.state.get("viewMode") == "viewer":
+                result = self.viewer_dataframe()
+                entry = None
+                if record:
+                    entry = self.save_embedded_viewer_branch(
+                        name=name,
+                        message=message,
+                        note=note,
+                        viewer_state=(self.viewer or {}).get("state"),
+                        operation=operation,
+                        title=title,
+                        force=False,
+                        save_tree=False,
+                    )
+                if entry is not None and self._embedded_record_profile is not None:
+                    from stateframe.branch import _attach_dataframe_context
+
+                    result = _attach_dataframe_context(
+                        result,
+                        profile=self._embedded_record_profile,
+                        entry_id=entry.id,
+                    )
+                return result
             return self.pull_selected()
+
+        def filtered_dataframe(self, **kwargs: Any) -> pd.DataFrame:
+            """Compatibility alias for pulling the current viewer-shaped data."""
+
+            return self.pull(**kwargs)
 
         def selected_profile(self):
             """Return a live profile restored around the selected state.
@@ -310,6 +530,12 @@ if anywidget is not None and traitlets is not None:
             later be saved back into the same workspace tree.
             """
 
+            if self._single_profile is not None:
+                selected = self.selected_entry_id()
+                if selected is None:
+                    raise ValueError("No tree entry is selected.")
+                data = _profile_checkout(self._single_profile, selected)
+                return _profile_for_selected_state(self._single_profile, data)
             data = self.pull_selected()
             tree_payload = self.load_selected_tree()
             record = self.selected_tree_record() or {}
@@ -357,24 +583,11 @@ if anywidget is not None and traitlets is not None:
             if selected is None:
                 raise ValueError("No tree entry is selected.")
             record_profile = self.selected_profile()
-            data = record_profile.checkout(selected)
-
-            from stateframe.interactive.viewer import DataFrameViewer
-            from stateframe.profile import build_profile
-
-            view_profile = build_profile(
-                data,
-                name=record_profile.dataset_name,
-                target=record_profile.target if record_profile.target in data.columns else None,
-                time=record_profile.time if record_profile.time in data.columns else None,
-                goal=record_profile.goal,
-                mode=record_profile.mode,
-                register=False,
-            )
-            return DataFrameViewer(
-                view_profile,
+            return WorkspaceWebViewer(
+                profile=record_profile,
                 record_profile=record_profile,
                 ledger_parent_id=selected,
+                launch_mode="viewer",
                 max_rows=max_rows,
                 height=height,
                 theme=theme,
@@ -395,8 +608,12 @@ if anywidget is not None and traitlets is not None:
             selected = self.selected_entry_id()
             if selected is None:
                 raise ValueError("No tree entry is selected.")
-            record_profile = self.selected_profile()
-            data = record_profile.checkout(selected)
+            if self._single_profile is not None:
+                record_profile = self._single_profile
+                data = _profile_checkout(record_profile, selected)
+            else:
+                record_profile = self.selected_profile()
+                data = record_profile.checkout(selected)
             resolved_max_rows = _resolve_viewer_max_rows(max_rows, data)
 
             from stateframe.profile import build_profile
@@ -427,6 +644,11 @@ if anywidget is not None and traitlets is not None:
                     "entry_title": (self.selected_entry_record() or {}).get("title"),
                 }
             )
+            viewer_payload["lineage"] = _viewer_lineage(record_profile, selected)
+            viewer_payload["draft"] = summarize_draft_state(
+                viewer_payload,
+                _viewer_state_for_payload(viewer_payload, initial_state),
+            )
             self._embedded_record_profile = record_profile
             self._embedded_view_profile = view_profile
             self._embedded_parent_id = selected
@@ -449,6 +671,207 @@ if anywidget is not None and traitlets is not None:
             }
             return self.viewer
 
+        def open_visualizer(
+            self,
+            *,
+            viewer_state: dict[str, Any] | None = None,
+            max_rows: int | str | None = 500,
+            height: int | None = None,
+            title: str | None = None,
+        ) -> dict[str, Any]:
+            """Open the Plotly visual builder for the selected or embedded state."""
+
+            selected = self.selected_entry_id()
+            if selected is None:
+                raise ValueError("No tree entry is selected.")
+            if self._embedded_view_profile is not None and isinstance(viewer_state, dict):
+                current_viewer = dict(self.viewer or {})
+                viewer_payload = current_viewer.get("payload") or {}
+                state = viewer_state or current_viewer.get("state") or initial_view_state(viewer_payload)
+                data = apply_view_state(self._embedded_view_profile.data, viewer_payload, state)
+                record_profile = self._embedded_record_profile or self.selected_profile()
+                parent_id = self._embedded_parent_id or selected
+            elif self._single_profile is not None:
+                record_profile = self._single_profile
+                data = _profile_checkout(record_profile, selected)
+                parent_id = selected
+            else:
+                record_profile = self.selected_profile()
+                data = record_profile.checkout(selected)
+                parent_id = selected
+
+            from stateframe.profile import build_profile
+
+            view_profile = build_profile(
+                data,
+                name=record_profile.dataset_name,
+                target=record_profile.target if record_profile.target in data.columns else None,
+                time=record_profile.time if record_profile.time in data.columns else None,
+                goal=record_profile.goal,
+                mode=record_profile.mode,
+                register=False,
+            )
+            view_height = height or int(self.payload.get("view", {}).get("height") or 640)
+            payload = _build_visualizer_payload(
+                view_profile,
+                record_profile=record_profile,
+                tree_id=self.selected_tree_id(),
+                tree_name=(self.selected_tree_record() or {}).get("tree_name"),
+                entry_id=parent_id,
+                state_id=self.selected_state_id(),
+                entry_title=(self.selected_entry_record() or {}).get("title"),
+                max_rows=max_rows,
+                height=view_height,
+                title=title,
+            )
+            self._visualizer_view_profile = view_profile
+            self._visualizer_record_profile = record_profile
+            self._visualizer_parent_id = parent_id
+            self.visualizer = {
+                "status": "ready",
+                "payload": payload,
+                "state": _initial_visualizer_state(payload),
+                "preview": None,
+                "message": "",
+            }
+            self.state = {
+                **dict(self.state),
+                "viewMode": "visualizer",
+                "selectedTreeId": self.selected_tree_id(),
+                "selectedEntryId": parent_id,
+            }
+            return self.visualizer
+
+        def render_visualizer(
+            self,
+            spec: dict[str, Any] | None = None,
+            *,
+            save: bool = False,
+            note: str | None = None,
+            save_mode: bool = False,
+            save_path: str | Path | None = None,
+        ) -> dict[str, Any]:
+            """Render or save the current visualizer spec."""
+
+            if self._visualizer_view_profile is None or self._visualizer_record_profile is None:
+                self.open_visualizer()
+            if self._visualizer_view_profile is None or self._visualizer_record_profile is None:
+                raise ValueError("No visualizer state is available.")
+
+            from stateframe.visualizer import build_visual_artifact
+
+            current = dict(self.visualizer or {})
+            payload = current.get("payload") or {}
+            state = current.get("state") or _initial_visualizer_state(payload)
+            visual_spec = spec or _spec_from_visualizer_state(state)
+            if note is not None:
+                visual_spec = {**visual_spec, "note": note}
+            visual_spec = _resolve_visual_spec_columns(visual_spec, payload)
+            artifact, summary, code = build_visual_artifact(
+                self._visualizer_view_profile,
+                visual_spec,
+                title=visual_spec.get("title") or None,
+            )
+            if save_mode:
+                from stateframe.artifacts import persist_artifact_files
+
+                artifact = persist_artifact_files(
+                    artifact,
+                    profile=self._visualizer_record_profile,
+                    entry_label=artifact.get("title") or "visual",
+                    base_path=save_path,
+                )
+
+            self.visualizer = {
+                **current,
+                "status": "rendered",
+                "state": state,
+                "preview": artifact,
+                "message": "Visual rendered",
+            }
+            if not save:
+                return artifact
+
+            entry = self._visualizer_record_profile.record_artifact(
+                title=artifact.get("title") or "Visual",
+                kind="plot",
+                operation=f"visual.{visual_spec.get('kind') or 'plotly'}",
+                parent_id=self._visualizer_parent_id,
+                artifact=artifact,
+                summary=summary,
+                code=code,
+                note=visual_spec.get("note") or "",
+                visual_spec=visual_spec,
+            )
+            self._visualizer_record_profile.save_tree()
+            self._refresh_after_embedded_save(entry.id)
+            self.state = {
+                **dict(self.state),
+                "viewMode": "visualizer",
+                "selectedEntryId": entry.id,
+            }
+            self.command_status = {
+                "status": "saved",
+                "action": "save_visualizer_leaf",
+                "entry_id": entry.id,
+                "title": entry.title,
+                "message": "Visual leaf saved",
+            }
+            return entry.to_dict()
+
+        def viewer_dataframe(self, viewer_state: dict[str, Any] | None = None) -> pd.DataFrame:
+            """Return the current embedded viewer dataframe without recording it."""
+
+            if self._embedded_view_profile is None:
+                raise ValueError("No embedded viewer is open.")
+            current_viewer = dict(self.viewer or {})
+            viewer_payload = current_viewer.get("payload") or {}
+            state = viewer_state or current_viewer.get("state") or initial_view_state(viewer_payload)
+            return apply_view_state(self._embedded_view_profile.data, viewer_payload, state)
+
+        def save_current_view(
+            self,
+            *,
+            title: str = "Viewer dataframe state",
+            operation: str = "viewer.save_current_view",
+            name: str | None = None,
+            message: str | None = None,
+            note: str | None = None,
+            force: bool = True,
+        ):
+            """Record the current web-embedded viewer state as a ledger branch."""
+
+            return self.save_embedded_viewer_branch(
+                name=name,
+                message=message,
+                note=note,
+                operation=operation,
+                title=title,
+                force=force,
+                save_tree=False,
+            )
+
+        def record_current_view(self, **kwargs: Any):
+            """Alias for ``save_current_view``."""
+
+            return self.save_current_view(**kwargs)
+
+        def last_checkpoint_entry(self):
+            """Return the most recent viewer-created ledger entry, if any."""
+
+            return self._last_view_checkpoint_entry
+
+        def selected_column(self) -> str | None:
+            """Return the currently inspected source column in the open viewer."""
+
+            viewer_payload = (self.viewer or {}).get("payload") or {}
+            viewer_state = (self.viewer or {}).get("state") or {}
+            selected_id = viewer_state.get("selectedColumnId")
+            for column in viewer_payload.get("columns", []):
+                if column.get("id") == selected_id:
+                    return column.get("source_name")
+            return None
+
         def save_embedded_viewer_branch(
             self,
             *,
@@ -457,6 +880,11 @@ if anywidget is not None and traitlets is not None:
             note: str | None = None,
             viewer_state: dict[str, Any] | None = None,
             operation: str = "web.viewer.save_branch",
+            title: str | None = None,
+            force: bool = True,
+            save_tree: bool = True,
+            save: bool = False,
+            save_path: str | Path | None = None,
         ):
             """Save the embedded viewer's current UI-shaped state as a branch."""
 
@@ -475,11 +903,23 @@ if anywidget is not None and traitlets is not None:
             if message:
                 summary["message"] = message
 
-            from stateframe.interactive.viewer import _pull_title, _state_options
-
+            signature = view_state_signature(viewer_payload, state)
+            checkpoint_signature = _checkpoint_signature(
+                signature,
+                operation=operation,
+                output_name=name,
+                message=message,
+                note=note,
+            )
+            if (
+                not force
+                and checkpoint_signature == self._last_view_checkpoint_signature
+                and self._last_view_checkpoint_entry is not None
+            ):
+                return self._last_view_checkpoint_entry
             entry = self._embedded_record_profile.record_state(
                 result,
-                title=_pull_title(name),
+                title=title or _pull_title(name),
                 operation=operation,
                 parent_id=self._embedded_parent_id,
                 note=note or message or "",
@@ -489,7 +929,25 @@ if anywidget is not None and traitlets is not None:
                 output_name=name,
                 message=message,
             )
-            self._embedded_record_profile.save_tree()
+            self._last_view_checkpoint_signature = checkpoint_signature
+            self._last_view_checkpoint_entry = entry
+            if save:
+                from stateframe import save as save_api
+
+                output_path = Path(save_path) if save_path is not None else _default_state_save_path(
+                    self._workspace,
+                    self._embedded_record_profile,
+                    name or entry.title,
+                )
+                save_api.data(
+                    self._embedded_record_profile,
+                    entry_id=entry.id,
+                    name=name or entry.title,
+                    path=output_path,
+                    also_save_tree=False,
+                )
+            if save_tree:
+                self._embedded_record_profile.save_tree()
             self._refresh_after_embedded_save(entry.id)
             self.command_status = {
                 "status": "saved",
@@ -499,6 +957,95 @@ if anywidget is not None and traitlets is not None:
                 "message": message or "",
             }
             return entry
+
+        def save_embedded_plot_leaf(
+            self,
+            *,
+            kind: str = "column",
+            column: str | None = None,
+            title: str | None = None,
+            note: str | None = None,
+            viewer_state: dict[str, Any] | None = None,
+            params: dict[str, Any] | None = None,
+            save: bool | None = None,
+            save_path: str | Path | None = None,
+        ):
+            """Save a rendered plot as an artifact leaf under the selected state."""
+
+            if self._embedded_view_profile is None or self._embedded_record_profile is None:
+                self.open_selected_viewer()
+            if self._embedded_view_profile is None or self._embedded_record_profile is None:
+                raise ValueError("No embedded viewer state is available for plotting.")
+
+            current_viewer = dict(self.viewer or {})
+            viewer_payload = current_viewer.get("payload") or {}
+            state = viewer_state or current_viewer.get("state") or initial_view_state(viewer_payload)
+            result = apply_view_state(self._embedded_view_profile.data, viewer_payload, state)
+
+            from stateframe.profile import build_profile
+
+            plot_profile = build_profile(
+                result,
+                name=self._embedded_record_profile.dataset_name,
+                target=(
+                    self._embedded_record_profile.target
+                    if self._embedded_record_profile.target in result.columns
+                    else None
+                ),
+                time=(
+                    self._embedded_record_profile.time
+                    if self._embedded_record_profile.time in result.columns
+                    else None
+                ),
+                goal=self._embedded_record_profile.goal,
+                mode=self._embedded_record_profile.mode,
+                register=False,
+            )
+            entry = plot_profile.record_plot_leaf(
+                kind=kind,
+                column=column if column in result.columns else None,
+                title=title,
+                parent_id=None,
+                params=params,
+                note=note or "",
+            )
+            artifact = entry.artifacts[0] if entry.artifacts else None
+            if save and artifact is not None:
+                from stateframe.artifacts import persist_artifact_files
+
+                artifact = persist_artifact_files(
+                    artifact,
+                    profile=self._embedded_record_profile,
+                    entry_label=entry.title,
+                    base_path=save_path,
+                )
+            artifact_entry = self._embedded_record_profile.record_artifact(
+                title=entry.title,
+                kind="plot",
+                operation=entry.operation,
+                parent_id=self._embedded_parent_id,
+                artifact=artifact,
+                summary={
+                    **entry.summary,
+                    "viewer_summary": summarize_view_state(viewer_payload, state, result),
+                    "draft": summarize_draft_state(viewer_payload, state),
+                },
+                metrics=entry.metrics,
+                code=entry.code,
+                note=note or "",
+                plot_spec=(artifact or {}).get("spec"),
+                viewer_state=dict(state),
+            )
+            self._embedded_record_profile.save_tree()
+            self._refresh_after_embedded_save(artifact_entry.id)
+            self.command_status = {
+                "status": "saved",
+                "action": "save_plot_leaf",
+                "entry_id": artifact_entry.id,
+                "title": artifact_entry.title,
+                "message": "Plot leaf saved",
+            }
+            return artifact_entry
 
         def set_selected_tree_source_path(
             self,
@@ -532,19 +1079,79 @@ if anywidget is not None and traitlets is not None:
                 reader_params=reader_params,
             )
 
+        def save_selected_entry_note(
+            self,
+            note: str,
+            *,
+            entry_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Replace the note for the selected ledger entry and persist the tree."""
+
+            target_entry_id = str(entry_id or self.selected_entry_id() or "")
+            if not target_entry_id:
+                raise ValueError("No tree entry is selected.")
+            selected_tree = self.selected_tree_id()
+            previous_mode = str(self.state.get("viewMode") or "web")
+            text = str(note or "")
+
+            updated: dict[str, Any] | None = None
+            for profile in (self._single_profile, self._embedded_record_profile):
+                if _profile_matches_tree(self._workspace, profile, selected_tree):
+                    if getattr(profile, "ledger", None) is None:
+                        continue
+                    try:
+                        updated_entry = profile.update_entry_note(target_entry_id, text)
+                    except KeyError:
+                        continue
+                    profile.save_tree()
+                    updated = updated_entry.to_dict()
+                    break
+
+            if updated is None:
+                record = self.selected_tree_record()
+                if record is None:
+                    raise ValueError("No workspace tree is selected.")
+                payload = self.load_selected_tree()
+                updated = _update_tree_payload_entry_note(payload, target_entry_id, text)
+                tree_path = record.get("tree_path")
+                if not tree_path:
+                    raise FileNotFoundError("Selected tree does not have a saved tree path.")
+                output_path = self._workspace.resolve_path(tree_path)
+                payload["updated_at"] = _now()
+                output_path.write_text(
+                    json.dumps(payload, indent=2, default=str),
+                    encoding="utf-8",
+                )
+
+            self.refresh()
+            self.state = {
+                **dict(self.state),
+                "selectedTreeId": selected_tree,
+                "selectedEntryId": target_entry_id,
+                "viewMode": previous_mode,
+            }
+            return dict(updated)
+
         def refresh(self) -> None:
-            """Reload the workspace web payload from disk."""
+            """Reload the active web payload."""
 
             previous_tree = self.selected_tree_id()
             try:
                 previous_entry = self.selected_entry_id()
             except ValueError:
                 previous_entry = None
-            payload = build_web_payload(
-                self._workspace,
-                height=int(self.payload.get("view", {}).get("height") or 640),
-                title=self.payload.get("title"),
-            )
+            if self._single_profile is not None:
+                payload = build_profile_web_payload(
+                    self._single_profile,
+                    height=int(self.payload.get("view", {}).get("height") or 640),
+                    title=self.payload.get("title"),
+                )
+            else:
+                payload = build_web_payload(
+                    self._workspace,
+                    height=int(self.payload.get("view", {}).get("height") or 640),
+                    title=self.payload.get("title"),
+                )
             self.payload = payload
             self.state = initial_web_state(
                 payload,
@@ -586,7 +1193,135 @@ if anywidget is not None and traitlets is not None:
                         message=request.get("message"),
                         note=request.get("note"),
                         viewer_state=request.get("viewerState") if isinstance(request.get("viewerState"), dict) else None,
+                        save=bool(request.get("saveMode")),
+                        save_path=request.get("savePath") or None,
                     )
+                elif action == "save_plot_leaf":
+                    self.save_embedded_plot_leaf(
+                        kind=request.get("plotKind") or "column",
+                        column=request.get("columnName") or None,
+                        title=request.get("title") or None,
+                        note=request.get("note") or None,
+                        viewer_state=(
+                            request.get("viewerState")
+                            if isinstance(request.get("viewerState"), dict)
+                            else None
+                        ),
+                        params=(
+                            request.get("params")
+                            if isinstance(request.get("params"), dict)
+                            else None
+                        ),
+                        save=bool(request.get("saveMode")),
+                        save_path=request.get("savePath") or None,
+                    )
+                elif action == "save_entry_note":
+                    updated = self.save_selected_entry_note(
+                        str(request.get("note") or ""),
+                        entry_id=request.get("entryId") or None,
+                    )
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": "Notes saved",
+                        "entry_id": updated.get("id"),
+                        "title": updated.get("title"),
+                    }
+                elif action == "save_source_connection":
+                    connection = self.save_source_connection(
+                        str(request.get("sourceId") or ""),
+                        str(request.get("importPath") or ""),
+                        display_name=request.get("displayName") or None,
+                        description=str(request.get("description") or ""),
+                        enabled=request.get("enabled") is not False,
+                        store_query=request.get("storeQuery") is not False,
+                        store_params=request.get("storeParams") is not False,
+                        register_now=True,
+                    )
+                    self.state = {
+                        **dict(self.state),
+                        "viewMode": "get_data",
+                        "getDataTab": "query",
+                        "querySourceId": connection.get("id"),
+                    }
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": f"Connection saved: {connection.get('display_name') or connection.get('id')}",
+                        "source_id": connection.get("id"),
+                    }
+                elif action == "delete_source_connection":
+                    source_id = str(request.get("sourceId") or "")
+                    self.delete_source_connection(
+                        source_id,
+                        unregister_source=request.get("unregisterSource") is not False,
+                    )
+                    self.state = {
+                        **dict(self.state),
+                        "viewMode": "get_data",
+                        "getDataTab": "connections",
+                    }
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Deleted connection {source_id}",
+                    }
+                elif action == "refresh_sources":
+                    imports = self.refresh_sources()
+                    self.state = {
+                        **dict(self.state),
+                        "viewMode": "get_data",
+                        "getDataTab": "query",
+                    }
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": f"Loaded {sum(1 for item in imports if item.get('status') == 'registered')} source connection(s)",
+                        "imports": imports,
+                    }
+                elif action == "open_visualizer":
+                    self.command_status = {
+                        "status": "loading",
+                        "action": action,
+                        "message": "Loading visualizer",
+                    }
+                    self.open_visualizer(
+                        max_rows=request.get("maxRows") or 500,
+                        height=int(request.get("height") or self.payload.get("view", {}).get("height") or 640),
+                        viewer_state=request.get("viewerState") if isinstance(request.get("viewerState"), dict) else None,
+                    )
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": "Visualizer loaded",
+                    }
+                elif action == "render_visualizer":
+                    artifact = self.render_visualizer(
+                        request.get("visualSpec") if isinstance(request.get("visualSpec"), dict) else None,
+                        note=request.get("note") or None,
+                        save=False,
+                    )
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": "Visual rendered",
+                        "title": artifact.get("title"),
+                    }
+                elif action == "save_visualizer_leaf":
+                    saved = self.render_visualizer(
+                        request.get("visualSpec") if isinstance(request.get("visualSpec"), dict) else None,
+                        note=request.get("note") or None,
+                        save=True,
+                        save_mode=bool(request.get("saveMode")),
+                        save_path=request.get("savePath") or None,
+                    )
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": "Visual leaf saved",
+                        "entry_id": saved.get("id"),
+                        "title": saved.get("title"),
+                    }
                 elif action == "refresh":
                     self.refresh()
                     self.browse_files(
@@ -614,7 +1349,8 @@ if anywidget is not None and traitlets is not None:
                     )
                     self.state = {
                         **dict(self.state),
-                        "viewMode": "files",
+                        "viewMode": request.get("viewMode") if request.get("viewMode") in {"files", "get_data"} else "files",
+                        "getDataTab": request.get("getDataTab") or dict(self.state).get("getDataTab") or "files",
                         "selectedFilePath": None,
                     }
                     self.command_status = {
@@ -676,6 +1412,12 @@ if anywidget is not None and traitlets is not None:
                         "tree_id": tree_id,
                     }
             except Exception as exc:
+                if action in {"open_visualizer", "render_visualizer", "save_visualizer_leaf"}:
+                    self.visualizer = {
+                        **dict(self.visualizer or {}),
+                        "status": "error",
+                        "message": str(exc),
+                    }
                 self.viewer = {
                     **dict(self.viewer or {}),
                     "status": "error",
@@ -684,6 +1426,40 @@ if anywidget is not None and traitlets is not None:
                 self.command_status = {
                     "status": "error",
                     "action": action,
+                    "message": str(exc),
+                }
+
+        @traitlets.observe("branch_request")
+        def _observe_branch_request(self, change: Any) -> None:
+            request = change.get("new") or {}
+            if not isinstance(request, dict):
+                return
+            nonce = request.get("nonce")
+            if not nonce or nonce == self._last_branch_request_nonce:
+                return
+            self._last_branch_request_nonce = nonce
+            try:
+                entry = self.save_embedded_viewer_branch(
+                    name=request.get("name"),
+                    message=request.get("message"),
+                    note=request.get("note"),
+                    viewer_state=request.get("viewerState") if isinstance(request.get("viewerState"), dict) else None,
+                    operation=request.get("operation") or "viewer.save_branch",
+                    title=request.get("title") or _pull_title(request.get("name")),
+                    force=True,
+                    save_tree=True,
+                )
+                self.branch_status = {
+                    "nonce": nonce,
+                    "status": "saved",
+                    "entry_id": entry.id,
+                    "title": entry.title,
+                    "message": request.get("message") or "",
+                }
+            except Exception as exc:
+                self.branch_status = {
+                    "nonce": nonce,
+                    "status": "error",
                     "message": str(exc),
                 }
 
@@ -704,11 +1480,18 @@ if anywidget is not None and traitlets is not None:
 
         def _refresh_after_embedded_save(self, selected_entry_id: str) -> None:
             selected_tree = self.selected_tree_id()
-            payload = build_web_payload(
-                self._workspace,
-                height=int(self.payload.get("view", {}).get("height") or 640),
-                title=self.payload.get("title"),
-            )
+            if self._single_profile is not None:
+                payload = build_profile_web_payload(
+                    self._single_profile,
+                    height=int(self.payload.get("view", {}).get("height") or 640),
+                    title=self.payload.get("title"),
+                )
+            else:
+                payload = build_web_payload(
+                    self._workspace,
+                    height=int(self.payload.get("view", {}).get("height") or 640),
+                    title=self.payload.get("title"),
+                )
             self.payload = payload
             self.state = {
                 **initial_web_state(
@@ -758,6 +1541,8 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
     ]
     from stateframe import sources
 
+    source_imports = sources.auto_register_connections(raise_errors=False)
+
     return {
         "version": 1,
         "title": title or "stateframe workspace web",
@@ -769,8 +1554,37 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
         "updated_at": web.get("updated_at"),
         "tree_count": len(trees),
         "trees": trees,
-        "sources": sources.list_sources(),
+        "sources": sources.list_sources(auto_register=False),
+        "source_connections": sources.list_connections(auto_register=False),
+        "source_imports": source_imports,
         "settings": workspace.settings(),
+    }
+
+
+def build_profile_web_payload(profile: Any, *, height: int, title: str | None) -> dict[str, Any]:
+    """Return a web payload focused on one in-memory profile."""
+
+    from stateframe import sources, workspace
+
+    current_workspace = workspace.current()
+    source_imports = sources.auto_register_connections(raise_errors=False)
+    tree = _profile_tree_record(profile, current_workspace=current_workspace)
+    return {
+        "version": 1,
+        "title": title or tree["tree_name"] or "stateframe web",
+        "view": {
+            "height": int(height),
+            "launch_mode": "single_profile",
+        },
+        "workspace": current_workspace.settings(),
+        "created_at": None,
+        "updated_at": None,
+        "tree_count": 1,
+        "trees": [_json_safe(tree)],
+        "sources": sources.list_sources(auto_register=False),
+        "source_connections": sources.list_connections(auto_register=False),
+        "source_imports": source_imports,
+        "settings": current_workspace.settings(),
     }
 
 
@@ -797,6 +1611,11 @@ def initial_web_state(
         "selectedTreeId": tree_id,
         "selectedEntryId": entry_id,
         "viewMode": "web",
+        "collapsedEntryIds": [],
+        "panelWidths": {
+            "webLeft": 340,
+        },
+        "saveMode": False,
         "search": "",
         "sort": "updated",
     }
@@ -830,6 +1649,290 @@ def _web_tree_record(workspace: Any, record: dict[str, Any]) -> dict[str, Any]:
         return _json_safe(result)
     result["tree_detail"] = _tree_detail_from_payload(workspace, record, tree_payload)
     return _json_safe(result)
+
+
+def _profile_tree_record(profile: Any, *, current_workspace: Any) -> dict[str, Any]:
+    ledger = getattr(profile, "ledger", None)
+    tree_id = _profile_tree_id(profile)
+    tree_name = getattr(profile, "tree_name", None) or getattr(profile, "dataset_name", None) or tree_id
+    summary = profile.summary() if hasattr(profile, "summary") else {}
+    try:
+        from stateframe.workspace import source_fingerprint
+
+        fingerprint = source_fingerprint(profile)
+    except Exception:
+        fingerprint = None
+    return {
+        "tree_id": tree_id,
+        "tree_name": str(tree_name),
+        "dataset_name": getattr(profile, "dataset_name", None),
+        "profile_id": getattr(profile, "profile_id", None),
+        "source_fingerprint": fingerprint,
+        "source": dict(getattr(profile, "source", {}) or {}),
+        "target": getattr(profile, "target", None),
+        "time": getattr(profile, "time", None),
+        "summary": _json_safe(summary),
+        "entry_count": len(getattr(ledger, "entries", []) or []),
+        "state_count": len(getattr(ledger, "states", {}) or {}),
+        "root_entry_id": getattr(ledger, "root_entry_id", None),
+        "active_entry_id": getattr(ledger, "active_entry_id", None),
+        "tree_path": "in-memory",
+        "data_dir": "in-memory",
+        "data_snapshots": [],
+        "created_at": None,
+        "updated_at": None,
+        "tree_detail": _tree_detail_from_profile(profile),
+        "workspace": current_workspace.settings(),
+    }
+
+
+def _profile_tree_payload(profile: Any) -> dict[str, Any]:
+    profile_payload = {
+        "profile_id": getattr(profile, "profile_id", None),
+        "dataset_name": getattr(profile, "dataset_name", None),
+        "tree_name": getattr(profile, "tree_name", None),
+        "source": dict(getattr(profile, "source", {}) or {}),
+        "profile": profile.to_dict() if hasattr(profile, "to_dict") else {},
+        "ledger": (
+            profile.ledger.to_dict(include_states=True, include_data=False)
+            if getattr(profile, "ledger", None) is not None
+            else None
+        ),
+    }
+    return {
+        "version": 2,
+        "kind": "stateframe_tree",
+        "saved_at": None,
+        "workspace": {},
+        "tree_id": _profile_tree_id(profile),
+        "tree_name": getattr(profile, "tree_name", None)
+        or getattr(profile, "dataset_name", None)
+        or _profile_tree_id(profile),
+        "dataset_name": getattr(profile, "dataset_name", None),
+        "profile_id": getattr(profile, "profile_id", None),
+        "profile": profile_payload,
+        "profiles": [profile_payload],
+    }
+
+
+def _build_visualizer_payload(
+    profile: Any,
+    *,
+    record_profile: Any,
+    tree_id: str | None,
+    tree_name: str | None,
+    entry_id: str | None,
+    state_id: str | None,
+    entry_title: str | None,
+    max_rows: int | str | None,
+    height: int,
+    title: str | None,
+) -> dict[str, Any]:
+    from stateframe.visualizer import visual_catalog
+
+    preview = build_viewer_payload(
+        profile,
+        max_rows=_resolve_viewer_max_rows(max_rows, profile.data),
+        height=height,
+        title=title or "Visual builder",
+    )
+    return _json_safe(
+        {
+            "kind": "stateframe_visualizer",
+            "engine": "plotly",
+            "title": title or f"Visualize {entry_title or tree_name or 'state'}",
+            "catalog": visual_catalog(),
+            "columns": preview.get("columns", []),
+            "rows": preview.get("rows", []),
+            "index": preview.get("index", []),
+            "view": preview.get("view", {}),
+            "context": {
+                "tree_id": tree_id,
+                "tree_name": tree_name,
+                "entry_id": entry_id,
+                "state_id": state_id,
+                "entry_title": entry_title,
+                "record_tree_id": _profile_tree_id(record_profile),
+            },
+            "lineage": _viewer_lineage(record_profile, entry_id),
+        }
+    )
+
+
+def _initial_visualizer_state(payload: dict[str, Any]) -> dict[str, Any]:
+    catalog = payload.get("catalog", {})
+    plot_types = catalog.get("plot_types") or []
+    kind = plot_types[0].get("id") if plot_types else "histogram"
+    columns = payload.get("columns") or []
+    first = columns[0].get("id") if columns else None
+    numeric = next(
+        (
+            column.get("id")
+            for column in columns
+            if str(column.get("semantic_type") or "").lower() in {"numeric", "amount", "percentage", "proportion"}
+        ),
+        first,
+    )
+    fields = {"x": numeric} if numeric else {}
+    return {
+        "kind": kind,
+        "fields": fields,
+        "filters": [],
+        "options": {},
+        "title": "",
+        "note": "",
+        "collapsedPanels": {
+            "library": False,
+            "inspector": False,
+        },
+        "panelWidths": {
+            "library": 260,
+            "inspector": 360,
+        },
+    }
+
+
+def _spec_from_visualizer_state(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "renderer": "plotly",
+        "kind": state.get("kind") or "histogram",
+        "title": state.get("title") or "",
+        "note": state.get("note") or "",
+        "fields": dict(state.get("fields") or {}),
+        "filters": list(state.get("filters") or []),
+        "options": dict(state.get("options") or {}),
+    }
+
+
+def _resolve_visual_spec_columns(
+    spec: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate widget column ids like ``c3`` into dataframe source names."""
+
+    by_id = {
+        str(column.get("id")): (
+            column.get("source_name")
+            or column.get("name")
+            or column.get("display_name")
+            or column.get("id")
+        )
+        for column in payload.get("columns", [])
+        if column.get("id") is not None
+    }
+
+    def resolve(value: Any) -> Any:
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        if isinstance(value, tuple):
+            return [resolve(item) for item in value]
+        if isinstance(value, str):
+            if value in by_id:
+                return by_id[value]
+            parts = [part.strip() for part in value.split(",")]
+            if len(parts) > 1 and all(part in by_id for part in parts):
+                return [by_id[part] for part in parts]
+        return value
+
+    fields = {
+        key: resolve(value)
+        for key, value in dict(spec.get("fields") or {}).items()
+    }
+    filters = []
+    for filter_spec in spec.get("filters") or []:
+        if not isinstance(filter_spec, dict):
+            continue
+        filters.append({
+            **filter_spec,
+            "column": resolve(filter_spec.get("column")),
+        })
+    return {
+        **spec,
+        "fields": fields,
+        "filters": filters,
+    }
+
+
+def _profile_matches_tree(workspace: Any, profile: Any | None, tree_id: str | None) -> bool:
+    if profile is None or tree_id is None:
+        return False
+    try:
+        return workspace.tree_id_for_profile(profile) == str(tree_id)
+    except Exception:
+        return False
+
+
+def _update_tree_payload_entry_note(
+    payload: dict[str, Any],
+    entry_id: str,
+    note: str,
+) -> dict[str, Any]:
+    updated_entry: dict[str, Any] | None = None
+    seen: set[int] = set()
+    for ledger in _ledger_payloads(payload):
+        marker = id(ledger)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        for entry in ledger.get("entries", []) or []:
+            if isinstance(entry, dict) and entry.get("id") == entry_id:
+                entry["note"] = note
+                updated_entry = dict(entry)
+    if updated_entry is None:
+        raise KeyError(f"Unknown tree entry: {entry_id}")
+    return updated_entry
+
+
+def _ledger_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    ledgers: list[dict[str, Any]] = []
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    ledger = profile.get("ledger") if isinstance(profile.get("ledger"), dict) else None
+    if ledger is not None:
+        ledgers.append(ledger)
+    profiles = payload.get("profiles") if isinstance(payload.get("profiles"), list) else []
+    for profile_payload in profiles:
+        if not isinstance(profile_payload, dict):
+            continue
+        ledger = profile_payload.get("ledger") if isinstance(profile_payload.get("ledger"), dict) else None
+        if ledger is not None:
+            ledgers.append(ledger)
+    return ledgers
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _tree_detail_from_profile(profile: Any) -> dict[str, Any]:
+    ledger = getattr(profile, "ledger", None)
+    raw = (
+        ledger.to_dict(include_states=True, include_data=False)
+        if ledger is not None
+        else {
+            "root_entry_id": None,
+            "active_entry_id": None,
+            "entries": [],
+            "tree": [],
+            "states": {},
+        }
+    )
+    entries = raw.get("entries") or []
+    states = raw.get("states") or {}
+    active_entry_id = raw.get("active_entry_id")
+    enriched_entries = _ledger_entries(entries, states, active_entry_id)
+    return _json_safe(
+        {
+            "root_entry_id": raw.get("root_entry_id"),
+            "active_entry_id": active_entry_id,
+            "entries": enriched_entries,
+            "tree": raw.get("tree") or [],
+            "states": states,
+            "active_path": _ledger_path(enriched_entries, active_entry_id),
+            "stats": _ledger_stats(enriched_entries, states),
+            "saved_at": None,
+        }
+    )
 
 
 def _tree_detail_from_payload(
@@ -1051,6 +2154,49 @@ def _resolve_viewer_max_rows(max_rows: int | str | None, data: pd.DataFrame) -> 
     return value
 
 
+def _default_state_save_path(workspace: Any, profile: Any, label: str | None) -> Path:
+    tree_id = workspace.tree_id_for_profile(profile) if profile is not None else "floating"
+    return workspace.root / "stateframe_saves" / _filename_slug(tree_id) / f"{_filename_slug(label or 'branch')}.parquet"
+
+
+def _filename_slug(value: Any) -> str:
+    import re
+
+    text = str(value or "stateframe").strip()
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = text.strip("._-")
+    return text or "stateframe"
+
+
+def _viewer_lineage(profile: Any, entry_id: str | None) -> dict[str, Any]:
+    ledger = getattr(profile, "ledger", None)
+    if ledger is None or entry_id is None:
+        return {"entries": [], "entry_count": 0}
+    entries = []
+    for entry in ledger.path(entry_id):
+        entries.append(
+            _json_safe(
+                {
+                    "id": entry.id,
+                    "parent_id": entry.parent_id,
+                    "kind": entry.kind,
+                    "title": entry.title,
+                    "operation": entry.operation,
+                    "state_id": entry.state_id,
+                    "summary": entry.summary,
+                    "params": entry.params,
+                    "note": entry.note,
+                    "timestamp": entry.timestamp,
+                }
+            )
+        )
+    return {
+        "entries": entries,
+        "entry_count": len(entries),
+        "active_entry_id": entry_id,
+    }
+
+
 def _viewer_state_for_payload(
     payload: dict[str, Any],
     initial_state: dict[str, Any] | None,
@@ -1090,6 +2236,18 @@ def _viewer_state_for_payload(
         state["selectedColumnId"] = initial_state.get("selectedColumnId")
     state["globalSearch"] = str(initial_state.get("globalSearch") or "")
     state["showIndex"] = initial_state.get("showIndex") is not False
+    panel_widths = initial_state.get("panelWidths")
+    if isinstance(panel_widths, dict):
+        state["panelWidths"] = {
+            **state.get("panelWidths", {}),
+            **{
+                key: int(value)
+                for key, value in panel_widths.items()
+                if key in {"columns", "inspector"}
+                and isinstance(value, (int, float))
+                and value > 0
+            },
+        }
     return state
 
 
@@ -1173,6 +2331,165 @@ def _state_from_payload(state_id: str, payload: dict[str, Any]):
 
 def _valid_column(column: Any, data: pd.DataFrame) -> str | None:
     return str(column) if column in data.columns else None
+
+
+def _profile_tree_id(profile: Any) -> str:
+    tree_id = getattr(profile, "tree_id", None) or getattr(profile, "workspace_tree_id", None)
+    if tree_id:
+        return str(tree_id)
+    profile_id = getattr(profile, "profile_id", None)
+    if profile_id:
+        return str(profile_id)
+    return "in_memory_tree"
+
+
+def _ensure_profile_has_live_root_state(profile: Any) -> None:
+    if getattr(profile, "ledger", None) is None:
+        from stateframe.ledger import LensLedger
+
+        profile.ledger = LensLedger.start(profile)
+    ledger = profile.ledger
+    root_entry_id = getattr(ledger, "root_entry_id", None)
+    if not root_entry_id:
+        return
+    try:
+        root_entry = ledger.get(root_entry_id)
+    except KeyError:
+        return
+    state_id = getattr(root_entry, "state_id", None)
+    if not state_id or state_id not in ledger.states:
+        return
+    state = ledger.states[state_id]
+    if getattr(state, "data", None) is None:
+        ledger.states[state_id] = replace(state, data=profile.data.copy())
+
+
+def _profile_checkout(profile: Any, entry_id: str) -> pd.DataFrame:
+    _ensure_profile_has_live_root_state(profile)
+    try:
+        return profile.checkout(entry_id)
+    except ValueError:
+        if entry_id == getattr(getattr(profile, "ledger", None), "root_entry_id", None):
+            return profile.data.copy()
+        raise
+
+
+def _attach_profile_context(
+    frame: pd.DataFrame,
+    *,
+    profile: Any,
+    entry: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> pd.DataFrame:
+    context = {
+        "tree_id": _profile_tree_id(profile),
+        "tree_name": getattr(profile, "tree_name", None),
+        "dataset_name": getattr(profile, "dataset_name", None),
+        "entry_id": entry.get("id"),
+        "state_id": entry.get("state_id") or (state or {}).get("id"),
+    }
+    frame.attrs["_stateframe"] = {key: value for key, value in context.items() if value}
+    return frame
+
+
+def _profile_for_selected_state(profile: Any, data: pd.DataFrame):
+    from stateframe.profile import build_profile
+
+    selected = build_profile(
+        data,
+        name=getattr(profile, "dataset_name", None),
+        target=profile.target if getattr(profile, "target", None) in data.columns else None,
+        time=profile.time if getattr(profile, "time", None) in data.columns else None,
+        goal=getattr(profile, "goal", "first-look"),
+        mode=getattr(profile, "mode", "standard"),
+        register=False,
+    )
+    selected.dataset_name = getattr(profile, "dataset_name", None)
+    selected.tree_name = getattr(profile, "tree_name", None)
+    selected.source = dict(getattr(profile, "source", {}) or {})
+    selected.profile_id = getattr(profile, "profile_id", selected.profile_id)
+    selected.ledger = getattr(profile, "ledger", None)
+    selected.tree_id = _profile_tree_id(profile)
+    return selected
+
+
+def _pull_title(name: str | None) -> str:
+    if name:
+        return f"Pull viewer state as {name}"
+    return "Pull viewer state"
+
+
+def _checkpoint_signature(
+    view_signature: str,
+    *,
+    operation: str,
+    output_name: str | None,
+    message: str | None,
+    note: str | None,
+) -> str:
+    return "|".join(
+        [
+            view_signature,
+            operation or "",
+            output_name or "",
+            message or "",
+            note or "",
+        ]
+    )
+
+
+def _state_options(record_profile: Any, data: pd.DataFrame) -> list[dict[str, Any]]:
+    try:
+        from stateframe.profile import build_profile
+
+        profile = build_profile(
+            data,
+            target=record_profile.target if record_profile.target in data.columns else None,
+            time=record_profile.time if record_profile.time in data.columns else None,
+            goal=record_profile.goal,
+            mode=record_profile.mode,
+            register=False,
+        )
+        return [recommendation.to_dict() for recommendation in profile.recommendations().top(12)]
+    except Exception:
+        return []
+
+
+def _resolve_recommendation(profile: Any, recommendation: int | str | dict[str, Any]):
+    recommendations = profile.recommendations()
+    if isinstance(recommendation, int):
+        top = recommendations.top(max(recommendation, 1))
+        if len(top) < recommendation or recommendation < 1:
+            raise IndexError(recommendation)
+        return top[recommendation - 1]
+    if isinstance(recommendation, dict):
+        lens = recommendation.get("lens")
+        rec_id = recommendation.get("id")
+    else:
+        lens = recommendation
+        rec_id = recommendation
+    for rec in recommendations:
+        if rec.id == rec_id or rec.lens == lens:
+            return rec
+    raise ValueError(f"Recommendation not found: {recommendation}")
+
+
+def _params_from_recommendation(recommendation: Any) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    if recommendation.columns:
+        first_column = recommendation.columns[0]
+        if recommendation.lens.startswith(
+            (
+                "time.",
+                "concentration.",
+                "distribution.",
+                "categorical.",
+                "target.",
+                "text.",
+            )
+        ):
+            params["column"] = first_column
+    return params
 
 
 def _selected_view_title(entry: dict[str, Any] | None) -> str:

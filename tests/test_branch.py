@@ -77,6 +77,23 @@ def test_custom_branch_records_plot_artifact_under_parent_state(tmp_path):
     assert entry.params["custom"]["kind"] == "python_artifact"
 
 
+def test_custom_branch_records_plotly_figure_as_live_artifact(tmp_path):
+    px = pytest.importorskip("plotly.express")
+
+    sf.workspace.configure(root=tmp_path, name="custom plotly artifacts")
+    scan = sf.scan(pd.DataFrame({"x": [1, 2, 3], "y": [3, 1, 4]}), name="numbers")
+    figure = px.line(scan.data, x="x", y="y", title="Live line")
+
+    entry = sf.branch(scan).save_plot(figure, name="line")
+    artifact = entry.artifacts[0]
+
+    assert artifact["format"] == "plotly_html"
+    assert artifact["engine"] == "plotly"
+    assert artifact["plotly_json"]["data"]
+    assert artifact["html"]
+    assert artifact["preview_data_url"].startswith("data:image/png;base64,")
+
+
 def test_viewer_save_branch_request_records_state(tmp_path):
     pytest.importorskip("anywidget")
 

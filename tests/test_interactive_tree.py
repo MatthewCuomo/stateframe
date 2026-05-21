@@ -52,6 +52,21 @@ def test_initial_ledger_state_selects_active_entry():
     assert state["selectedEntryId"] == payload["ledger"]["active_entry_id"]
     assert state["kindFilter"] == "all"
     assert state["showOnlyStateful"] is False
+    assert state["collapsedEntryIds"] == []
+
+
+def test_tree_view_launches_shared_web_tree_surface():
+    pytest.importorskip("anywidget")
+    from stateframe.interactive.web import WorkspaceWebViewer
+
+    scan = sf.scan(pd.DataFrame({"x": [1, 2, 3]}), name="numbers")
+    tree = scan.tree_view(height=500)
+
+    assert isinstance(tree, WorkspaceWebViewer)
+    assert tree.state["viewMode"] == "web"
+    assert tree.payload["trees"][0]["tree_name"] == "numbers"
+    assert tree.payload["trees"][0]["tree_detail"]["entries"][0]["kind"] == "scan"
+    pd.testing.assert_frame_equal(tree.checkout_selected(), scan.data)
 
 
 def test_tree_view_api_reports_missing_interactive_extra_when_not_installed():

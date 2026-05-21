@@ -296,6 +296,10 @@ class Workspace:
         return self.metadata_dir / "web.json"
 
     @property
+    def sources_path(self) -> Path:
+        return self.metadata_dir / "sources.json"
+
+    @property
     def autosave_web(self) -> bool:
         return bool(self._config.autosave_web)
 
@@ -346,6 +350,7 @@ class Workspace:
             "metadata_dir": str(self.metadata_dir),
             "workspace_path": str(self.workspace_path),
             "web_path": str(self.web_path),
+            "sources_path": str(self.sources_path),
             "tree_dir": str(self.trees_dir),
             "data_dir": str(self.data_dir),
             "artifact_dir": str(self.artifact_dir),

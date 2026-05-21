@@ -95,3 +95,65 @@ def test_custom_data_source_lists_objects_and_previews():
     assert preview.source["preview_limit"] == 1
 
     sf.sources.clear()
+
+
+def test_saved_source_connection_auto_imports_for_query(tmp_path):
+    sf.sources.clear()
+    sf.workspace.configure(root=tmp_path, name="saved sources")
+    sf.workspace.init()
+    source_file = tmp_path / "company_query_source.py"
+    source_file.write_text(
+        "\n".join(
+            [
+                "import pandas as pd",
+                "import stateframe as sf",
+                "",
+                "def register():",
+                "    def run_query(query, params=None, **kwargs):",
+                "        assert 'sales' in query",
+                "        return sf.QueryResult(",
+                "            data=pd.DataFrame({'sale_id': [1, 2], 'amount': [10.0, 15.0]}),",
+                "            metadata={'system': 'company-data'},",
+                "        )",
+                "    return sf.sources.register(",
+                "        'company_warehouse',",
+                "        run_query,",
+                "        display_name='Company warehouse',",
+                "        description='Internal query source',",
+                "    )",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    saved = sf.sources.save_connection(
+        "company_warehouse",
+        "company_query_source.py:register",
+        display_name="Company warehouse",
+        description="Internal query source",
+        store_params=False,
+        register_now=False,
+    )
+    assert saved["id"] == "company_warehouse"
+
+    sf.sources.clear()
+    scan = sf.query(
+        "company_warehouse",
+        "select * from sales",
+        name="sales_query",
+        save_tree=True,
+    )
+
+    assert scan.summary()["row_count"] == 2
+    assert scan.source["source_id"] == "company_warehouse"
+    assert scan.source["metadata"] == {"system": "company-data"}
+    assert sf.sources.list_connections()[0]["registered"] is True
+    assert any(tree["tree_name"] == "sales_query" for tree in sf.workspace.list_trees())
+
+    from stateframe.interactive.web import build_web_payload
+
+    payload = build_web_payload(sf.workspace.current(), height=500, title=None)
+    assert payload["source_connections"][0]["id"] == "company_warehouse"
+    assert payload["sources"][0]["id"] == "company_warehouse"
+
+    sf.sources.clear()

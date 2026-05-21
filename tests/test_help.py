@@ -24,5 +24,34 @@ def test_help_getdata_explains_custom_query_sources():
     assert isinstance(guide, str)
     assert "Stateframe Get Data and query-source setup:" in guide
     assert "sf.sources.register" in guide
+    assert "sf.sources.save_connection" in guide
     assert "sf.query" in guide
+    assert "company_query_source.py:register" in guide
+    assert "Adapt your existing data entry point" in guide
+    assert "does not stream partial rows" in guide
     assert "store_query=False" in guide
+
+
+def test_help_namespace_supports_get_data():
+    guide = sf.help.get_data()
+
+    assert isinstance(guide, str)
+    assert "Get Data -> Query Data" in guide
+    assert "auto-import" in guide
+
+
+def test_help_tree_workflow_explains_pull_and_add():
+    guide = sf.help.tree_workflow()
+
+    assert isinstance(guide, str)
+    assert "Stateframe tree pull/add workflow:" in guide
+    assert 'sf.pull("state-entry_abc123")' in guide
+    assert "sf.branch(web)" in guide
+    assert "custom.save_data" in guide
+    assert "custom.save_plot" in guide
+    assert "%%sf_leaf" in guide
+
+
+def test_help_tree_aliases():
+    assert sf.help.pull_tree() == sf.help.tree_workflow()
+    assert sf.help_tree() == sf.help.tree_workflow()

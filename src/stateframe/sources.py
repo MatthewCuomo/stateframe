@@ -8,9 +8,13 @@ object plus lineage metadata that can become the root source for a scan tree.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
 
@@ -158,6 +162,8 @@ class SourceLike(Protocol):
 
 
 _REGISTRY: dict[str, DataSource] = {}
+_IMPORT_STATUS: dict[str, dict[str, Any]] = {}
+_AUTO_REGISTERING = False
 
 
 def register(
@@ -221,21 +227,217 @@ def clear() -> None:
     """Remove all registered data sources."""
 
     _REGISTRY.clear()
+    _IMPORT_STATUS.clear()
 
 
 def get(source_id: str) -> DataSource:
     """Return a registered data source by id."""
 
+    clean_id = _clean_source_id(source_id)
+    if clean_id not in _REGISTRY:
+        auto_register_connections(source_id=clean_id, raise_errors=False)
     try:
-        return _REGISTRY[source_id]
+        return _REGISTRY[clean_id]
     except KeyError as exc:
-        raise KeyError(f"Unknown stateframe data source: {source_id}") from exc
+        status = _IMPORT_STATUS.get(clean_id) or {}
+        suffix = f" Last import error: {status.get('error')}" if status.get("error") else ""
+        raise KeyError(f"Unknown stateframe data source: {source_id}.{suffix}") from exc
 
 
-def list_sources() -> list[dict[str, Any]]:
+def list_sources(*, auto_register: bool = True) -> list[dict[str, Any]]:
     """Return registered sources for UI dropdowns and diagnostics."""
 
+    if auto_register:
+        auto_register_connections(raise_errors=False)
     return [source.to_dict() for source in _REGISTRY.values()]
+
+
+def save_connection(
+    source_id: str,
+    import_path: str,
+    *,
+    display_name: str | None = None,
+    description: str = "",
+    enabled: bool = True,
+    store_query: bool = True,
+    store_params: bool = True,
+    replace: bool = True,
+    register_now: bool = True,
+) -> dict[str, Any]:
+    """Persist a workspace query-source connection profile.
+
+    The connection stores only non-secret wiring. ``import_path`` should point
+    to a Python function that registers the source, for example
+    ``"company_query_source.py:register"`` or
+    ``"company_query_source:register"``.
+    """
+
+    clean_id = _clean_source_id(source_id)
+    path = str(import_path or "").strip()
+    if not path:
+        raise ValueError("Connection import path cannot be empty.")
+    existing = {item["id"]: item for item in load_connections()}
+    if clean_id in existing and not replace:
+        raise ValueError(f"Data source connection already exists: {clean_id}")
+    created_at = existing.get(clean_id, {}).get("created_at") or _now()
+    record = {
+        "id": clean_id,
+        "display_name": display_name or existing.get(clean_id, {}).get("display_name") or clean_id,
+        "description": description,
+        "import_path": path,
+        "enabled": bool(enabled),
+        "store_query": bool(store_query),
+        "store_params": bool(store_params),
+        "created_at": created_at,
+        "updated_at": _now(),
+    }
+    existing[clean_id] = _json_safe(record)
+    _write_connections(list(existing.values()))
+    if register_now and enabled:
+        try:
+            register_connection(record, raise_errors=True)
+        except Exception as exc:
+            _IMPORT_STATUS[clean_id] = {
+                "status": "error",
+                "error": str(exc),
+                "imported_at": _now(),
+            }
+            raise
+    return {**record, **(_IMPORT_STATUS.get(clean_id) or {})}
+
+
+def delete_connection(source_id: str, *, unregister_source: bool = False) -> None:
+    """Delete a saved connection profile from the active workspace."""
+
+    clean_id = _clean_source_id(source_id)
+    records = [item for item in load_connections() if item.get("id") != clean_id]
+    _write_connections(records)
+    _IMPORT_STATUS.pop(clean_id, None)
+    if unregister_source:
+        unregister(clean_id)
+
+
+def load_connections() -> list[dict[str, Any]]:
+    """Load saved workspace connection profiles without importing them."""
+
+    path = _connections_path(init=False)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DataSourceError(f"Could not read stateframe source connections: {path}") from exc
+    records = payload.get("connections") if isinstance(payload, dict) else []
+    if not isinstance(records, list):
+        return []
+    return [_normalize_connection_record(item) for item in records if isinstance(item, dict)]
+
+
+def list_connections(*, auto_register: bool = False) -> list[dict[str, Any]]:
+    """Return saved connections enriched with import/registry status."""
+
+    if auto_register:
+        auto_register_connections(raise_errors=False)
+    result = []
+    for record in load_connections():
+        source_id = record["id"]
+        status = _IMPORT_STATUS.get(source_id) or {}
+        registered = source_id in _REGISTRY
+        source = _REGISTRY.get(source_id)
+        result.append(
+            _json_safe(
+                {
+                    **record,
+                    "registered": registered,
+                    "status": "registered" if registered else status.get("status", "not_loaded"),
+                    "error": status.get("error", ""),
+                    "source": source.to_dict() if source is not None else None,
+                }
+            )
+        )
+    return result
+
+
+def register_connection(
+    connection: str | Mapping[str, Any],
+    *,
+    raise_errors: bool = True,
+) -> DataSource | None:
+    """Import and run one saved connection profile."""
+
+    record = _connection_record(connection)
+    source_id = record["id"]
+    if not record.get("enabled", True):
+        _IMPORT_STATUS[source_id] = {"status": "disabled", "error": "", "imported_at": _now()}
+        return _REGISTRY.get(source_id)
+    try:
+        before = set(_REGISTRY)
+        target = _load_import_target(str(record.get("import_path") or ""))
+        returned = target() if callable(target) else None
+        if isinstance(returned, DataSource):
+            register(returned)
+        elif isinstance(returned, tuple):
+            for item in returned:
+                if isinstance(item, DataSource):
+                    register(item)
+        if source_id not in _REGISTRY and source_id in before:
+            pass
+        if source_id not in _REGISTRY:
+            raise DataSourceError(
+                f"Connection {source_id!r} imported {record.get('import_path')!r}, "
+                "but no source with that id was registered. The import target should "
+                "call sf.sources.register(...) or return a sf.DataSource."
+            )
+        _IMPORT_STATUS[source_id] = {
+            "status": "registered",
+            "error": "",
+            "imported_at": _now(),
+        }
+        return _REGISTRY[source_id]
+    except Exception as exc:
+        _IMPORT_STATUS[source_id] = {
+            "status": "error",
+            "error": str(exc),
+            "imported_at": _now(),
+        }
+        if raise_errors:
+            raise
+        return None
+
+
+def auto_register_connections(
+    *,
+    source_id: str | None = None,
+    raise_errors: bool = False,
+) -> list[dict[str, Any]]:
+    """Import enabled workspace connections into the in-memory registry."""
+
+    global _AUTO_REGISTERING
+    if _AUTO_REGISTERING:
+        return []
+    _AUTO_REGISTERING = True
+    try:
+        records = load_connections()
+        if source_id is not None:
+            clean_id = _clean_source_id(source_id)
+            records = [item for item in records if item.get("id") == clean_id]
+        statuses = []
+        for record in records:
+            try:
+                provider = register_connection(record, raise_errors=raise_errors)
+                status = {
+                    "id": record["id"],
+                    "status": "registered" if provider is not None else (_IMPORT_STATUS.get(record["id"], {}).get("status") or "not_loaded"),
+                    "error": (_IMPORT_STATUS.get(record["id"], {}) or {}).get("error", ""),
+                }
+            except Exception as exc:
+                if raise_errors:
+                    raise
+                status = {"id": record["id"], "status": "error", "error": str(exc)}
+            statuses.append(status)
+        return statuses
+    finally:
+        _AUTO_REGISTERING = False
 
 
 def query(
@@ -356,6 +558,105 @@ def _clean_source_id(value: str) -> str:
     return source_id
 
 
+def _normalize_connection_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    source_id = _clean_source_id(str(record.get("id") or record.get("source_id") or ""))
+    return {
+        "id": source_id,
+        "display_name": str(record.get("display_name") or source_id),
+        "description": str(record.get("description") or ""),
+        "import_path": str(record.get("import_path") or ""),
+        "enabled": record.get("enabled") is not False,
+        "store_query": record.get("store_query") is not False,
+        "store_params": record.get("store_params") is not False,
+        "created_at": str(record.get("created_at") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+    }
+
+
+def _connection_record(connection: str | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(connection, str):
+        clean_id = _clean_source_id(connection)
+        for record in load_connections():
+            if record.get("id") == clean_id:
+                return record
+        raise KeyError(f"Unknown stateframe source connection: {connection}")
+    return _normalize_connection_record(connection)
+
+
+def _connections_path(*, init: bool) -> Path:
+    from stateframe import workspace
+
+    current = workspace.current()
+    if init:
+        current.init()
+    return current.sources_path
+
+
+def _write_connections(records: list[dict[str, Any]]) -> None:
+    path = _connections_path(init=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "kind": "stateframe_source_connections",
+        "updated_at": _now(),
+        "connections": sorted(
+            [_json_safe(_normalize_connection_record(record)) for record in records],
+            key=lambda item: item.get("id", ""),
+        ),
+    }
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+
+def _load_import_target(import_path: str) -> Callable[..., Any] | None:
+    path = str(import_path or "").strip()
+    if not path:
+        raise ValueError("Connection import path cannot be empty.")
+    module_ref, _, attr = path.partition(":")
+    module = _import_connection_module(module_ref)
+    if not attr:
+        return None
+    target: Any = module
+    for part in attr.split("."):
+        target = getattr(target, part)
+    if not callable(target):
+        raise TypeError(f"Import target is not callable: {import_path}")
+    return target
+
+
+def _import_connection_module(module_ref: str):
+    ref = str(module_ref or "").strip()
+    if not ref:
+        raise ValueError("Connection import path is missing a module or file path.")
+    from stateframe import workspace
+
+    root = workspace.current().root
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    candidate = Path(ref).expanduser()
+    is_path_like = (
+        ref.endswith(".py")
+        or "/" in ref
+        or "\\" in ref
+        or candidate.exists()
+        or (root / candidate).exists()
+    )
+    if not is_path_like:
+        return importlib.import_module(ref)
+    resolved = candidate if candidate.is_absolute() else root / candidate
+    resolved = resolved.resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Connection import file does not exist: {resolved}")
+    digest = hashlib.sha256(f"{resolved}:{resolved.stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:16]
+    module_name = f"stateframe_user_source_{digest}"
+    spec = importlib.util.spec_from_file_location(module_name, resolved)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not import connection file: {resolved}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
@@ -385,12 +686,18 @@ __all__ = [
     "DataSourceError",
     "FunctionDataSource",
     "QueryResult",
+    "auto_register_connections",
     "clear",
+    "delete_connection",
     "get",
+    "list_connections",
     "list_objects",
     "list_sources",
+    "load_connections",
     "preview",
     "query",
     "register",
+    "register_connection",
+    "save_connection",
     "unregister",
 ]

@@ -95,6 +95,10 @@ def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
     assert result.spec.sample["max_rows"] == 30
     assert any("sample" in warning for warning in result.warnings)
     assert "residual" in result.predictions[0]
+    assert "median_absolute_error" in result.metrics
+    assert result.holdout["residual_summary"]["p90_absolute_error"] is not None
+    assert result.holdout["worst_predictions"]
+    assert result.holdout["residual_bins"]
 
 
 def test_modeling_experiment_names_datetime_features_after_preprocessing():

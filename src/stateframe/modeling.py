@@ -1191,12 +1191,80 @@ def _supervised_metrics(y_true: pd.Series, predictions: Any, proba: Any, *, task
         }
     mae = metric_funcs["mean_absolute_error"](y_true, predictions)
     mse = metric_funcs["mean_squared_error"](y_true, predictions)
+    diagnostics = _regression_diagnostics(y_true, predictions)
     metrics = {
         "mae": _clean_metric(mae),
         "rmse": _clean_metric(float(np.sqrt(mse))),
         "r2": _clean_metric(metric_funcs["r2_score"](y_true, predictions)),
+        "median_absolute_error": diagnostics["residual_summary"].get("median_absolute_error"),
+        "bias_mean": diagnostics["residual_summary"].get("mean_residual"),
     }
-    return {"metrics": metrics}
+    return {"metrics": metrics, **diagnostics}
+
+
+def _regression_diagnostics(y_true: pd.Series, predictions: Any) -> dict[str, Any]:
+    actual = pd.to_numeric(y_true, errors="coerce")
+    predicted = pd.Series(predictions, index=y_true.index, name="prediction")
+    predicted = pd.to_numeric(predicted, errors="coerce")
+    frame = pd.DataFrame({"actual": actual, "prediction": predicted}).dropna()
+    if frame.empty:
+        return {"residual_summary": {}, "worst_predictions": [], "residual_bins": []}
+    frame["residual"] = frame["prediction"] - frame["actual"]
+    frame["absolute_error"] = frame["residual"].abs()
+    non_zero = frame["actual"].abs() > 0
+    frame["absolute_percentage_error"] = np.nan
+    frame.loc[non_zero, "absolute_percentage_error"] = frame.loc[non_zero, "absolute_error"] / frame.loc[non_zero, "actual"].abs()
+    residual = frame["residual"]
+    absolute_error = frame["absolute_error"]
+    summary = {
+        "mean_residual": _clean_metric(residual.mean()),
+        "median_residual": _clean_metric(residual.median()),
+        "residual_std": _clean_metric(residual.std(ddof=0)),
+        "median_absolute_error": _clean_metric(absolute_error.median()),
+        "p90_absolute_error": _clean_metric(absolute_error.quantile(0.9)),
+        "max_absolute_error": _clean_metric(absolute_error.max()),
+        "mean_absolute_percentage_error": _clean_metric(frame["absolute_percentage_error"].mean()),
+        "over_prediction_rate": _clean_metric((residual > 0).mean()),
+        "within_10pct_rate": _clean_metric((frame["absolute_percentage_error"] <= 0.10).mean()) if non_zero.any() else None,
+        "within_20pct_rate": _clean_metric((frame["absolute_percentage_error"] <= 0.20).mean()) if non_zero.any() else None,
+    }
+    bins = _residual_bins(residual, bin_count=12)
+    worst = []
+    for index, row in frame.sort_values("absolute_error", ascending=False).head(15).iterrows():
+        worst.append(
+            {
+                "index": _json_ready(index),
+                "actual": _clean_metric(row["actual"]),
+                "prediction": _clean_metric(row["prediction"]),
+                "residual": _clean_metric(row["residual"]),
+                "absolute_error": _clean_metric(row["absolute_error"]),
+                "absolute_percentage_error": _clean_metric(row["absolute_percentage_error"]),
+            }
+        )
+    return {
+        "residual_summary": summary,
+        "worst_predictions": worst,
+        "residual_bins": bins,
+    }
+
+
+def _residual_bins(values: pd.Series, *, bin_count: int) -> list[dict[str, Any]]:
+    clean = pd.to_numeric(values, errors="coerce").dropna()
+    if clean.empty:
+        return []
+    minimum = float(clean.min())
+    maximum = float(clean.max())
+    if minimum == maximum:
+        return [{"start": _clean_metric(minimum), "end": _clean_metric(maximum), "count": int(clean.shape[0])}]
+    counts, edges = np.histogram(clean.to_numpy(dtype=float), bins=max(2, int(bin_count)))
+    return [
+        {
+            "start": _clean_metric(edges[index]),
+            "end": _clean_metric(edges[index + 1]),
+            "count": int(count),
+        }
+        for index, count in enumerate(counts)
+    ]
 
 
 def _predict_proba_safe(model: Any, X: pd.DataFrame) -> Any:

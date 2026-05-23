@@ -2721,8 +2721,8 @@ function renderModelingExperimentResult(result) {
   panel.appendChild(title);
   panel.appendChild(section("Training Setup", renderModelingTrainingSetup(result)));
   panel.appendChild(section("Metrics", renderModelingMetricTiles(result.metrics || {})));
-  if (result.task === "regression" && Array.isArray(result.predictions) && result.predictions.length) {
-    panel.appendChild(section("Prediction Check", renderModelingRegressionDiagnostics(result.predictions)));
+  if (result.task === "regression" && (Array.isArray(result.predictions) && result.predictions.length || result.holdout?.residual_summary)) {
+    panel.appendChild(section("Prediction Check", renderModelingRegressionDiagnostics(result)));
   }
   if (result.holdout?.confusion_matrix) {
     panel.appendChild(section("Confusion Matrix", renderModelingConfusionMatrix(result.holdout.confusion_matrix, result.holdout.class_labels || [])));
@@ -2787,12 +2787,20 @@ function renderModelingMetricTiles(metrics) {
     const tile = document.createElement("div");
     tile.className = "stateframe-web-model-metric";
     tile.append(
-      textSpan(formatNumber(metrics[key]), "stateframe-web-model-metric-value"),
+      textSpan(formatModelingMetricValue(key, metrics[key]), "stateframe-web-model-metric-value"),
       textSpan(key.replaceAll("_", " "), "stateframe-web-model-metric-label"),
     );
     wrap.appendChild(tile);
   }
   return wrap;
+}
+
+function formatModelingMetricValue(key, value) {
+  const label = String(key || "").toLowerCase();
+  if (label.includes("rate") || label.includes("within") || label.includes("percentage")) {
+    return formatPercent(value);
+  }
+  return formatNumber(value);
 }
 
 function renderModelingConfusionMatrix(matrix, labels) {
@@ -2847,7 +2855,9 @@ function renderModelingCurvePanel(curves) {
   return wrap.children.length ? wrap : empty("No curve data available.");
 }
 
-function renderModelingRegressionDiagnostics(rows) {
+function renderModelingRegressionDiagnostics(result) {
+  const rows = result.predictions || [];
+  const holdout = result.holdout || {};
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-model-diagnostics";
   const pairs = (rows || [])
@@ -2858,23 +2868,83 @@ function renderModelingRegressionDiagnostics(rows) {
       index: row.index,
     }))
     .filter((row) => Number.isFinite(row.actual) && Number.isFinite(row.prediction));
-  if (!pairs.length) return empty("No numeric prediction sample available.");
-  wrap.appendChild(renderModelingActualPredictionChart(pairs));
+  if (holdout.residual_summary && Object.keys(holdout.residual_summary).length) {
+    wrap.appendChild(renderModelingResidualSummary(holdout.residual_summary));
+  }
+  if (Array.isArray(holdout.residual_bins) && holdout.residual_bins.length) {
+    wrap.appendChild(renderModelingResidualHistogram(holdout.residual_bins));
+  }
+  if (pairs.length) {
+    wrap.appendChild(renderModelingActualPredictionChart(pairs));
+  }
   const table = document.createElement("table");
   table.className = "stateframe-web-table";
   const thead = document.createElement("thead");
   const head = document.createElement("tr");
-  ["row", "actual", "prediction", "residual", "absolute error"].forEach((key) => head.appendChild(th(key)));
+  ["row", "actual", "prediction", "residual", "absolute error", "absolute % error"].forEach((key) => head.appendChild(th(key)));
   thead.appendChild(head);
   const tbody = document.createElement("tbody");
-  pairs.slice(0, 12).forEach((row) => {
+  const tableRows = Array.isArray(holdout.worst_predictions) && holdout.worst_predictions.length ? holdout.worst_predictions : pairs;
+  tableRows.slice(0, 12).forEach((row) => {
     const tr = document.createElement("tr");
-    tr.append(td(row.index), td(formatNumber(row.actual)), td(formatNumber(row.prediction)), td(formatNumber(row.residual)), td(formatNumber(Math.abs(row.residual))));
+    tr.append(
+      td(row.index),
+      td(formatNumber(row.actual)),
+      td(formatNumber(row.prediction)),
+      td(formatNumber(row.residual)),
+      td(formatNumber(row.absolute_error ?? Math.abs(Number(row.residual)))),
+      td(row.absolute_percentage_error === undefined || row.absolute_percentage_error === null ? "" : formatPercent(row.absolute_percentage_error)),
+    );
     tbody.appendChild(tr);
   });
   table.append(thead, tbody);
-  wrap.appendChild(table);
-  return wrap;
+  if (tableRows.length) wrap.appendChild(table);
+  return wrap.children.length ? wrap : empty("No numeric prediction diagnostics available.");
+}
+
+function renderModelingResidualSummary(summary) {
+  return renderModelingMetricTiles({
+    "median absolute error": summary.median_absolute_error,
+    "p90 absolute error": summary.p90_absolute_error,
+    "mean bias": summary.mean_residual,
+    "over prediction rate": summary.over_prediction_rate,
+    "within 10%": summary.within_10pct_rate,
+    "within 20%": summary.within_20pct_rate,
+  });
+}
+
+function renderModelingResidualHistogram(rows) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-model-curve";
+  card.appendChild(textSpan("Residual distribution", "stateframe-web-model-chart-title"));
+  const width = 320;
+  const height = 180;
+  const margin = { left: 34, right: 12, top: 14, bottom: 32 };
+  const counts = rows.map((row) => Number(row.count || 0));
+  const maxCount = Math.max(1, ...counts);
+  const barGap = 3;
+  const innerWidth = width - margin.left - margin.right;
+  const barWidth = innerWidth / Math.max(1, rows.length);
+  const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  svg.appendChild(svgNode("line", { x1: margin.left, y1: height - margin.bottom, x2: width - margin.right, y2: height - margin.bottom, class: "stateframe-web-model-axis" }));
+  rows.forEach((row, index) => {
+    const count = Number(row.count || 0);
+    const barHeight = (count / maxCount) * (height - margin.top - margin.bottom);
+    const x = margin.left + index * barWidth + barGap / 2;
+    const y = height - margin.bottom - barHeight;
+    const rect = svgNode("rect", {
+      x,
+      y,
+      width: Math.max(1, barWidth - barGap),
+      height: Math.max(1, barHeight),
+      class: "stateframe-web-model-hist-bar",
+    });
+    rect.appendChild(svgNode("title", {}, `${formatNumber(row.start)} to ${formatNumber(row.end)}: ${formatInt(count)}`));
+    svg.appendChild(rect);
+  });
+  svg.appendChild(svgNode("text", { x: width / 2, y: height - 8, class: "stateframe-web-model-axis-label" }, "prediction - actual"));
+  card.appendChild(svg);
+  return card;
 }
 
 function renderModelingActualPredictionChart(rows) {

@@ -2208,6 +2208,11 @@
   fill: #dc2626;
 }
 
+.stateframe-web-model-hist-bar {
+  fill: #2563eb;
+  opacity: 0.72;
+}
+
 .stateframe-web-model-bar-row,
 .stateframe-web-model-contrib-row {
   display: grid;

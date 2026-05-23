@@ -693,10 +693,9 @@ function normalizeVisualizerState(raw, payload) {
     }
   }
   if (!Object.keys(fields).length) {
-    const first = defaultVisualColumn(payload, definition);
-    if (first) {
-      const firstField = (definition.fields || []).find((field) => field.required) || (definition.fields || [])[0];
-      if (firstField) fields[firstField.slot] = first;
+    const rawFields = raw?.fields && typeof raw.fields === "object" ? raw.fields : {};
+    if (!Object.keys(rawFields).length) {
+      Object.assign(fields, defaultFieldsForVisual(payload, definition));
     }
   }
   const filters = Array.isArray(raw?.filters)
@@ -3308,6 +3307,9 @@ function renderVisualRecipe(payload, visualState) {
   const fieldOptions = visualState.fieldOptions || {};
   const rows = {};
   rows.Type = definition.title || visualState.kind || "";
+  if (Array.isArray(fields.dimensions) && fields.dimensions.length) {
+    rows.Columns = visualFieldLabel(payload, fields.dimensions);
+  }
   const groupParts = [];
   for (const slot of ["x", "names", "locations", "path", "color", "facet", "facet_row", "theta"]) {
     const value = fields[slot];
@@ -3319,6 +3321,8 @@ function renderVisualRecipe(payload, visualState) {
   if (measureSlot) {
     const stat = fieldOptions[measureSlot]?.stat || defaultFieldOptionForSlot(payload, definition, measureSlot, fields[measureSlot]).stat || "raw";
     rows.Measure = `${visualStatLabel(stat)} ${visualFieldLabel(payload, fields[measureSlot])}`;
+  } else if (Array.isArray(fields.dimensions) && fields.dimensions.length) {
+    rows.Measure = "Not used";
   } else {
     rows.Measure = "Record count";
   }
@@ -3507,10 +3511,16 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-fields";
   for (const field of definition.fields || []) {
-    const row = document.createElement("label");
+    const row = document.createElement(field.multiple ? "div" : "label");
     row.className = "stateframe-web-visual-field";
     const label = document.createElement("span");
     label.textContent = `${field.label}${field.required ? " *" : ""}`;
+    const current = visualState.fields?.[field.slot];
+    if (field.multiple) {
+      row.append(label, renderVisualMultiField(payload, definition, field, visualState, setVisualizerState));
+      wrap.appendChild(row);
+      continue;
+    }
     const select = document.createElement("select");
     select.className = "stateframe-web-select";
     select.dataset.focusKey = `visual-field-${field.slot}`;
@@ -3518,19 +3528,17 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     blank.value = "";
     blank.textContent = field.multiple ? "Comma-select below or choose first" : "None";
     select.appendChild(blank);
-    for (const column of payload.columns || []) {
+    for (const column of visualCandidateColumns(payload, definition, field)) {
       const option = document.createElement("option");
       option.value = column.id;
       option.textContent = column.display_name || column.source_name || column.id;
       select.appendChild(option);
     }
-    const current = visualState.fields?.[field.slot];
-    select.value = Array.isArray(current) ? current[0] || "" : current || "";
+    select.value = current || "";
     select.addEventListener("change", () => {
       const next = { ...(visualState.fields || {}) };
       const nextFieldOptions = { ...(visualState.fieldOptions || {}) };
-      if (field.multiple) next[field.slot] = select.value ? [select.value] : [];
-      else if (select.value) {
+      if (select.value) {
         next[field.slot] = select.value;
         const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, select.value);
         if (Object.keys(defaults).length) nextFieldOptions[field.slot] = { ...defaults, ...(nextFieldOptions[field.slot] || {}) };
@@ -3546,22 +3554,72 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
       const behavior = renderVisualFieldBehavior(payload, definition, field, visualState, setVisualizerState);
       if (behavior) row.appendChild(behavior);
     }
-    if (field.multiple) {
-      const input = document.createElement("input");
-      input.className = "stateframe-web-input";
-      input.placeholder = "col_a, col_b, col_c";
-      input.dataset.focusKey = `visual-field-${field.slot}-multi`;
-      input.value = Array.isArray(current) ? current.join(", ") : current || "";
-      input.addEventListener("input", () => {
-        const next = { ...(visualState.fields || {}) };
-        next[field.slot] = input.value.split(",").map((item) => item.trim()).filter(Boolean);
-        setVisualizerState({ fields: next });
-      });
-      row.appendChild(input);
-    }
     wrap.appendChild(row);
   }
   return wrap.children.length ? wrap : empty("This visual does not require field bindings.");
+}
+
+function renderVisualMultiField(payload, definition, field, visualState, setVisualizerState) {
+  const current = Array.isArray(visualState.fields?.[field.slot]) ? visualState.fields[field.slot] : [];
+  const currentSet = new Set(current);
+  const candidates = visualCandidateColumns(payload, definition, field);
+  const panel = document.createElement("div");
+  panel.className = "stateframe-web-visual-multi";
+  const toolbar = document.createElement("div");
+  toolbar.className = "stateframe-web-visual-multi-toolbar";
+  const suggested = tinyButton("Suggested", () => {
+    const values = defaultMultipleColumnsForVisual(payload, definition, field);
+    setVisualizerState({ fields: { ...(visualState.fields || {}), [field.slot]: values } });
+  }, false, `Use suggested ${field.label.toLowerCase()}`);
+  const clear = tinyButton("Clear", () => {
+    setVisualizerState({ fields: { ...(visualState.fields || {}), [field.slot]: [] } });
+  }, false, `Clear ${field.label.toLowerCase()}`);
+  toolbar.append(suggested, clear, textSpan(`${formatInt(current.length)} selected`, "stateframe-web-visual-multi-count"));
+  panel.appendChild(toolbar);
+  const chips = document.createElement("div");
+  chips.className = "stateframe-web-visual-multi-chips";
+  if (current.length) {
+    for (const value of current) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "stateframe-web-visual-multi-chip";
+      chip.textContent = visualFieldLabel(payload, value);
+      chip.title = "Remove";
+      chip.addEventListener("click", () => {
+        const nextValues = current.filter((item) => item !== value);
+        setVisualizerState({ fields: { ...(visualState.fields || {}), [field.slot]: nextValues } });
+      });
+      chips.appendChild(chip);
+    }
+  } else {
+    chips.appendChild(textSpan("None selected", "stateframe-web-visual-help"));
+  }
+  panel.appendChild(chips);
+  const list = document.createElement("div");
+  list.className = "stateframe-web-visual-multi-list";
+  for (const column of candidates) {
+    const option = document.createElement("label");
+    option.className = "stateframe-web-visual-multi-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = currentSet.has(column.id);
+    checkbox.addEventListener("change", () => {
+      const nextSet = new Set(current);
+      if (checkbox.checked) nextSet.add(column.id);
+      else nextSet.delete(column.id);
+      setVisualizerState({ fields: { ...(visualState.fields || {}), [field.slot]: Array.from(nextSet) } });
+    });
+    const main = document.createElement("span");
+    main.className = "stateframe-web-visual-multi-option-main";
+    main.append(
+      textSpan(column.display_name || column.source_name || column.id, "stateframe-web-visual-multi-option-title"),
+      textSpan(`${column.semantic_type || "unknown"} / ${column.dtype || ""}`, "stateframe-web-visual-multi-option-meta"),
+    );
+    option.append(checkbox, main);
+    list.appendChild(option);
+  }
+  panel.appendChild(list.children.length ? list : empty("No matching columns."));
+  return panel;
 }
 
 function renderVisualFieldBehavior(payload, definition, field, visualState, setVisualizerState) {
@@ -4496,17 +4554,81 @@ function defaultFieldsForVisual(payload, definition) {
   const fieldsToFill = requiredFields.length ? requiredFields : fieldDefs.slice(0, 1);
   const used = new Set();
   for (const field of fieldsToFill) {
+    if (field.multiple) {
+      const columns = defaultMultipleColumnsForVisual(payload, definition, field, used);
+      if (columns.length) {
+        fields[field.slot] = columns;
+        columns.forEach((column) => used.add(column));
+      }
+      continue;
+    }
     const column = defaultVisualColumn(payload, definition, field, used);
     if (column) {
-      fields[field.slot] = field.multiple ? [column] : column;
-      if (!field.multiple) used.add(column);
+      fields[field.slot] = column;
+      used.add(column);
     }
   }
   return fields;
 }
 
-function defaultVisualColumn(payload, definition, field = null, used = new Set()) {
+function defaultMultipleColumnsForVisual(payload, definition, field, used = new Set()) {
+  let candidates = visualCandidateColumns(payload, definition, field).filter((column) => !used.has(column.id));
+  const kind = definition?.id || "";
+  if (field?.slot === "dimensions" && ["correlation_heatmap", "scatter_matrix", "pca_scatter", "parallel_coordinates"].includes(kind)) {
+    candidates = [...candidates].sort((left, right) => visualNumericDimensionScore(right) - visualNumericDimensionScore(left));
+  }
+  const limits = {
+    correlation_heatmap: 8,
+    scatter_matrix: 4,
+    pca_scatter: 6,
+    parallel_coordinates: 6,
+    parallel_categories: 5,
+    treemap: 3,
+    sunburst: 3,
+  };
+  const limit = limits[kind] || (field.slot === "path" ? 3 : 6);
+  return candidates.slice(0, limit).map((column) => column.id);
+}
+
+function visualNumericDimensionScore(column) {
+  const name = String(column?.source_name || column?.display_name || column?.id || "").toLowerCase();
+  const semantic = String(column?.semantic_type || "").toLowerCase();
+  let score = 0;
+  if (["amount", "nonnegative_amount", "percentage", "proportion", "numeric"].includes(semantic)) score += 2;
+  if (/(sold|list|price|amount|revenue|value|hoa|fee|concession)/.test(name)) score += 5;
+  if (/(sqft|square|bed|bath|garage|lot|days|year|age|floor|living|total)/.test(name)) score += 4;
+  if (/(rate|ratio|percent|score)/.test(name)) score += 3;
+  if (/(\b|_)(lat|lon|lng|long|zip|postal|geo|code|id|key)(\b|_)/.test(name)) score -= 8;
+  if (name === "area" || name.endsWith("_area")) score -= 5;
+  return score;
+}
+
+function visualCandidateColumns(payload, definition, field) {
   const columns = payload?.columns || [];
+  const kind = definition?.id || "";
+  if (!columns.length) return [];
+  if (field?.slot === "dimensions" && ["correlation_heatmap", "scatter_matrix", "pca_scatter", "parallel_coordinates"].includes(kind)) {
+    return columns.filter(visualColumnLooksNumeric).filter((column) => !visualColumnLooksIdentifier(column));
+  }
+  if (field?.slot === "dimensions" && kind === "parallel_categories") {
+    return columns.filter(visualColumnLooksCategorical);
+  }
+  if (field?.slot === "path") {
+    return columns.filter(visualColumnLooksCategorical);
+  }
+  if (field?.slot === "locations" && kind === "choropleth") {
+    return columns.filter(visualColumnLooksChoroplethLocation);
+  }
+  if (Array.isArray(field?.semantic) && field.semantic.length) {
+    const wanted = new Set(field.semantic.map((item) => String(item).toLowerCase()));
+    const matches = columns.filter((column) => wanted.has(String(column.semantic_type || "").toLowerCase()));
+    if (matches.length) return matches;
+  }
+  return columns;
+}
+
+function defaultVisualColumn(payload, definition, field = null, used = new Set()) {
+  const columns = visualCandidateColumns(payload, definition, field);
   if (!columns.length) return null;
   const available = columns.filter((column) => !used.has(column.id));
   const pool = available.length ? available : columns;
@@ -4605,8 +4727,30 @@ function defaultVisualStat(column, kind, slot) {
 }
 
 function visualColumnLooksNumeric(column) {
-  const text = `${column?.semantic_type || ""} ${column?.dtype || ""}`.toLowerCase();
+  const semantic = String(column?.semantic_type || "").toLowerCase();
+  if (["category", "string", "postal_code", "geographic", "binary", "nullable_binary", "boolean", "constant"].includes(semantic)) return false;
+  const text = `${semantic} ${column?.dtype || ""}`.toLowerCase();
   return ["numeric", "amount", "int", "float", "double", "decimal", "percentage", "proportion"].some((token) => text.includes(token));
+}
+
+function visualColumnLooksCategorical(column) {
+  const semantic = String(column?.semantic_type || "").toLowerCase();
+  const dtype = String(column?.dtype || "").toLowerCase();
+  return ["category", "string", "postal_code", "geographic", "binary", "nullable_binary", "boolean"].includes(semantic)
+    || dtype.includes("object")
+    || dtype.includes("string")
+    || dtype.includes("bool");
+}
+
+function visualColumnLooksIdentifier(column) {
+  const name = String(column?.source_name || column?.display_name || column?.id || "").toLowerCase();
+  const semantic = String(column?.semantic_type || "").toLowerCase();
+  return semantic.includes("identifier") || name === "id" || name.endsWith("_id") || name.endsWith("_key") || name.includes("uuid");
+}
+
+function visualColumnLooksChoroplethLocation(column) {
+  const name = String(column?.source_name || column?.display_name || column?.id || "").toLowerCase();
+  return ["state", "state_code", "us_state", "country", "country_name", "country_code", "iso3", "iso_3", "iso_alpha3"].some((token) => name === token || name.includes(token));
 }
 
 function visualColumnLooksDate(column) {

@@ -634,6 +634,7 @@ class _VisualRecommendationBuilder:
             if (column.semantic_type in {"postal_code", "geographic"} or _is_location_name(column.name))
             and not _is_latitude_name(column.name)
             and not _is_longitude_name(column.name)
+            and _is_choropleth_supported_location_name(column.name)
         ]
         measures = self._preferred_measures()
         if locations and measures:
@@ -1452,15 +1453,22 @@ def _prepare_hierarchy_data(
     group_cols = [column for column in path if column in data.columns]
     if not group_cols:
         return data, values
+    working = data.copy()
+    if options.get("include_missing_category"):
+        missing_label = str(options.get("missing_category_label") or "Missing")
+        for column in group_cols:
+            working[column] = working[column].where(working[column].notna(), missing_label)
+    else:
+        working = working.dropna(subset=group_cols)
     aggregation = _aggregation_option(options, default="sum")
     if not values or values not in data.columns or aggregation == "count":
-        result = data.groupby(group_cols, dropna=False).size().reset_index(name="value")
+        result = working.groupby(group_cols, dropna=False).size().reset_index(name="value")
         options["_resolved_y"] = "value"
         options["_resolved_y_label"] = "Record count"
         return result, "value"
     if aggregation == "none":
         aggregation = "sum"
-    result = _aggregate_grouped_values(data, group_cols=group_cols, value=values, aggregation=aggregation)
+    result = _aggregate_grouped_values(working, group_cols=group_cols, value=values, aggregation=aggregation)
     options["_resolved_y"] = values
     options["_resolved_y_label"] = _measure_label(values, aggregation)
     return result, values
@@ -2638,6 +2646,13 @@ def _is_location_name(name: str) -> bool:
     return lowered in tokens or any(f"_{token}" in lowered or f"{token}_" in lowered for token in tokens)
 
 
+def _is_choropleth_supported_location_name(name: str) -> bool:
+    lowered = name.lower()
+    state_tokens = {"state", "state_code", "us_state", "province"}
+    country_tokens = {"country", "country_name", "country_code", "iso3", "iso_3", "iso_alpha3"}
+    return lowered in state_tokens | country_tokens or any(token in lowered for token in state_tokens | country_tokens)
+
+
 def _is_identifier_like_name(name: str) -> bool:
     lowered = name.lower()
     return lowered in {"id", "key", "uuid"} or lowered.endswith("_id") or lowered.endswith("_key") or "identifier" in lowered
@@ -2802,6 +2817,10 @@ def _field(slot: str, label: str, *, required: bool = False, semantic: list[str]
         "semantic": semantic or [],
         "multiple": multiple,
     }
+
+
+_NUMERIC_FIELD_SEMANTICS = ["numeric", "amount", "numeric-like", "numeric_discrete", "percentage", "proportion"]
+_CATEGORICAL_FIELD_SEMANTICS = ["category", "string", "postal_code", "geographic", "binary", "nullable_binary", "boolean"]
 
 
 def _control(
@@ -3332,7 +3351,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Concentration Curve",
         "family": "Concentration",
         "description": "Cumulative share of value across sorted rows, useful for Lorenz, 80/20, and concentration analysis.",
-        "fields": [_field("values", "Values", required=True), _field("group", "Group")],
+        "fields": [_field("values", "Values", required=True, semantic=_NUMERIC_FIELD_SEMANTICS), _field("group", "Group", semantic=_CATEGORICAL_FIELD_SEMANTICS)],
         "option_groups": [_group("concentration", "Concentration", [
             _control("concentration_sort", "Sort", "select", default="descending", choices=[("descending", "Largest first"), ("ascending", "Smallest first")]),
             _control("show_equality_line", "Equality line", "checkbox", default=True),
@@ -3351,7 +3370,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Heatmap",
         "family": "Matrix",
         "description": "Correlation heatmap, count matrix, or aggregated pivot.",
-        "fields": [_ENCODING_FIELDS["x"], _ENCODING_FIELDS["y"], _field("z", "Value")],
+        "fields": [_ENCODING_FIELDS["x"], _ENCODING_FIELDS["y"], _field("z", "Value", semantic=_NUMERIC_FIELD_SEMANTICS)],
         "option_groups": [_group("marks", "Marks", [_control("color_scale", "Color scale", "select", default="Viridis", choices=[("Viridis", "Viridis"), ("Blues", "Blues"), ("RdBu_r", "Red/Blue"), ("Magma", "Magma")])]), *_COMMON_GROUPS],
     },
     {
@@ -3359,7 +3378,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Correlation Heatmap",
         "family": "Matrix",
         "description": "Numeric correlation matrix with method, absolute-value, triangle, and annotation controls.",
-        "fields": [_field("dimensions", "Dimensions", multiple=True)],
+        "fields": [_field("dimensions", "Dimensions", semantic=_NUMERIC_FIELD_SEMANTICS, multiple=True)],
         "option_groups": [_group("correlation", "Correlation", [
             _control("corr_method", "Method", "select", default="pearson", choices=[("pearson", "Pearson"), ("spearman", "Spearman"), ("kendall", "Kendall")]),
             _control("corr_abs", "Absolute values", "checkbox", default=False),
@@ -3372,7 +3391,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "PCA Scatter",
         "family": "Multivariate",
         "description": "Project many numeric columns into two principal components for multivariate clustering and separation checks.",
-        "fields": [_field("dimensions", "Dimensions", multiple=True), _ENCODING_FIELDS["color"]],
+        "fields": [_field("dimensions", "Dimensions", semantic=_NUMERIC_FIELD_SEMANTICS, multiple=True), _ENCODING_FIELDS["color"]],
         "option_groups": [_group("pca", "PCA", [_control("pca_scale", "Scale columns", "checkbox", default=True)]), *_COMMON_GROUPS],
     },
     {
@@ -3380,7 +3399,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Q-Q Plot",
         "family": "Diagnostics",
         "description": "Sample quantiles against theoretical normal quantiles for distribution diagnostics.",
-        "fields": [_field("values", "Values", required=True)],
+        "fields": [_field("values", "Values", required=True, semantic=_NUMERIC_FIELD_SEMANTICS)],
         "option_groups": _COMMON_GROUPS,
     },
     {
@@ -3404,7 +3423,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Treemap",
         "family": "Composition",
         "description": "Nested composition by category path.",
-        "fields": [_field("path", "Path columns", required=True, multiple=True), _field("values", "Values"), _ENCODING_FIELDS["color"]],
+        "fields": [_field("path", "Path columns", required=True, semantic=_CATEGORICAL_FIELD_SEMANTICS, multiple=True), _field("values", "Values", semantic=_NUMERIC_FIELD_SEMANTICS), _ENCODING_FIELDS["color"]],
         "option_groups": _COMMON_GROUPS,
     },
     {
@@ -3412,7 +3431,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Sunburst",
         "family": "Composition",
         "description": "Radial hierarchy and share of total by nested categories.",
-        "fields": [_field("path", "Path columns", required=True, multiple=True), _field("values", "Values"), _ENCODING_FIELDS["color"]],
+        "fields": [_field("path", "Path columns", required=True, semantic=_CATEGORICAL_FIELD_SEMANTICS, multiple=True), _field("values", "Values", semantic=_NUMERIC_FIELD_SEMANTICS), _ENCODING_FIELDS["color"]],
         "option_groups": _COMMON_GROUPS,
     },
     {
@@ -3442,7 +3461,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Scatter Matrix",
         "family": "Relationship",
         "description": "Pairwise relationships across multiple numeric columns.",
-        "fields": [_field("dimensions", "Dimensions", multiple=True), _ENCODING_FIELDS["color"]],
+        "fields": [_field("dimensions", "Dimensions", semantic=_NUMERIC_FIELD_SEMANTICS, multiple=True), _ENCODING_FIELDS["color"]],
         "option_groups": _COMMON_GROUPS,
     },
     {
@@ -3450,7 +3469,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Parallel Coordinates",
         "family": "Multivariate",
         "description": "Numeric multivariate profile across several columns.",
-        "fields": [_field("dimensions", "Dimensions", multiple=True), _ENCODING_FIELDS["color"]],
+        "fields": [_field("dimensions", "Dimensions", semantic=_NUMERIC_FIELD_SEMANTICS, multiple=True), _ENCODING_FIELDS["color"]],
         "option_groups": _COMMON_GROUPS,
     },
     {
@@ -3458,7 +3477,7 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "title": "Parallel Categories",
         "family": "Multivariate",
         "description": "Categorical path flow across several columns.",
-        "fields": [_field("dimensions", "Dimensions", multiple=True)],
+        "fields": [_field("dimensions", "Dimensions", semantic=_CATEGORICAL_FIELD_SEMANTICS, multiple=True)],
         "option_groups": _COMMON_GROUPS,
     },
     {

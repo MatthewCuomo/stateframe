@@ -1918,6 +1918,77 @@
   font-weight: 800;
 }
 
+.stateframe-web-visual-multi {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-multi-toolbar,
+.stateframe-web-visual-multi-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.stateframe-web-visual-multi-count {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.stateframe-web-visual-multi-chip {
+  border: 1px solid #c7d2fe;
+  border-radius: 7px;
+  background: #eef2ff;
+  color: #3730a3;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.stateframe-web-visual-multi-list {
+  display: grid;
+  gap: 4px;
+  max-height: 190px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.stateframe-web-visual-multi-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  background: #ffffff;
+  padding: 6px;
+}
+
+.stateframe-web-visual-multi-option-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-multi-option-title {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-visual-multi-option-meta {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .stateframe-web-visual-column {
   display: grid;
   gap: 6px;

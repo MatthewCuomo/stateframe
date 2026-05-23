@@ -315,6 +315,38 @@ def test_visualizer_field_options_control_pie_slice_values():
     assert list(count.data[0].values) == [2, 2]
 
 
+def test_visualizer_hierarchy_handles_missing_path_values():
+    df = pd.DataFrame(
+        {
+            "county": ["A", "A", "B", None],
+            "city": ["One", None, "Two", "Three"],
+            "type": ["Condo", "Townhome", "Condo", "Condo"],
+            "sold_price": [100_000, 200_000, 300_000, 400_000],
+        }
+    )
+
+    dropped = sf.visualize(
+        df,
+        {
+            "kind": "treemap",
+            "fields": {"path": ["county", "city", "type"], "values": "sold_price"},
+            "field_options": {"values": {"stat": "count"}},
+        },
+    )
+    labeled = sf.visualize(
+        df,
+        {
+            "kind": "sunburst",
+            "fields": {"path": ["county", "city", "type"], "values": "sold_price"},
+            "field_options": {"values": {"stat": "count"}},
+            "options": {"include_missing_category": True, "missing_category_label": "Missing"},
+        },
+    )
+
+    assert dropped.data
+    assert "Missing" in set(labeled.data[0].labels)
+
+
 def test_visualizer_recommends_average_price_over_time():
     df = pd.DataFrame(
         {
@@ -329,6 +361,20 @@ def test_visualizer_recommends_average_price_over_time():
 
     assert line.spec.field_options["y"]["stat"] == "mean"
     assert "Average sold_price" in line.title
+
+
+def test_visual_catalog_marks_multicolumn_visual_fields_by_semantic():
+    catalog = sf.visual_catalog()
+    definitions = {item["id"]: item for item in catalog["plot_types"]}
+
+    corr_dimensions = definitions["correlation_heatmap"]["fields"][0]
+    parallel_categories = definitions["parallel_categories"]["fields"][0]
+    treemap_path = definitions["treemap"]["fields"][0]
+
+    assert corr_dimensions["multiple"] is True
+    assert "numeric" in corr_dimensions["semantic"]
+    assert "category" in parallel_categories["semantic"]
+    assert "category" in treemap_path["semantic"]
 
 
 def test_visualizer_supports_labels_range_slider_and_facet_axis_controls():

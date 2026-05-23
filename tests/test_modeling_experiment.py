@@ -97,6 +97,30 @@ def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
     assert "residual" in result.predictions[0]
 
 
+def test_modeling_experiment_names_datetime_features_after_preprocessing():
+    rows = 48
+    df = pd.DataFrame(
+        {
+            "sold_date": pd.date_range("2024-01-01", periods=rows, freq="7D"),
+            "sqft": [900 + value * 20 for value in range(rows)],
+            "price": [200_000 + value * 6_000 for value in range(rows)],
+        }
+    )
+    scan = sf.scan(df, target="price", goal="modeling")
+
+    result = scan.modeling_experiment(
+        {
+            "task": "regression",
+            "estimator": "random_forest",
+            "explanation": {"enabled": True, "method": "model_importance"},
+        }
+    )
+
+    feature_names = [row["feature"] for row in result.feature_importance]
+    assert any(name.startswith("sold_date_") for name in feature_names)
+    assert not any(name.startswith("datetime_") for name in feature_names)
+
+
 def test_modeling_experiment_supports_xgboost_when_available():
     pytest.importorskip("xgboost")
     scan = sf.scan(_classification_frame(), target="target", goal="modeling")

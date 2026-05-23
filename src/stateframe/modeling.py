@@ -1288,6 +1288,16 @@ def _column_transformer_feature_names(preprocessor: Any, X: pd.DataFrame) -> lis
         if transformer == "passthrough":
             names.extend(input_names)
             continue
+        if str(transformer_name) == "datetime":
+            date_names = [
+                f"{name}_{part}"
+                for name in input_names
+                for part in ("year", "month", "day", "weekday")
+            ]
+            width = _transformer_width(transformer, X, input_names)
+            if width == len(date_names):
+                names.extend(date_names)
+                continue
         try:
             output_names = transformer.get_feature_names_out(input_names)
             names.extend(str(name) for name in output_names)

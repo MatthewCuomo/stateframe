@@ -585,6 +585,55 @@ def test_web_modeling_workbench_opens_and_saves_branch(tmp_path):
     assert "city_Unknown" in reloaded_prepared.columns
 
 
+def test_web_modeling_apply_filters_target_derived_actions(tmp_path):
+    pytest.importorskip("anywidget")
+
+    source = tmp_path / "price_modeling.csv"
+    pd.DataFrame(
+        {
+            "listing_id": [100 + value for value in range(12)],
+            "sold_price": [200_000 + value * 12_000 for value in range(12)],
+            "sqft_living": [900 + value * 80 for value in range(12)],
+            "city": ["A", "B", "C"] * 4,
+        }
+    ).to_csv(source, index=False)
+
+    sf.workspace.configure(root=tmp_path, name="web modeling leakage")
+    scan = sf.scan_path("price_modeling.csv", name="price_modeling", goal="modeling")
+    scan.save_data(name="root_snapshot", also_save_tree=True)
+
+    web = sf.web()
+    root_entry = web.payload["trees"][0]["root_entry_id"]
+    web.state = {
+        **web.current_state(),
+        "selectedTreeId": web.payload["trees"][0]["tree_id"],
+        "selectedEntryId": root_entry,
+    }
+    opened = web.open_modeling()
+    actions = opened["payload"]["modeling"]["actions"]
+    assert any(action["column"] == "sold_price_per_sqft_living" for action in actions)
+    column_ids = {
+        column["source_name"]: column["id"]
+        for column in opened["payload"]["columns"]
+    }
+
+    saved = web.apply_modeling_workbench(
+        {
+            **opened["state"],
+            "selectedActionIds": [action["id"] for action in actions],
+            "experiment": {
+                **opened["state"]["experiment"],
+                "target": column_ids["sold_price"],
+                "task": "regression",
+            },
+        }
+    )
+
+    prepared = web._modeling_record_profile.checkout(saved["id"])
+    assert saved["summary"]["filtered_target_action_count"] >= 1
+    assert "sold_price_per_sqft_living" not in prepared.columns
+
+
 def test_web_command_selection_overrides_stale_widget_state(tmp_path):
     pytest.importorskip("anywidget")
 

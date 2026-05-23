@@ -1129,6 +1129,19 @@ if anywidget is not None and traitlets is not None:
                 for action_id in state.get("selectedActionIds", [])
                 if action_id
             ]
+            experiment = _resolve_modeling_experiment_columns(dict(state.get("experiment") or {}), payload)
+            target = experiment.get("target") or (payload.get("modeling") or {}).get("target")
+            selected_action_ids, filtered_target_action_count = _filter_modeling_action_ids_for_target(
+                selected_action_ids,
+                payload,
+                target,
+            )
+            if target:
+                state = {
+                    **dict(state),
+                    "experiment": experiment,
+                    "selectedActionIds": selected_action_ids,
+                }
             action_control_values = _action_control_values(state)
             scale_method = state.get("scaleMethod") or "none"
             plan = self._modeling_plan or self._modeling_view_profile.modeling_plan()
@@ -1151,6 +1164,7 @@ if anywidget is not None and traitlets is not None:
                 "include_target": bool(state.get("includeTarget", True)),
                 "scale_method": scale_method,
                 "action_control_override_count": len(action_control_values),
+                "filtered_target_action_count": filtered_target_action_count,
             }
             entry = self._modeling_record_profile.record_state(
                 result,
@@ -2679,6 +2693,59 @@ def _resolve_modeling_experiment_columns(
         resolved_features = resolve(result.get("features"))
         result["features"] = resolved_features if isinstance(resolved_features, list) else None
     return result
+
+
+def _filter_modeling_action_ids_for_target(
+    selected_action_ids: list[str],
+    payload: dict[str, Any],
+    target: Any,
+) -> tuple[list[str], int]:
+    if not target:
+        return selected_action_ids, 0
+    action_lookup = {
+        str(action.get("id")): action
+        for action in (payload.get("modeling") or {}).get("actions") or []
+        if action.get("id")
+    }
+    kept: list[str] = []
+    filtered = 0
+    for action_id in selected_action_ids:
+        action = action_lookup.get(action_id)
+        if action is not None and _modeling_action_uses_target(action, target):
+            filtered += 1
+            continue
+        kept.append(action_id)
+    return kept, filtered
+
+
+def _modeling_action_uses_target(action: dict[str, Any], target: Any) -> bool:
+    target_text = str(target or "").lower()
+    if not target_text:
+        return False
+    if str(action.get("action") or "") == "modeling.review_target":
+        return False
+    compact_target = "".join(char for char in target_text if char.isalnum())
+    preview = action.get("preview") if isinstance(action.get("preview"), dict) else {}
+    controls = action.get("control_values") if isinstance(action.get("control_values"), dict) else {}
+    values = [
+        action.get("column"),
+        preview.get("output"),
+        preview.get("numerator"),
+        preview.get("denominator"),
+        controls.get("output"),
+        controls.get("numerator"),
+        controls.get("denominator"),
+    ]
+    for value in values:
+        if value in {None, ""}:
+            continue
+        text = str(value).lower()
+        compact = "".join(char for char in text if char.isalnum())
+        if text == target_text or (compact_target and compact_target in compact):
+            return True
+        if "price" in target_text and "price_per" in text:
+            return True
+    return False
 
 
 def _action_control_values(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

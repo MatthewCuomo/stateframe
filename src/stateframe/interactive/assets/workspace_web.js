@@ -2173,8 +2173,16 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   const modelingState = normalizeModelingState(modeling.state, payload);
   const targetValue = modelingState.experiment?.target || payload.modeling?.target || "";
   const actions = (payload.modeling?.actions || []).filter((action) => !modelingActionUsesTarget(action, targetValue));
-  const selected = new Set(modelingState.selectedActionIds || []);
-  const selectedAction = actions.find((action) => action.id === modelingState.selectedActionId) || actions.find((action) => selected.has(action.id)) || actions[0] || null;
+  const visibleActionIds = new Set(actions.map((action) => action.id).filter(Boolean));
+  const selected = new Set((modelingState.selectedActionIds || []).filter((id) => visibleActionIds.has(id)));
+  const visibleModelingState = {
+    ...modelingState,
+    selectedActionIds: [...selected],
+    selectedActionId: visibleActionIds.has(modelingState.selectedActionId)
+      ? modelingState.selectedActionId
+      : ([...selected][0] || actions[0]?.id || null),
+  };
+  const selectedAction = actions.find((action) => action.id === visibleModelingState.selectedActionId) || actions.find((action) => selected.has(action.id)) || actions[0] || null;
 
   const top = document.createElement("div");
   top.className = "stateframe-web-cleaning-top";
@@ -2184,11 +2192,11 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   const meta = document.createElement("div");
   meta.className = "stateframe-web-viewer-meta";
   meta.textContent = `${formatInt(actions.length)} action${actions.length === 1 ? "" : "s"} / ${formatInt(selected.size)} selected / ${formatInt(payload.view?.row_count || 0)} rows`;
-  const apply = button("Apply Branch", () => sendCommand("apply_modeling", { modelingState }));
+  const apply = button("Apply Branch", () => sendCommand("apply_modeling", { modelingState: visibleModelingState }));
   apply.disabled = selected.size === 0 || (commandStatus?.status === "loading" && commandStatus.action === "apply_modeling");
   const experimentTask = modelingState.experiment?.task || payload.default_experiment?.task || "";
   const runLabel = !payload.modeling?.target && experimentTask === "clustering" ? "Run Clustering" : "Run Experiment";
-  const run = button(runLabel, () => sendCommand("run_modeling_experiment", { modelingState }));
+  const run = button(runLabel, () => sendCommand("run_modeling_experiment", { modelingState: visibleModelingState }));
   run.disabled = commandStatus?.status === "loading" && commandStatus.action === "run_modeling_experiment";
   const defaults = button("Select Defaults", () => setModelingState({
     selectedActionIds: actions.filter((action) => action.applies_by_default !== false).map((action) => action.id).filter(Boolean),
@@ -2220,8 +2228,8 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
 
   const body = document.createElement("div");
   body.className = "stateframe-web-cleaning-body";
-  body.appendChild(renderCleaningActions(actions, modelingState, setModelingState, "modeling"));
-  body.appendChild(renderCleaningDetail(selectedAction, "modeling", modelingState, setModelingState));
+  body.appendChild(renderCleaningActions(actions, visibleModelingState, setModelingState, "modeling"));
+  body.appendChild(renderCleaningDetail(selectedAction, "modeling", visibleModelingState, setModelingState));
   body.appendChild(renderModelingControls(payload, modelingState, setModelingState));
   shell.appendChild(body);
   return shell;
@@ -2711,6 +2719,7 @@ function renderModelingExperimentResult(result) {
   title.className = "stateframe-web-cleaning-detail-title";
   title.textContent = `Experiment: ${result.estimator || "model"} / ${result.task || ""}`;
   panel.appendChild(title);
+  panel.appendChild(section("Training Setup", renderModelingTrainingSetup(result)));
   panel.appendChild(section("Metrics", renderModelingMetricTiles(result.metrics || {})));
   if (result.task === "regression" && Array.isArray(result.predictions) && result.predictions.length) {
     panel.appendChild(section("Prediction Check", renderModelingRegressionDiagnostics(result.predictions)));
@@ -2745,6 +2754,28 @@ function renderModelingExperimentResult(result) {
     panel.appendChild(section("Individual SHAP Records", renderModelingShapRecords(explanation.records)));
   }
   return panel;
+}
+
+function renderModelingTrainingSetup(result) {
+  const preprocessing = result.preprocessing || {};
+  const spec = result.spec || {};
+  const sample = spec.sample || {};
+  const split = spec.split || {};
+  const manualFeatures = Array.isArray(spec.features) ? spec.features.length : 0;
+  const values = {
+    Target: result.target || "None",
+    Task: result.task || "",
+    Estimator: result.estimator || "",
+    "Rows trained": formatInt(result.row_count || 0),
+    "Transformed features": formatInt(result.feature_count || 0),
+    "Numeric inputs": formatInt((preprocessing.numeric_columns || []).length),
+    "Categorical inputs": formatInt((preprocessing.categorical_columns || []).length),
+    "Date inputs": formatInt((preprocessing.datetime_columns || []).length),
+    "Feature scope": manualFeatures ? `${formatInt(manualFeatures)} manual fields` : "Auto-selected eligible fields",
+    "Row limit": sample.enabled && sample.max_rows ? `Sampled up to ${formatInt(sample.max_rows)}` : "All rows",
+    "Test size": split.test_size ?? "",
+  };
+  return keyValueList(values);
 }
 
 function renderModelingMetricTiles(metrics) {

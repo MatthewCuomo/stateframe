@@ -2048,6 +2048,46 @@
   gap: 8px;
 }
 
+.stateframe-web-model-feature-scope {
+  display: grid;
+  gap: 8px;
+}
+
+.stateframe-web-model-feature-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.stateframe-web-model-feature-list {
+  display: grid;
+  max-height: 310px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.stateframe-web-model-feature-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+  padding: 8px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.stateframe-web-model-feature-option:last-child {
+  border-bottom: 0;
+}
+
+.stateframe-web-model-feature-option span {
+  display: grid;
+  min-width: 0;
+}
+
 .stateframe-web-model-metric {
   display: grid;
   gap: 2px;
@@ -2093,6 +2133,13 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 10px;
+}
+
+.stateframe-web-model-diagnostics {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(260px, 1.1fr);
+  gap: 10px;
+  align-items: start;
 }
 
 .stateframe-web-model-curve,
@@ -2144,6 +2191,21 @@
   stroke-width: 2.5;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.stateframe-web-model-scatter-dot {
+  fill: #2563eb;
+  opacity: 0.76;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
+.stateframe-web-model-scatter-dot.is-positive {
+  fill: #059669;
+}
+
+.stateframe-web-model-scatter-dot.is-negative {
+  fill: #dc2626;
 }
 
 .stateframe-web-model-bar-row,
@@ -2620,6 +2682,10 @@
 
   .stateframe-web-visual-filter,
   .stateframe-web-visual-savebar {
+    grid-template-columns: 1fr;
+  }
+
+  .stateframe-web-model-diagnostics {
     grid-template-columns: 1fr;
   }
 }

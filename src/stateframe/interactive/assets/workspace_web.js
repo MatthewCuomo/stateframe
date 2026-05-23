@@ -607,7 +607,7 @@ function normalizeModelingState(raw, payload) {
     ? raw.selectedActionId
     : (selected[0] || actions[0]?.id || null);
   const scaleMethods = new Set(["none", "standard", "minmax", "robust", "maxabs"]);
-  const experiment = normalizeModelingExperiment(raw?.experiment, payload?.default_experiment, payload?.experiment_catalog);
+  const experiment = normalizeModelingExperiment(raw?.experiment, payload?.default_experiment, payload?.experiment_catalog, payload);
   return {
     selectedActionIds: selected,
     selectedActionId,
@@ -624,7 +624,7 @@ function normalizeModelingState(raw, payload) {
   };
 }
 
-function normalizeModelingExperiment(raw, defaults = {}, catalog = {}) {
+function normalizeModelingExperiment(raw, defaults = {}, catalog = {}, payload = {}) {
   const base = defaults || {};
   const tasks = new Set((catalog?.tasks || []).map((item) => item.id));
   const estimators = new Set((catalog?.estimators || []).map((item) => item.id));
@@ -633,10 +633,30 @@ function normalizeModelingExperiment(raw, defaults = {}, catalog = {}) {
   const preprocessing = { ...(base.preprocessing || {}), ...(raw?.preprocessing || {}) };
   const search = { ...(base.search || {}), ...(raw?.search || {}) };
   const explanation = { ...(base.explanation || {}), ...(raw?.explanation || {}) };
+  const sample = { ...(base.sample || {}), ...(raw?.sample || {}) };
   const clustering = { ...(base.clustering || {}), ...(raw?.clustering || {}) };
+  const rowCount = Number(payload?.view?.row_count || 0);
+  if (!raw?.sample && rowCount > 10000) {
+    sample.enabled = true;
+    sample.max_rows = Math.min(rowCount, 10000);
+  }
+  let features = raw?.features ?? base.features ?? null;
+  if (typeof features === "string") {
+    features = features
+      .replaceAll(",", "\n")
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(features)) {
+    features = features.map((item) => String(item)).filter(Boolean);
+  } else {
+    features = null;
+  }
   return {
     ...base,
     ...raw,
+    features,
     task: tasks.has(raw?.task) ? raw.task : (base.task || "auto"),
     estimator: estimators.has(raw?.estimator) ? raw.estimator : (base.estimator || "random_forest"),
     split,
@@ -644,8 +664,86 @@ function normalizeModelingExperiment(raw, defaults = {}, catalog = {}) {
     preprocessing,
     search,
     explanation,
+    sample,
     clustering,
   };
+}
+
+function modelingColumnValue(column) {
+  return String(column?.source_name || column?.name || column?.display_name || column?.id || "");
+}
+
+function modelingColumnLabel(column) {
+  return String(column?.display_name || column?.source_name || column?.name || column?.id || "");
+}
+
+function modelingColumnMeta(column) {
+  const parts = [column?.semantic_type || "unknown", column?.dtype || ""].filter(Boolean);
+  const distinct = Number(column?.distinct_count);
+  if (Number.isFinite(distinct)) parts.push(`${formatInt(distinct)} distinct`);
+  return parts.join(" / ");
+}
+
+function modelingColumnForValue(payload, value) {
+  if (value === undefined || value === null || value === "") return null;
+  const wanted = String(value);
+  return (payload?.columns || []).find((column) => {
+    const candidates = [column?.id, column?.source_name, column?.name, column?.display_name, column?.label]
+      .filter((item) => item !== undefined && item !== null)
+      .map((item) => String(item));
+    return candidates.includes(wanted);
+  }) || null;
+}
+
+function inferModelingTaskForColumn(column) {
+  if (!column) return "clustering";
+  const semantic = String(column.semantic_type || "").toLowerCase();
+  const distinct = Number(column.distinct_count);
+  if (["numeric", "numeric-like", "amount", "percentage", "proportion", "numeric_discrete"].includes(semantic) && (!Number.isFinite(distinct) || distinct > 10)) {
+    return "regression";
+  }
+  if (Number.isFinite(distinct) && distinct <= 2) return "binary_classification";
+  return "multiclass_classification";
+}
+
+function defaultEstimatorForTask(task, current) {
+  if (task === "clustering") return "kmeans";
+  if (!current || ["kmeans", "agglomerative", "dbscan"].includes(current)) return "random_forest";
+  return current;
+}
+
+function modelingFeatureCandidates(payload, targetValue, options = {}) {
+  const target = String(targetValue || "");
+  const dropIdentifiers = options.dropIdentifiers !== false;
+  return (payload?.columns || []).filter((column) => {
+    const value = modelingColumnValue(column);
+    if (!value || value === target) return false;
+    const semantic = String(column?.semantic_type || "").toLowerCase();
+    if (["constant", "mostly_missing", "text", "json-like"].includes(semantic)) return false;
+    if (dropIdentifiers && semantic === "identifier") return false;
+    return true;
+  });
+}
+
+function suggestedModelingFeatures(payload, targetValue) {
+  const target = String(targetValue || "").toLowerCase();
+  const targetCompact = target.replace(/[^a-z0-9]+/g, "");
+  const targetTerms = target.split(/[^a-z0-9]+/).filter((part) => part.length >= 4 && part !== "price" && part !== "value");
+  return modelingFeatureCandidates(payload, targetValue)
+    .filter((column) => {
+      const semantic = String(column?.semantic_type || "").toLowerCase();
+      const name = modelingColumnValue(column).toLowerCase();
+      const compact = name.replace(/[^a-z0-9]+/g, "");
+      const distinct = Number(column?.distinct_count);
+      if (semantic === "identifier") return false;
+      if (["string", "category"].includes(semantic) && Number.isFinite(distinct) && distinct > 80) return false;
+      if (targetCompact && compact.includes(targetCompact)) return false;
+      if (targetTerms.some((term) => name.includes(term))) return false;
+      if (target.includes("price") && name.includes("price_per")) return false;
+      return true;
+    })
+    .slice(0, 28)
+    .map((column) => modelingColumnValue(column));
 }
 
 function visualColumnLookup(payload) {
@@ -2073,7 +2171,8 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
 
   const payload = modeling.payload;
   const modelingState = normalizeModelingState(modeling.state, payload);
-  const actions = payload.modeling?.actions || [];
+  const targetValue = modelingState.experiment?.target || payload.modeling?.target || "";
+  const actions = (payload.modeling?.actions || []).filter((action) => !modelingActionUsesTarget(action, targetValue));
   const selected = new Set(modelingState.selectedActionIds || []);
   const selectedAction = actions.find((action) => action.id === modelingState.selectedActionId) || actions.find((action) => selected.has(action.id)) || actions[0] || null;
 
@@ -2126,6 +2225,31 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   body.appendChild(renderModelingControls(payload, modelingState, setModelingState));
   shell.appendChild(body);
   return shell;
+}
+
+function modelingActionUsesTarget(action, targetValue) {
+  if (!targetValue) return false;
+  const target = String(targetValue).toLowerCase();
+  const compactTarget = target.replace(/[^a-z0-9]+/g, "");
+  const actionId = String(action?.action || "");
+  if (actionId === "modeling.review_target") return false;
+  const values = [
+    action?.column,
+    action?.preview?.output,
+    action?.preview?.numerator,
+    action?.preview?.denominator,
+    action?.control_values?.output,
+    action?.control_values?.numerator,
+    action?.control_values?.denominator,
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => String(value).toLowerCase());
+  return values.some((value) => {
+    const compact = value.replace(/[^a-z0-9]+/g, "");
+    return value === target
+      || (compactTarget && compact.includes(compactTarget))
+      || (target.includes("price") && value.includes("price_per"));
+  });
 }
 
 function renderCleaningActions(actions, cleaningState, setCleaningState, kind = "cleaning") {
@@ -2449,10 +2573,15 @@ function renderModelingControls(payload, modelingState, setModelingState) {
   panel.dataset.scrollKey = "modeling-controls";
   const summary = payload.modeling || {};
   const experiment = modelingState.experiment || payload.default_experiment || {};
+  const targetColumn = modelingColumnForValue(payload, experiment.target || summary.target);
+  const sample = experiment.sample || {};
+  const featureCount = Array.isArray(experiment.features) && experiment.features.length ? formatInt(experiment.features.length) : "Auto";
   panel.appendChild(section("Plan Summary", keyValueList({
     Actions: formatInt(summary.action_count || 0),
-    Target: summary.target || "No target selected",
-    Task: summary.target ? (summary.task || "") : `Unsupervised (${experiment.task || "clustering"})`,
+    Target: targetColumn ? modelingColumnLabel(targetColumn) : "No target selected",
+    Task: experiment.task || summary.task || "auto",
+    Features: Array.isArray(experiment.features) && experiment.features.length ? `${featureCount} selected` : "Auto-selected",
+    "Rows modeled": sample.enabled && sample.max_rows ? `up to ${formatInt(sample.max_rows)}` : "All available",
     "Scale method": modelingState.scaleMethod,
   })));
 
@@ -2484,6 +2613,7 @@ function renderModelingControls(payload, modelingState, setModelingState) {
   );
   panel.appendChild(section("Scaling", scaling));
   panel.appendChild(section("Experiment", renderModelingExperimentControls(payload, modelingState, setModelingState)));
+  panel.appendChild(section("Feature Scope", renderModelingFeaturePicker(payload, modelingState, setModelingState)));
   panel.appendChild(section("Columns", renderCleaningColumnSummary(payload.columns || [])));
   return panel;
 }
@@ -2494,19 +2624,84 @@ function renderModelingExperimentControls(payload, modelingState, setModelingSta
   const updateExperiment = (patch) => setModelingState({ experiment: mergeDeep(experiment, patch) });
   const stack = document.createElement("div");
   stack.className = "stateframe-web-cleaning-control-stack";
+  const columns = payload.columns || [];
+  const targetChoices = [["", "No target (clustering)"], ...columns.map((column) => [modelingColumnValue(column), modelingColumnLabel(column)])];
+  const explanationChoices = (catalog.explanation?.methods || []).map((item) => [item.id, item.label || item.id]);
+  const onTargetChange = (value) => {
+    const targetColumn = modelingColumnForValue(payload, value);
+    const task = value ? inferModelingTaskForColumn(targetColumn) : "clustering";
+    const features = Array.isArray(experiment.features) ? experiment.features.filter((feature) => feature !== value) : experiment.features;
+    updateExperiment({
+      target: value || null,
+      task,
+      estimator: defaultEstimatorForTask(task, experiment.estimator),
+      features,
+    });
+  };
   stack.append(
+    selectSetting("Target", experiment.target || "", targetChoices, onTargetChange, "modeling-exp-target"),
     selectSetting("Task", experiment.task || "auto", (catalog.tasks || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ task: value }), "modeling-exp-task"),
     selectSetting("Estimator", experiment.estimator || "random_forest", (catalog.estimators || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ estimator: value }), "modeling-exp-estimator"),
+    checkboxSetting("Limit rows", Boolean(experiment.sample?.enabled), (value) => updateExperiment({ sample: { enabled: value } }), "modeling-exp-sample-enabled"),
+    numberSetting("Max training rows", experiment.sample?.max_rows ?? "", (value) => updateExperiment({ sample: { max_rows: value === "" ? null : Number(value), enabled: value !== "" ? true : Boolean(experiment.sample?.enabled) } }), "modeling-exp-sample-rows", "100", null, "500"),
     numberSetting("Test size", experiment.split?.test_size ?? 0.25, (value) => updateExperiment({ split: { test_size: Number(value) } }), "modeling-exp-test-size", "0.05", "0.6", "0.05"),
     numberSetting("CV folds", experiment.validation?.cv_folds ?? 5, (value) => updateExperiment({ validation: { cv_folds: Number(value) } }), "modeling-exp-cv", "2", "20", "1"),
     selectSetting("Validation", experiment.validation?.strategy || "holdout", (catalog.validation?.strategies || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ validation: { strategy: value } }), "modeling-exp-validation"),
     selectSetting("Encoder", experiment.preprocessing?.encoder || "onehot", (catalog.preprocessing?.encoders || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ preprocessing: { encoder: value } }), "modeling-exp-encoder"),
     selectSetting("Scaler", experiment.preprocessing?.scaler || "auto", (catalog.preprocessing?.scalers || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ preprocessing: { scaler: value } }), "modeling-exp-scaler"),
+    selectSetting("Explanation", experiment.explanation?.method || "auto", explanationChoices.length ? explanationChoices : [["auto", "Auto"], ["permutation", "Permutation"], ["model_importance", "Model native"]], (value) => updateExperiment({ explanation: { method: value } }), "modeling-exp-explanation-method"),
     checkboxSetting("Grid search", Boolean(experiment.search?.enabled), (value) => updateExperiment({ search: { enabled: value } }), "modeling-exp-grid"),
-    checkboxSetting("SHAP observability", experiment.explanation?.enabled !== false, (value) => updateExperiment({ explanation: { enabled: value } }), "modeling-exp-shap"),
+    checkboxSetting("Explain model", experiment.explanation?.enabled !== false, (value) => updateExperiment({ explanation: { enabled: value } }), "modeling-exp-shap"),
     numberSetting("Clusters", experiment.clustering?.n_clusters ?? 3, (value) => updateExperiment({ clustering: { n_clusters: Number(value) } }), "modeling-exp-clusters", "2", "30", "1"),
   );
   return stack;
+}
+
+function renderModelingFeaturePicker(payload, modelingState, setModelingState) {
+  const experiment = modelingState.experiment || payload.default_experiment || {};
+  const updateExperiment = (patch) => setModelingState({ experiment: mergeDeep(experiment, patch) });
+  const selected = new Set(Array.isArray(experiment.features) ? experiment.features : []);
+  const candidates = modelingFeatureCandidates(payload, experiment.target, {
+    dropIdentifiers: experiment.preprocessing?.drop_identifiers !== false,
+  });
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-feature-scope";
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "stateframe-web-model-feature-toolbar";
+  toolbar.appendChild(textSpan(selected.size ? `${formatInt(selected.size)} manual feature${selected.size === 1 ? "" : "s"}` : "Auto-select eligible features", "stateframe-web-visual-control-count"));
+  const suggested = button("Suggested", () => updateExperiment({ features: suggestedModelingFeatures(payload, experiment.target) }));
+  suggested.classList.add("is-tiny");
+  const auto = button("Auto", () => updateExperiment({ features: [] }));
+  auto.classList.add("is-tiny");
+  toolbar.append(suggested, auto);
+  wrap.appendChild(toolbar);
+
+  const list = document.createElement("div");
+  list.className = "stateframe-web-model-feature-list";
+  for (const column of candidates.slice(0, 80)) {
+    const value = modelingColumnValue(column);
+    const item = document.createElement("label");
+    item.className = "stateframe-web-model-feature-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = selected.has(value);
+    input.addEventListener("change", () => {
+      const next = new Set(selected);
+      if (input.checked) next.add(value);
+      else next.delete(value);
+      updateExperiment({ features: [...next] });
+    });
+    const text = document.createElement("span");
+    text.append(
+      textSpan(modelingColumnLabel(column), "stateframe-web-visual-column-name"),
+      textSpan(modelingColumnMeta(column), "stateframe-web-visual-column-meta"),
+    );
+    item.append(input, text);
+    list.appendChild(item);
+  }
+  wrap.appendChild(list.children.length ? list : empty("Choose a target to inspect eligible features."));
+  return wrap;
 }
 
 function renderModelingExperimentResult(result) {
@@ -2517,6 +2712,9 @@ function renderModelingExperimentResult(result) {
   title.textContent = `Experiment: ${result.estimator || "model"} / ${result.task || ""}`;
   panel.appendChild(title);
   panel.appendChild(section("Metrics", renderModelingMetricTiles(result.metrics || {})));
+  if (result.task === "regression" && Array.isArray(result.predictions) && result.predictions.length) {
+    panel.appendChild(section("Prediction Check", renderModelingRegressionDiagnostics(result.predictions)));
+  }
   if (result.holdout?.confusion_matrix) {
     panel.appendChild(section("Confusion Matrix", renderModelingConfusionMatrix(result.holdout.confusion_matrix, result.holdout.class_labels || [])));
   }
@@ -2616,6 +2814,71 @@ function renderModelingCurvePanel(curves) {
     }));
   }
   return wrap.children.length ? wrap : empty("No curve data available.");
+}
+
+function renderModelingRegressionDiagnostics(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-diagnostics";
+  const pairs = (rows || [])
+    .map((row) => ({
+      actual: Number(row.actual),
+      prediction: Number(row.prediction),
+      residual: Number(row.residual ?? (Number(row.prediction) - Number(row.actual))),
+      index: row.index,
+    }))
+    .filter((row) => Number.isFinite(row.actual) && Number.isFinite(row.prediction));
+  if (!pairs.length) return empty("No numeric prediction sample available.");
+  wrap.appendChild(renderModelingActualPredictionChart(pairs));
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["row", "actual", "prediction", "residual", "absolute error"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  pairs.slice(0, 12).forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.append(td(row.index), td(formatNumber(row.actual)), td(formatNumber(row.prediction)), td(formatNumber(row.residual)), td(formatNumber(Math.abs(row.residual))));
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+function renderModelingActualPredictionChart(rows) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-model-curve";
+  card.appendChild(textSpan("Actual vs prediction", "stateframe-web-model-chart-title"));
+  const width = 320;
+  const height = 220;
+  const margin = { left: 48, right: 14, top: 14, bottom: 38 };
+  const values = rows.flatMap((row) => [row.actual, row.prediction]).filter(Number.isFinite);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const pad = Math.max(1, (maxValue - minValue) * 0.06);
+  const domainMin = minValue - pad;
+  const domainMax = maxValue + pad;
+  const xScale = (value) => margin.left + ((value - domainMin) / Math.max(0.000001, domainMax - domainMin)) * (width - margin.left - margin.right);
+  const yScale = (value) => height - margin.bottom - ((value - domainMin) / Math.max(0.000001, domainMax - domainMin)) * (height - margin.top - margin.bottom);
+  const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  svg.appendChild(svgNode("line", { x1: margin.left, y1: height - margin.bottom, x2: width - margin.right, y2: height - margin.bottom, class: "stateframe-web-model-axis" }));
+  svg.appendChild(svgNode("line", { x1: margin.left, y1: margin.top, x2: margin.left, y2: height - margin.bottom, class: "stateframe-web-model-axis" }));
+  svg.appendChild(svgNode("line", { x1: xScale(domainMin), y1: yScale(domainMin), x2: xScale(domainMax), y2: yScale(domainMax), class: "stateframe-web-model-diagonal" }));
+  rows.slice(0, 60).forEach((row) => {
+    const dot = svgNode("circle", {
+      cx: xScale(row.actual),
+      cy: yScale(row.prediction),
+      r: 3.5,
+      class: row.residual >= 0 ? "stateframe-web-model-scatter-dot is-positive" : "stateframe-web-model-scatter-dot is-negative",
+    });
+    dot.appendChild(svgNode("title", {}, `actual ${formatNumber(row.actual)} / prediction ${formatNumber(row.prediction)}`));
+    svg.appendChild(dot);
+  });
+  svg.appendChild(svgNode("text", { x: width / 2, y: height - 8, class: "stateframe-web-model-axis-label" }, "actual"));
+  svg.appendChild(svgNode("text", { x: 10, y: margin.top + 8, class: "stateframe-web-model-axis-label" }, "prediction"));
+  card.appendChild(svg);
+  return card;
 }
 
 function renderModelingCurveChart(rows, config) {

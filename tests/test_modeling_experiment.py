@@ -70,6 +70,33 @@ def test_modeling_experiment_supports_knn_grid_search_regression():
     assert result.explanation["top_features"]
 
 
+def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
+    rows = 90
+    df = pd.DataFrame(
+        {
+            "sqft": [850 + value * 18 for value in range(rows)],
+            "beds": [1 + value % 4 for value in range(rows)],
+            "segment": ["A", "B", "C"] * 30,
+            "price": [180_000 + value * 5_500 for value in range(rows)],
+        }
+    )
+    scan = sf.scan(df, target="price", goal="modeling")
+
+    result = scan.modeling_experiment(
+        {
+            "task": "regression",
+            "estimator": "linear",
+            "sample": {"enabled": True, "max_rows": 30, "random_state": 7},
+            "explanation": {"enabled": False},
+        }
+    )
+
+    assert result.row_count == 30
+    assert result.spec.sample["max_rows"] == 30
+    assert any("sample" in warning for warning in result.warnings)
+    assert "residual" in result.predictions[0]
+
+
 def test_modeling_experiment_supports_xgboost_when_available():
     pytest.importorskip("xgboost")
     scan = sf.scan(_classification_frame(), target="target", goal="modeling")

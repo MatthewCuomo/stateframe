@@ -254,6 +254,7 @@ class ModelingExperimentSpec:
     })
     search: dict[str, Any] = field(default_factory=lambda: {"enabled": False, "method": "grid", "param_grid": {}, "cv_folds": 3, "scoring": "auto"})
     explanation: dict[str, Any] = field(default_factory=lambda: {"enabled": True, "method": "auto", "max_rows": 100})
+    sample: dict[str, Any] = field(default_factory=lambda: {"enabled": False, "max_rows": None, "random_state": 42})
     clustering: dict[str, Any] = field(default_factory=lambda: {"n_clusters": 3})
     random_state: int = 42
 
@@ -269,6 +270,7 @@ class ModelingExperimentSpec:
             "preprocessing": dict(self.preprocessing),
             "search": dict(self.search),
             "explanation": dict(self.explanation),
+            "sample": dict(self.sample),
             "clustering": dict(self.clustering),
             "random_state": self.random_state,
         }
@@ -427,7 +429,7 @@ def normalize_modeling_experiment_spec(spec: ModelingExperimentSpec | dict[str, 
     else:
         default = ModelingExperimentSpec().to_dict()
     merged = {**default, **raw}
-    for key in ["estimator_params", "split", "validation", "preprocessing", "search", "explanation", "clustering"]:
+    for key in ["estimator_params", "split", "validation", "preprocessing", "search", "explanation", "sample", "clustering"]:
         merged[key] = {**dict(default.get(key) or {}), **dict(raw.get(key) or {})}
     features = merged.get("features")
     if features is not None:
@@ -443,6 +445,7 @@ def normalize_modeling_experiment_spec(spec: ModelingExperimentSpec | dict[str, 
         preprocessing=dict(merged.get("preprocessing") or {}),
         search=dict(merged.get("search") or {}),
         explanation=dict(merged.get("explanation") or {}),
+        sample=dict(merged.get("sample") or {}),
         clustering=dict(merged.get("clustering") or {}),
         random_state=int(merged.get("random_state") or 42),
     )
@@ -743,7 +746,7 @@ def _run_supervised_experiment(
     from sklearn.preprocessing import LabelEncoder
 
     warnings: list[str] = []
-    frame = profile.data.copy()
+    frame = _sample_modeling_frame(profile.data, spec, warnings=warnings).copy()
     target = str(spec.target)
     y_raw = frame[target]
     keep = y_raw.notna()
@@ -909,7 +912,9 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
     from sklearn.pipeline import Pipeline
 
     warnings: list[str] = []
+    sample_frame = _sample_modeling_frame(profile.data, spec, warnings=warnings)
     X_raw, feature_roles = _select_feature_frame(profile, spec, exclude_target=None, warnings=warnings)
+    X_raw = X_raw.loc[sample_frame.index]
     if X_raw.empty:
         raise ValueError("No usable feature columns were found for clustering.")
     preprocessor, preprocessing_summary = _build_preprocessor(X_raw, feature_roles, spec, estimator_id=spec.estimator, force_scaling=True)
@@ -971,6 +976,17 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
     )
 
 
+def _sample_modeling_frame(data: pd.DataFrame, spec: ModelingExperimentSpec, *, warnings: list[str]) -> pd.DataFrame:
+    sample = dict(spec.sample or {})
+    max_rows = _int_setting(sample.get("max_rows"), 0)
+    enabled = _bool_setting(sample.get("enabled"), max_rows > 0)
+    if not enabled or max_rows <= 0 or len(data) <= max_rows:
+        return data
+    random_state = _int_setting(sample.get("random_state"), spec.random_state)
+    warnings.append(f"Modeled a reproducible sample of {max_rows:,} rows from {len(data):,}.")
+    return data.sample(n=max_rows, random_state=random_state)
+
+
 def _select_feature_frame(
     profile: Profile,
     spec: ModelingExperimentSpec,
@@ -986,6 +1002,9 @@ def _select_feature_frame(
         columns = []
         for name, column in profile.column_profiles.items():
             if name == exclude_target:
+                continue
+            if _looks_like_target_leakage(name, exclude_target):
+                warnings.append(f"Skipped likely target-derived feature column: {name}")
                 continue
             if _bool_setting((spec.preprocessing or {}).get("drop_identifiers"), True) and column.semantic_type == "identifier":
                 continue
@@ -1015,6 +1034,20 @@ def _feature_role(column: Any, series: pd.Series) -> str:
     if semantic in _CATEGORICAL_FEATURE_TYPES or pd.api.types.is_bool_dtype(series) or pd.api.types.is_object_dtype(series) or isinstance(series.dtype, pd.CategoricalDtype):
         return "categorical"
     return "drop"
+
+
+def _looks_like_target_leakage(name: str, target: str | None) -> bool:
+    if not target:
+        return False
+    lowered_name = str(name).lower()
+    lowered_target = str(target).lower()
+    compact_name = "".join(char for char in lowered_name if char.isalnum())
+    compact_target = "".join(char for char in lowered_target if char.isalnum())
+    if compact_target and compact_target in compact_name:
+        return True
+    if "price" in lowered_target and ("price_per" in lowered_name or "per_price" in lowered_name):
+        return True
+    return False
 
 
 def _build_preprocessor(
@@ -1222,10 +1255,78 @@ def _summarize_cv(cv_result: dict[str, Any]) -> dict[str, Any]:
 
 def _feature_names(pipeline: Any, X: pd.DataFrame) -> list[str]:
     preprocessor = pipeline.named_steps.get("preprocess")
+    width = 0
     try:
-        return [str(name) for name in preprocessor.get_feature_names_out()]
+        transformed = preprocessor.transform(X.head(2))
+        width = int(transformed.shape[1])
     except Exception:
-        return [str(column) for column in X.columns]
+        width = 0
+    names: list[str] = []
+    for args in ((list(X.columns),), ()):
+        try:
+            names = [str(name) for name in preprocessor.get_feature_names_out(*args)]
+            if not width or len(names) == width:
+                return names
+        except Exception:
+            continue
+    names = _column_transformer_feature_names(preprocessor, X)
+    if not width or len(names) == width:
+        return names
+    return [f"feature_{index}" for index in range(width)]
+
+
+def _column_transformer_feature_names(preprocessor: Any, X: pd.DataFrame) -> list[str]:
+    names: list[str] = []
+    transformers = getattr(preprocessor, "transformers_", []) or []
+    for index, item in enumerate(transformers):
+        if len(item) < 3:
+            continue
+        transformer_name, transformer, columns = item[:3]
+        if transformer == "drop":
+            continue
+        input_names = _column_selection_names(X, columns)
+        if transformer == "passthrough":
+            names.extend(input_names)
+            continue
+        try:
+            output_names = transformer.get_feature_names_out(input_names)
+            names.extend(str(name) for name in output_names)
+            continue
+        except Exception:
+            pass
+        width = _transformer_width(transformer, X, input_names)
+        if width == len(input_names):
+            names.extend(input_names)
+        elif len(input_names) == 1:
+            names.extend(f"{input_names[0]}_{offset}" for offset in range(width))
+        else:
+            names.extend(f"{transformer_name}_{offset}" for offset in range(width))
+    return names
+
+
+def _column_selection_names(X: pd.DataFrame, columns: Any) -> list[str]:
+    if isinstance(columns, slice):
+        return [str(column) for column in X.columns[columns]]
+    if isinstance(columns, (list, tuple, pd.Index, np.ndarray)):
+        values = list(columns)
+        if values and all(isinstance(value, (bool, np.bool_)) for value in values):
+            return [str(column) for column, keep in zip(X.columns, values) if keep]
+        return [str(X.columns[int(value)]) if isinstance(value, (int, np.integer)) else str(value) for value in values]
+    if columns is None:
+        return []
+    if isinstance(columns, (int, np.integer)):
+        return [str(X.columns[int(columns)])]
+    return [str(columns)]
+
+
+def _transformer_width(transformer: Any, X: pd.DataFrame, input_names: list[str]) -> int:
+    if not input_names:
+        return 0
+    try:
+        transformed = transformer.transform(X[input_names].head(2))
+        return int(transformed.shape[1])
+    except Exception:
+        return len(input_names)
 
 
 def _transformed_frame(pipeline: Any, X: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
@@ -1291,7 +1392,7 @@ def _explain_model(
 
             result = permutation_importance(
                 pipeline.named_steps["model"],
-                sample,
+                sample.to_numpy(),
                 y_test.loc[sample.index],
                 n_repeats=5,
                 random_state=0,
@@ -1392,7 +1493,15 @@ def _shap_payload(values: Any, sample: pd.DataFrame) -> dict[str, Any]:
 def _prediction_sample(X_test: pd.DataFrame, y_test: pd.Series, predictions: Any, proba: Any, *, class_labels: list[str], limit: int) -> list[dict[str, Any]]:
     rows = []
     for offset, (index, actual) in enumerate(y_test.head(limit).items()):
-        row = {"index": _json_ready(index), "actual": _json_ready(actual), "prediction": _json_ready(predictions[offset])}
+        prediction = predictions[offset]
+        row = {"index": _json_ready(index), "actual": _json_ready(actual), "prediction": _json_ready(prediction)}
+        try:
+            residual = float(prediction) - float(actual)
+            if np.isfinite(residual):
+                row["residual"] = _clean_metric(residual)
+                row["absolute_error"] = _clean_metric(abs(residual))
+        except Exception:
+            pass
         if proba is not None:
             probabilities = proba[offset]
             row["probabilities"] = {
@@ -1492,6 +1601,15 @@ def _float_setting(value: Any, default: float) -> float:
         if value in {None, ""}:
             return default
         return float(value)
+    except Exception:
+        return default
+
+
+def _int_setting(value: Any, default: int) -> int:
+    try:
+        if value in {None, ""}:
+            return default
+        return int(float(value))
     except Exception:
         return default
 

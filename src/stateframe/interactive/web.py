@@ -1219,6 +1219,8 @@ if anywidget is not None and traitlets is not None:
             payload = current.get("payload") or {}
             state = modeling_state or dict(self.modeling_state or {}) or current.get("state") or _initial_modeling_state(payload)
             experiment = dict(state.get("experiment") or payload.get("default_experiment") or {})
+            experiment = _resolve_modeling_experiment_columns(experiment, payload)
+            state = {**dict(state), "experiment": experiment}
             result = run_modeling_experiment(self._modeling_view_profile, experiment)
             result_payload = result.to_dict()
             self.modeling = {
@@ -2638,6 +2640,45 @@ def _initial_modeling_state(payload: dict[str, Any]) -> dict[str, Any]:
         "actionControlValues": {},
         "search": "",
     }
+
+
+def _resolve_modeling_experiment_columns(
+    experiment: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Translate widget column ids like ``c3`` into dataframe source names."""
+
+    by_key: dict[str, str] = {}
+    for column in payload.get("columns", []) or []:
+        source = (
+            column.get("source_name")
+            or column.get("name")
+            or column.get("display_name")
+            or column.get("id")
+        )
+        if source is None:
+            continue
+        for key in ("id", "source_name", "name", "display_name", "label"):
+            value = column.get(key)
+            if value not in {None, ""}:
+                by_key[str(value)] = str(source)
+
+    def resolve(value: Any) -> Any:
+        if isinstance(value, list):
+            return [resolve(item) for item in value if item not in {None, ""}]
+        if isinstance(value, tuple):
+            return [resolve(item) for item in value if item not in {None, ""}]
+        if isinstance(value, str):
+            return by_key.get(value, value)
+        return value
+
+    result = dict(experiment or {})
+    if "target" in result:
+        result["target"] = resolve(result.get("target"))
+    if "features" in result:
+        resolved_features = resolve(result.get("features"))
+        result["features"] = resolved_features if isinstance(resolved_features, list) else None
+    return result
 
 
 def _action_control_values(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -521,18 +521,26 @@ def test_web_modeling_workbench_opens_and_saves_branch(tmp_path):
     assert opened["payload"]["experiment_catalog"]["estimators"]
     assert opened["payload"]["default_experiment"]["target"] == "sold"
     assert opened["state"]["selectedActionIds"]
+    column_ids = {
+        column["source_name"]: column["id"]
+        for column in opened["payload"]["columns"]
+    }
 
     experiment = web.run_modeling_experiment_workbench(
         {
             **opened["state"],
             "experiment": {
                 **opened["state"]["experiment"],
+                "target": column_ids["sold"],
+                "features": [column_ids["city"], column_ids["sqft"], column_ids["sold_date"]],
                 "estimator": "random_forest",
                 "explanation": {"enabled": True, "method": "model_importance"},
             },
         }
     )
     assert experiment["task"] == "binary_classification"
+    assert experiment["target"] == "sold"
+    assert experiment["spec"]["features"] == ["city", "sqft", "sold_date"]
     assert experiment["metrics"]
     assert web.modeling["preview"]["kind"] == "modeling_experiment"
 

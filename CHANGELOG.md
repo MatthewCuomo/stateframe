@@ -8,6 +8,107 @@ This project follows semantic versioning while the API is stabilizing:
 - Minor releases add features or improve diagnostics.
 - Major releases are reserved for breaking API changes after `1.0.0`.
 
+## Unreleased
+
+- Added the first shared operation registry for UI- and replay-readable
+  cleansing controls. Cleaning plan actions now expose operation ids, control
+  metadata, affected row counts, examples, risk, default-apply behavior, and a
+  cleaning operation catalog.
+- Expanded cleaning previews with ambiguous binary flag review, richer binary
+  null policies, mixed-format datetime parsing, category variant review,
+  true-null treatment, duplicate-row review, numeric outlier
+  review/treatment, and latitude/longitude anomaly review.
+- Added modeling-prep transform helpers: `sf.map_values(...)`,
+  `sf.impute_missing(...)`, `sf.add_missing_indicators(...)`,
+  `sf.one_hot_encode(...)`, `sf.scale_numeric(...)`,
+  `sf.add_date_features(...)`, `sf.add_ratio(...)`, and
+  `sf.clean_numeric_outliers(...)`.
+- Added public column-name helpers with `sf.clean_column_names(...)`,
+  `sf.rename_columns(...)`, and `sf.clean_column_name(...)` for mass
+  snake-case/compact renaming, manual selected-column renames, punctuation
+  cleanup, case conversion, digit-prefixing, and duplicate-safe names.
+- Added previewable modeling-readiness plans through `scan.modeling_plan()`,
+  `sf.modeling_plan(...)`, and `scan.run("modeling.readiness")`, covering
+  target review, identifier/constant drops, imputation indicators, one-hot
+  encoding, date features, and optional numeric scaling.
+- Added a workspace modeling workbench that opens from a selected state,
+  previews the modeling-readiness action list, and saves the selected feature
+  preparation as a tracked dataframe branch.
+- Added editable per-action control overrides for cleaning and modeling
+  workbenches, so individual parse, mapping, imputation, encoding, date, and
+  outlier choices can be changed before applying a branch.
+- Added a cleaning-plan column rename review operation so mass/manual column
+  naming changes can be previewed and applied from the same auditable
+  workbench flow as other cleaning actions.
+- Added optional modeling ratio feature suggestions, such as price per square
+  foot or revenue per unit, with replayable numerator, denominator, output, and
+  zero-denominator controls.
+- Added `scan.run("modeling.baseline")` for a fast target-aware modeling smoke
+  test with baseline and model scores on a holdout split.
+- Improved mixed datetime inference by parsing mixed-format date strings within
+  one column during scan and cleaning.
+- Expanded the Plotly visualizer spec controls with data min/max filters,
+  numeric axis transforms, date bucketing, X sorting, quantile/fixed-width
+  histogram binning, numeric X-axis binning for distribution comparisons, and
+  top-N category grouping into an "Other" bucket.
+- Added rolling-window and cumulative line/area chart controls after visual
+  aggregation, supporting mean, sum, and median windows.
+- Added a broader first-class visual control surface for sampling/deduping,
+  missing-category labels, top/bottom category selection, percent-of-total and
+  percent-within-group value transforms, value ranking, y/x sorting, axis
+  reversal, tick formatting, palettes, facet wrapping, reference lines, stat
+  lines, and target bands.
+- Added advanced visual aggregation and presentation controls for weighted
+  means, P25/P75/P90/P95 aggregations, value labels, X range sliders, and
+  shared-axis toggles for faceted charts.
+- Expanded the Plotly visual catalog with strip plots, density heatmaps,
+  density contours, sunbursts, geographic scatter maps, choropleths, parallel
+  coordinates, and parallel categories, including smarter web defaults for
+  required multi-field plots such as x/y, lat/lon, and location/value maps.
+- Added profile-driven visual suggestions through
+  `scan.visual_recommendations()` and `sf.suggest_visuals(...)`; workspace web
+  visualizer payloads now include suggested replayable specs and show them in
+  the plot library.
+- Added a replayable modeling experiment engine with
+  `scan.modeling_experiment(...)`, `sf.modeling_experiment(...)`,
+  `sf.modeling_catalog()`, and the `modeling.experiment` lens. Experiments now
+  cover supervised regression/classification and clustering with preprocessing,
+  holdout splits, cross-validation, optional grid search, random forests, KNN,
+  linear/logistic models, XGBoost when installed, k-means, agglomerative
+  clustering, DBSCAN, metrics, prediction samples, feature importances, and
+  SHAP/permutation/model-native observability.
+- Expanded the workspace modeling workbench with experiment controls for task,
+  estimator, split size, CV folds, validation strategy, encoder, scaler, grid
+  search, SHAP observability, and cluster count plus an in-panel experiment
+  result summary.
+- Added more advanced visual families: Pareto charts, waterfall charts,
+  funnels, radar charts, Q-Q plots, autocorrelation plots, and cumulative
+  concentration/Lorenz-style curves, with visual recommendations now suggesting
+  concentration and Pareto views where they fit.
+- Upgraded modeling observability with real SHAP payloads for supported models:
+  global mean absolute SHAP rankings, beeswarm-ready rows, per-record SHAP
+  contribution lists, and richer classification reports including precision,
+  recall, F1, support, confusion matrices, ROC curve data, and
+  precision-recall curve data.
+- Added a smarter visual inspector that classifies controls as basic,
+  advanced, or expert, supports in-panel control search, and filters controls
+  by chart bindings so the visual builder stays compact until deeper options
+  are needed.
+- Added another visual catalog expansion with lollipop charts, slope charts,
+  bump charts, and calendar heatmaps, plus profile-driven recommendations for
+  calendar intensity, lollipop comparisons, and rank-movement views.
+- Added dedicated correlation heatmap and PCA scatter visual kinds for
+  multivariate review, with correlation method, absolute/triangle, annotation,
+  and scaling controls.
+- Added `target.best_splits` / `entropy.splits`, a target-aware split lens that
+  ranks simple numeric thresholds and category one-vs-rest splits by entropy
+  information gain for classification targets or variance reduction for
+  regression targets.
+- Expanded the workspace modeling result panel with native report visuals for
+  metric tiles, confusion matrices, ROC/precision-recall curves, SHAP global
+  feature bars, beeswarm-style SHAP distributions, and expandable per-record
+  SHAP contribution reports.
+
 ## 0.2.2 - 2026-05-21
 
 - Fixed saved query trees so `sf.query(..., save_tree=True)` and web **Get Data

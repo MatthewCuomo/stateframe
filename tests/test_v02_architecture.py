@@ -88,3 +88,9 @@ def test_mixed_associations_and_target_importance_lenses():
     importance = scan.run("target.importance", target="target")
     assert importance.data["target"] == "target"
     assert importance.data["feature_importance"]
+
+    baseline = scan.run("modeling.baseline", target="target")
+    assert baseline.data["target"] == "target"
+    assert baseline.data["feature_count"] >= 1
+    assert "model_score" in baseline.data
+    assert any(rec.lens == "modeling.baseline" for rec in scan.recommendations())

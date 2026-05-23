@@ -56,8 +56,11 @@ def build_recommendations(
         if column.binary_profile is not None
         or column.semantic_type in {"numeric-like", "datetime-like"}
         or bool(column.value_profile and column.value_profile.missing_like_values)
+        or column.missing_count > 0
+        or float(column.metrics.get("iqr_outlier_ratio") or 0.0) >= 0.01
+        or column.semantic_type == "geographic"
     ]
-    if cleaning_columns:
+    if cleaning_columns or summary.duplicate_rows:
         recommendations.append(
             Recommendation(
                 id="cleaning.transform_preview",
@@ -69,11 +72,63 @@ def build_recommendations(
                 category="cleaning",
                 columns=cleaning_columns[:8],
                 evidence=[
-                    f"{len(cleaning_columns)} columns have binary, parsing, or missing-token cleanup opportunities"
+                    item
+                    for item in [
+                        f"{len(cleaning_columns)} columns have binary, parsing, missingness, or outlier cleanup opportunities",
+                        f"{summary.duplicate_rows} duplicate rows detected" if summary.duplicate_rows else "",
+                    ]
+                    if item
                 ],
                 why_it_matters="A previewable cleaning plan turns scan findings into reversible, auditable transformations.",
                 code="scan.cleaning_plan().preview()",
                 produces=["transform_actions", "conversion_preview"],
+            )
+        )
+
+    modeling_columns = [
+        column.name
+        for column in columns.values()
+        if column.name != target
+        and column.semantic_type
+        in {
+            "numeric",
+            "amount",
+            "numeric-like",
+            "percentage",
+            "proportion",
+            "numeric_discrete",
+            "category",
+            "string",
+            "binary",
+            "nullable_binary",
+            "boolean",
+            "datetime",
+            "datetime-like",
+            "identifier",
+            "constant",
+            "mostly_missing",
+        }
+    ]
+    if modeling_columns and (goal == "modeling" or target is not None):
+        target_text = f" with target {target}" if target else ""
+        recommendations.append(
+            Recommendation(
+                id="modeling.readiness",
+                title="Preview modeling feature preparation",
+                lens="modeling.readiness",
+                score=0.9 if goal == "modeling" else 0.78,
+                confidence=0.82,
+                cost="cheap",
+                category="modeling",
+                columns=([target] if target else []) + modeling_columns[:7],
+                evidence=[
+                    f"{len(modeling_columns)} candidate feature columns available{target_text}",
+                    "plan can review identifiers, missing values, encoding, date features, and scaling",
+                ],
+                evidence_sources=["model", "statistical", "quality", "cleaning"],
+                why_it_matters="A feature-prep plan makes modeling transformations explicit, editable, and replayable before training.",
+                code="scan.modeling_plan().preview()",
+                produces=["feature_prep_plan", "modeling_transform_actions"],
             )
         )
 
@@ -385,6 +440,44 @@ def build_recommendations(
         if candidate_feature_count >= 2:
             recommendations.append(
                 Recommendation(
+                    id=f"modeling.baseline.{target}",
+                    title=f"Train a quick baseline for {target}",
+                    lens="modeling.baseline",
+                    score=0.82 if goal == "modeling" else 0.7,
+                    confidence=0.7,
+                    cost="medium",
+                    category="modeling",
+                    columns=[target],
+                    evidence=[
+                        f"target selected: {target}",
+                        f"{candidate_feature_count} candidate features after role filtering",
+                    ],
+                    why_it_matters="A fast baseline checks whether the prepared feature frame is model-ready and whether signal beats a naive predictor.",
+                    code=f'profile.run("modeling.baseline", target="{target}")',
+                    produces=["baseline_score", "model_score", "validation_summary"],
+                )
+            )
+            recommendations.append(
+                Recommendation(
+                    id=f"modeling.experiment.{target}",
+                    title=f"Run a configurable modeling experiment for {target}",
+                    lens="modeling.experiment",
+                    score=0.84 if goal == "modeling" else 0.74,
+                    confidence=0.72,
+                    cost="expensive",
+                    category="modeling",
+                    columns=[target],
+                    evidence=[
+                        f"target selected: {target}",
+                        f"{candidate_feature_count} candidate features after role filtering",
+                    ],
+                    why_it_matters="A full experiment records split design, folds, estimator parameters, tuning results, metrics, and model observability in one replayable object.",
+                    code='profile.run("modeling.experiment", spec={"estimator": "random_forest"})',
+                    produces=["model_metrics", "cv_scores", "feature_importance", "shap_summary"],
+                )
+            )
+            recommendations.append(
+                Recommendation(
                     id=f"target.importance.{target}",
                     title=f"Model which features matter for {target}",
                     lens="target.importance",
@@ -416,6 +509,23 @@ def build_recommendations(
                 why_it_matters="Target-aware EDA surfaces likely signal, leakage candidates, and features worth plotting.",
                 code=f'profile.run("target.associations", column="{target}")',
                 produces=["numeric_target_associations", "categorical_target_associations"],
+                mode="exact" if not summary.sample_used else "sampled",
+            )
+        )
+        recommendations.append(
+            Recommendation(
+                id=f"target.best_splits.{target}",
+                title=f"Find strongest simple splits for {target}",
+                lens="target.best_splits",
+                score=0.82 if goal == "modeling" else 0.74,
+                confidence=0.76,
+                cost="medium",
+                category="target",
+                columns=[target],
+                evidence=[f"target selected: {target}"],
+                why_it_matters="Entropy and variance-reduction splits expose simple decision rules, leakage candidates, and useful binning ideas before modeling.",
+                code=f'profile.run("target.best_splits", column="{target}")',
+                produces=["split_candidates", "information_gain", "variance_reduction"],
                 mode="exact" if not summary.sample_used else "sampled",
             )
         )
@@ -502,6 +612,8 @@ def _infer_sources(rec: Recommendation) -> list[EvidenceSource]:
         sources.add("performance")
     if rec.category == "time" or rec.lens.startswith("time."):
         sources.add("time")
+    if rec.category == "modeling" or rec.lens.startswith("modeling."):
+        sources.update({"model", "statistical"})
     if rec.category == "relationships" or rec.lens.startswith("relationships."):
         sources.add("relationship")
     if rec.category == "target" or rec.lens.startswith("target."):
@@ -527,6 +639,7 @@ def _lens_has_visual(lens: str) -> bool:
         "time.cadence",
         "target.balance",
         "target.associations",
+        "target.best_splits",
         "target.importance",
         "concentration.lorenz",
         "relationships.correlation",

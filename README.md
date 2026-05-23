@@ -64,6 +64,97 @@ prefer the older name.
 - Reads common local file inputs: CSV, CSV.GZ, TSV, UCI `.data`, JSON, GeoJSON,
   parquet, Excel, and simple zip packages.
 
+## Cleaning And Transform Operations
+
+Cleaning plans are previewable operation specs rather than opaque helper calls:
+
+```python
+plan = scan.cleaning_plan()
+plan.preview()
+plan.operation_preview()
+
+cleaned = plan.apply(binary_null_policy="treat_as_false")
+clipped = plan.apply(outlier_policy="clip")
+```
+
+Actions include binary flag unification, ambiguous binary review, missing-like
+tokens, true-null treatment, duplicate-row review, mixed-format datetime
+parsing, numeric parsing, category variant review, numeric outlier
+review/treatment, latitude/longitude anomaly review, and mass/manual column
+renaming. Each action carries controls, risk, affected rows, examples, and
+replay metadata.
+
+Reusable transform helpers are also available for modeling prep:
+
+```python
+df2 = sf.clean_column_names(df, separator="_", case="lower")
+df2 = sf.rename_columns(df2, {"old_name": "friendly_name"})
+df2 = sf.impute_missing(df2, strategies={"price": "median"}, add_indicators=True)
+df2 = sf.one_hot_encode(df2, ["county"], max_categories=20)
+df2 = sf.scale_numeric(df2, ["price", "sqft"], method="robust")
+df2 = sf.add_date_features(df2, ["sold_date"], features=["year", "quarter", "month"])
+```
+
+## Modeling Readiness
+
+Modeling plans turn scan findings into editable feature-prep actions:
+
+```python
+scan = sf.scan(df, target="sold", goal="modeling")
+
+plan = scan.modeling_plan()
+plan.preview()
+plan.operation_preview()
+
+features = plan.apply()
+scaled_features = plan.apply(scale="standard")
+```
+
+The planner reviews target setup, drops identifier/constant columns, imputes
+missing features with optional indicators, one-hot encodes low-cardinality
+categories, derives date features, suggests optional ratio features such as
+price per square foot, and exposes optional scaling for models that need
+comparable numeric ranges. It is also available as
+`sf.modeling_plan(df)` and `scan.run("modeling.readiness")`.
+
+For target-aware smoke testing, run a quick baseline lens:
+
+```python
+baseline = scan.run("modeling.baseline")
+baseline.data["baseline_score"]
+baseline.data["model_score"]
+```
+
+For configurable experiments, use a replayable modeling spec. The experiment
+runner handles preprocessing, holdout splits, cross-validation, optional grid
+search, estimator parameters, metrics, and SHAP observability:
+
+```python
+result = scan.modeling_experiment({
+    "estimator": "random_forest",
+    "validation": {"strategy": "holdout_and_cv", "cv_folds": 5},
+    "search": {"enabled": True},
+    "explanation": {"enabled": True, "method": "auto"},
+})
+
+result.metrics
+result.explanation["top_features"]
+result.explanation["beeswarm"]
+result.explanation["records"][0]["top_contributions"]
+```
+
+Supported experiment families include random forests, XGBoost when installed,
+KNN, linear/logistic models, and clustering with k-means, agglomerative
+clustering, or DBSCAN. The workspace modeling view exposes the same split,
+fold, preprocessing, tuning, estimator, and observability controls. Supervised
+classification results include precision, recall, F1, support, confusion
+matrix, ROC and precision-recall curve data when available; SHAP results include
+global feature rankings, beeswarm-ready rows, and per-record contribution lists
+for individual row inspection. The web workbench renders these as first-class
+report panels: metric tiles, confusion matrices, ROC/precision-recall curves,
+SHAP feature bars, beeswarm-style distributions, and expandable per-record
+contribution views.
+
 ## Lenses
 
 Recommended analyses are executable:
@@ -77,9 +168,12 @@ scan.run("categorical.value_counts", column="segment")
 scan.run("binary.flags")
 scan.run("target.balance")
 scan.run("target.associations")
+scan.run("target.best_splits")
 scan.run("relationships.correlation")
 scan.run("grain.keys")
 scan.run("footprint.optimize")
+scan.run("modeling.readiness")
+scan.run("modeling.baseline")
 ```
 
 You can also run the highest-ranked low/medium-cost recommendations:
@@ -182,8 +276,10 @@ The embedded workspace viewer also distinguishes saved data branches from plot
 leaves. When a selected state is open in `sf.web()`, the top bar shows the saved
 lineage plus the current unsaved viewer draft. Use the inspector's **Visualize**
 section to save a first-click column plot as a leaf under the selected data
-state. Plot leaves store the plot spec, viewer draft summary, replay code, and a
-PNG preview artifact.
+state. Use **Clean** or **Model** from a selected state to edit per-action
+controls and apply previewed operation plans as new dataframe branches. Plot
+leaves store the plot spec, viewer draft summary, replay code, and a PNG
+preview artifact.
 
 The larger Plotly visual builder is available from the workspace web and from an
 opened dataframe state. Select a state and click **Visualizer** to open a
@@ -206,8 +302,40 @@ preview_artifact = web.render_visualizer(spec)
 saved_leaf = web.render_visualizer(spec, save=True, note="## Readout\nSegment mix.")
 ```
 
+The visualizer also suggests starter specs from the profile so broad chart
+coverage stays approachable:
+
+```python
+for suggestion in scan.visual_recommendations(limit=6):
+    print(suggestion.title, suggestion.spec.kind, suggestion.reason)
+
+fig = sf.visualize(scan, scan.visual_recommendations()[0].spec.to_dict())
+```
+
 Visual leaves store the declarative spec, Plotly HTML/JSON artifact, source
-state, filters, options, notes, and replay code.
+state, filters, options, notes, and replay code. Visual specs include analyst
+controls such as data min/max chops, date bucketing, axis transforms, sample or
+dedupe-before-plot controls, missing-category display, histogram binning by
+count/width/quantile, numeric X-axis binning for grouped box plots and bars,
+top/bottom category handling, percent-of-total or percent-within-group value
+transforms, rank transforms, weighted means, percentile aggregations, value
+labels, rolling or cumulative line values, axis reversal, tick formatting, range
+sliders, palettes, facet wrapping and shared-axis controls, and reference lines
+or bands. The catalog spans distributions, comparisons, time trends,
+composition, density plots, geographic maps, and multivariate views including
+strip plots, density heatmaps/contours, sunbursts, choropleths, geo scatter
+maps, parallel coordinates, parallel categories, Pareto charts, waterfall
+charts, funnels, radar charts, Q-Q plots, autocorrelation bars, and cumulative
+concentration/Lorenz-style curves. The workspace visual inspector keeps this
+large option set navigable with basic/advanced/expert control modes, control
+search, collapsible groups, and relevance filtering based on the selected
+visual and bound fields.
+
+The catalog also includes lollipop charts, slope charts, bump charts, and
+calendar heatmaps for ranked comparisons, before/after change, rank movement,
+and day-level intensity patterns. For multivariate review, it includes a
+dedicated correlation heatmap and PCA scatter projection alongside scatter
+matrices and parallel-coordinate views.
 
 ### Code leaves
 

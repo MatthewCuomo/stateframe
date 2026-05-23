@@ -108,7 +108,7 @@ def parse_success_ratio(series: pd.Series, parser: str) -> float:
     elif parser == "datetime":
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            parsed = pd.to_datetime(parse_sample, errors="coerce")
+            parsed = pd.to_datetime(parse_sample, errors="coerce", format="mixed")
     elif parser == "boolean":
         lowered = parse_sample.str.lower().str.strip()
         parsed = lowered.isin({"true", "false", "yes", "no", "0", "1", "y", "n"})

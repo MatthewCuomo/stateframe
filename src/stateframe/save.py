@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pandas.api import types as pdt
 
 from stateframe.models import Profile
 
@@ -189,7 +190,12 @@ def data(
         label=label,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(output_path, index=True, compression=compression)
+    parquet_metadata = _write_frame_parquet(
+        frame,
+        output_path,
+        index=True,
+        compression=compression,
+    )
 
     sidecar = output_path.with_suffix(output_path.suffix + ".json")
     metadata = {
@@ -206,6 +212,7 @@ def data(
         "column_count": int(frame.shape[1]),
         "columns": [str(column) for column in frame.columns],
         "compression": compression,
+        **parquet_metadata,
     }
     sidecar.write_text(
         json.dumps(metadata, indent=2, default=_json_default),
@@ -259,6 +266,80 @@ def load_data(path: str | Path) -> pd.DataFrame:
     """Load a saved Parquet data checkpoint."""
 
     return pd.read_parquet(path)
+
+
+def _write_frame_parquet(
+    frame: pd.DataFrame,
+    path: Path,
+    *,
+    index: bool,
+    compression: str | None = "snappy",
+) -> dict[str, Any]:
+    """Write a dataframe snapshot, retrying mixed object columns as strings.
+
+    Raw CSVs often contain mostly-text columns where a few values were inferred
+    as numbers. PyArrow rejects those mixed Python object columns. The original
+    in-memory frame is left untouched; only the persisted snapshot is normalized.
+    """
+
+    try:
+        frame.to_parquet(path, index=index, compression=compression)
+        return {}
+    except (TypeError, ValueError, OverflowError) as exc:
+        safe_frame, coercions = _stringify_object_columns_for_parquet(frame)
+        if not coercions:
+            raise
+        try:
+            safe_frame.to_parquet(path, index=index, compression=compression)
+        except Exception:
+            raise exc
+        return {
+            "parquet_coercions": coercions,
+            "parquet_coercion_reason": "Mixed object columns were normalized to nullable strings for Parquet compatibility.",
+        }
+
+
+def _stringify_object_columns_for_parquet(
+    frame: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    safe_frame = frame.copy(deep=False)
+    coercions: list[dict[str, Any]] = []
+    for column in safe_frame.columns:
+        series = safe_frame[column]
+        if not pdt.is_object_dtype(series.dtype):
+            continue
+        safe_frame[column] = series.map(_parquet_string_value).astype("string")
+        coercions.append(
+            {
+                "column": str(column),
+                "from_dtype": str(series.dtype),
+                "to_dtype": "string",
+            }
+        )
+    return safe_frame, coercions
+
+
+def _parquet_string_value(value: Any) -> str | None:
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _is_missing_scalar(value: Any) -> bool:
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if missing is pd.NA:
+        return True
+    if isinstance(missing, bool):
+        return bool(missing)
+    try:
+        return bool(missing)
+    except (TypeError, ValueError):
+        return False
 
 
 def _profiles_from_items(items: tuple[Any, ...]) -> list[Profile]:

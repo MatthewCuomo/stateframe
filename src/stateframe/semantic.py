@@ -225,8 +225,21 @@ def _numeric_hypotheses(
                     ["values are bounded between 0 and 1"],
                 )
             )
+        if semantic_policy != "off" and is_geo_name(name):
+            in_coordinate_range = (
+                ("lat" in name.lower() and -90 <= min_value <= max_value <= 90)
+                or (("lon" in name.lower() or "lng" in name.lower() or "long" in name.lower()) and -180 <= min_value <= max_value <= 180)
+                or (-180 <= min_value <= max_value <= 180)
+            )
+            hypotheses.append(
+                SemanticTypeHypothesis(
+                    "geographic",
+                    0.84 if in_coordinate_range and semantic_policy == "auto" else 0.62,
+                    ["column name suggests latitude, longitude, or coordinates"],
+                )
+            )
 
-    if not any(h.semantic_type in {"identifier", "amount", "percentage", "postal_code"} for h in hypotheses):
+    if not any(h.semantic_type in {"identifier", "amount", "percentage", "postal_code", "geographic"} for h in hypotheses):
         hypotheses.append(
             SemanticTypeHypothesis(
                 "numeric",

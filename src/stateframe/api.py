@@ -10,10 +10,25 @@ from stateframe.branch import branch
 from stateframe.profile import build_profile
 from stateframe.footprint import optimize_footprint
 from stateframe.leaf import is_save_mode, leaf, register_ipython_magics, save_mode
+from stateframe.modeling import build_modeling_plan, default_modeling_experiment_spec, modeling_experiment_catalog, run_modeling_experiment
 from stateframe.pull import pull
-from stateframe.transforms import apply_suggested_conversions, unify_binary_flags
+from stateframe.transforms import (
+    add_date_features,
+    add_missing_indicators,
+    add_ratio,
+    apply_suggested_conversions,
+    clean_column_name,
+    clean_column_names,
+    clean_numeric_outliers,
+    impute_missing,
+    map_values,
+    one_hot_encode,
+    rename_columns,
+    scale_numeric,
+    unify_binary_flags,
+)
 from stateframe.visuals import plot
-from stateframe.visualizer import build_visual_artifact, render_visual, visual_catalog
+from stateframe.visualizer import build_visual_artifact, render_visual, visual_catalog, visual_recommendations
 
 
 def connect_web(
@@ -48,6 +63,7 @@ def profile(
     explanation_level: ExplanationLevel | None = None,
     source_path: str | None = None,
     reader_params: dict[str, Any] | None = None,
+    register: bool = True,
 ):
     """Profile a DataFrame-like object.
 
@@ -90,6 +106,7 @@ def profile(
         sample_size=sample_size,
         source_path=source_path,
         reader_params=reader_params,
+        register=register,
     )
 
 
@@ -111,6 +128,7 @@ def scan(
     explanation_level: ExplanationLevel | None = None,
     source_path: str | None = None,
     reader_params: dict[str, Any] | None = None,
+    register: bool = True,
 ):
     """Run the initial stateframe scan.
 
@@ -144,6 +162,7 @@ def scan(
         sample_size=sample_size,
         source_path=source_path,
         reader_params=reader_params,
+        register=register,
     )
 
 
@@ -164,6 +183,7 @@ def scan_path(
     visual_policy: VisualPolicy | None = None,
     explanation_level: ExplanationLevel | None = None,
     reader_params: dict[str, Any] | None = None,
+    register: bool = True,
 ):
     """Scan a local data path and record it as the tree's replayable root."""
 
@@ -183,6 +203,7 @@ def scan_path(
         visual_policy=visual_policy,
         explanation_level=explanation_level,
         reader_params=reader_params,
+        register=register,
     )
 
 
@@ -388,6 +409,39 @@ def visualize(data_or_profile: Any, spec: dict[str, Any] | None = None):
     return render_visual(data_or_profile, spec)
 
 
+def suggest_visuals(data_or_profile: Any, *, limit: int = 18):
+    """Suggest replayable visual specs for a DataFrame or profile."""
+
+    return visual_recommendations(data_or_profile, limit=limit)
+
+
+def modeling_plan(data_or_profile: Any, **kwargs: Any):
+    """Build a previewable modeling-readiness plan for a DataFrame or profile."""
+
+    profile_obj = data_or_profile if hasattr(data_or_profile, "column_profiles") and hasattr(data_or_profile, "data") else scan(data_or_profile)
+    return build_modeling_plan(profile_obj, **kwargs)
+
+
+def modeling_experiment(data_or_profile: Any, spec: dict[str, Any] | None = None, **kwargs: Any):
+    """Run a replayable modeling experiment for supervised learning or clustering."""
+
+    profile_obj = data_or_profile if hasattr(data_or_profile, "column_profiles") and hasattr(data_or_profile, "data") else scan(data_or_profile)
+    return run_modeling_experiment(profile_obj, spec, **kwargs)
+
+
+def modeling_catalog() -> dict[str, Any]:
+    """Return UI-readable modeling experiment options."""
+
+    return modeling_experiment_catalog()
+
+
+def default_modeling_spec(data_or_profile: Any, **kwargs: Any):
+    """Return a default replayable modeling experiment spec."""
+
+    profile_obj = data_or_profile if hasattr(data_or_profile, "column_profiles") and hasattr(data_or_profile, "data") else scan(data_or_profile)
+    return default_modeling_experiment_spec(profile_obj, **kwargs)
+
+
 def visual_artifact(data_or_profile: Any, spec: dict[str, Any]):
     """Render a visual spec into a ledger-ready Plotly artifact tuple."""
 
@@ -413,13 +467,28 @@ def _infer_data_name(data: Any) -> str | None:
 __all__ = [
     "apply_suggested_conversions",
     "branch",
+    "add_date_features",
+    "add_missing_indicators",
+    "add_ratio",
+    "clean_numeric_outliers",
+    "clean_column_name",
+    "clean_column_names",
     "connect_web",
+    "impute_missing",
     "ledger_view",
+    "map_values",
+    "modeling_plan",
+    "modeling_experiment",
+    "modeling_catalog",
+    "default_modeling_spec",
+    "one_hot_encode",
     "plot",
     "profile",
     "pull",
     "query",
+    "rename_columns",
     "report",
+    "scale_numeric",
     "scan",
     "scan_path",
     "tree_view",
@@ -428,6 +497,7 @@ __all__ = [
     "view",
     "visual_artifact",
     "visual_catalog",
+    "suggest_visuals",
     "visualize",
     "web",
     "web_payload",

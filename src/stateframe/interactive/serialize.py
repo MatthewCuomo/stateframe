@@ -31,6 +31,7 @@ def build_viewer_payload(
     height: int = 640,
     theme: str = "auto",
     title: str | None = None,
+    include_cleaning: bool = False,
 ) -> dict[str, Any]:
     """Return a JSON-safe payload consumed by the anywidget frontend."""
 
@@ -49,6 +50,20 @@ def build_viewer_payload(
     index_values = [_json_safe(value) for value in display_df.index.tolist()]
 
     recommendations = profile.recommendations().to_list()
+    issues_by_column: dict[str, list[dict[str, Any]]] = {}
+    for issue in profile.issue_list:
+        issue_payload = issue.to_dict()
+        for column in issue.columns:
+            issues_by_column.setdefault(str(column), []).append(issue_payload)
+    insights_by_column: dict[str, list[dict[str, Any]]] = {}
+    for insight in profile.insight_list:
+        insight_payload = insight.to_dict()
+        for column in insight.columns:
+            insights_by_column.setdefault(str(column), []).append(insight_payload)
+    recommendations_by_column: dict[str, list[dict[str, Any]]] = {}
+    for recommendation in recommendations:
+        for column in recommendation.get("columns", []):
+            recommendations_by_column.setdefault(str(column), []).append(recommendation)
     columns = [
         _column_payload(
             profile,
@@ -57,14 +72,16 @@ def build_viewer_payload(
             source_name=source_name,
             display_name=str(source_name),
             position=position,
-            recommendations=recommendations,
+            issues=issues_by_column.get(str(source_name), []),
+            insights=insights_by_column.get(str(source_name), []),
+            recommendations=recommendations_by_column.get(str(source_name), []),
         )
         for position, (column_id, source_name) in enumerate(
             zip(column_ids, original_columns, strict=True)
         )
     ]
 
-    return {
+    payload = {
         "version": 1,
         "title": title or "stateframe dataframe explorer",
         "summary": _json_safe(profile.summary()),
@@ -97,6 +114,9 @@ def build_viewer_payload(
             profile.suggested_config.to_dict() if profile.suggested_config else None
         ),
     }
+    if include_cleaning:
+        payload["cleaning"] = _json_safe(_cleaning_payload(profile))
+    return payload
 
 
 def build_ledger_payload(
@@ -509,6 +529,8 @@ def _column_payload(
     source_name: Any,
     display_name: str,
     position: int,
+    issues: list[dict[str, Any]],
+    insights: list[dict[str, Any]],
     recommendations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     column_profile = profile.column_profiles.get(source_name)
@@ -537,22 +559,6 @@ def _column_payload(
         semantic_type = column_profile.semantic_type
         base = column_profile.to_dict()
 
-    issues = [
-        issue.to_dict()
-        for issue in profile.issue_list
-        if display_name in {str(column) for column in issue.columns}
-    ]
-    insights = [
-        insight.to_dict()
-        for insight in profile.insight_list
-        if display_name in {str(column) for column in insight.columns}
-    ]
-    column_recommendations = [
-        recommendation
-        for recommendation in recommendations
-        if display_name in {str(column) for column in recommendation.get("columns", [])}
-    ]
-
     return _json_safe(
         {
             **base,
@@ -568,9 +574,16 @@ def _column_payload(
             else None,
             "issues": issues,
             "insights": insights,
-            "recommendations": column_recommendations[:8],
+            "recommendations": recommendations[:8],
         }
     )
+
+
+def _cleaning_payload(profile: Profile) -> dict[str, Any]:
+    try:
+        return profile.cleaning_plan().operation_preview()
+    except Exception:
+        return {"action_count": 0, "actions": [], "catalog": []}
 
 
 def _numeric_histogram(series: pd.Series, *, bins: int = 16) -> dict[str, Any] | None:

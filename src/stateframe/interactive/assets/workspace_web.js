@@ -1,8 +1,13 @@
+const VIEWER_PAYLOAD_CACHE = new WeakMap();
+const VIEWER_GRID_CELL_BUDGET = 12000;
+
 function render({ model, el, signal }) {
   let payload = model.get("payload") || {};
   let state = normalizeState(model.get("state"), payload);
   let viewer = normalizeViewer(model.get("viewer"));
   let visualizer = normalizeVisualizer(model.get("visualizer"));
+  let cleaning = normalizeCleaning(model.get("cleaning"));
+  let modeling = normalizeModeling(model.get("modeling"));
   let files = normalizeFiles(model.get("files"));
   let commandStatus = model.get("command_status") || {};
   const ui = {
@@ -27,6 +32,7 @@ function render({ model, el, signal }) {
     webSearchDraft: state.search || "",
     webSearchTimer: null,
   };
+  let drawFrame = null;
 
   el.classList.add("stateframe-web-host");
   el.style.setProperty("--stateframe-web-height", `${payload.view?.height || 640}px`);
@@ -35,12 +41,29 @@ function render({ model, el, signal }) {
   root.className = "stateframe-web";
   el.replaceChildren(root);
 
+  function sendWidgetMessage(content) {
+    try {
+      if (typeof model.send === "function") model.send(content);
+    } catch (error) {
+      console.warn("stateframe widget message failed", error);
+    }
+  }
+
+  function scheduleDraw() {
+    if (drawFrame !== null) return;
+    drawFrame = requestAnimationFrame(() => {
+      drawFrame = null;
+      draw();
+    });
+  }
+
   function setState(patch) {
     captureFocus(root, ui);
     state = normalizeState({ ...state, ...patch }, payload);
     model.set("state", state);
     model.save_changes();
-    draw();
+    sendWidgetMessage({ type: "stateframe_state", state });
+    scheduleDraw();
   }
 
   function setViewerState(patch) {
@@ -50,9 +73,9 @@ function render({ model, el, signal }) {
       ...viewer,
       state: normalizeViewerState({ ...(viewer.state || {}), ...patch }, viewerPayload),
     });
-    model.set("viewer", viewer);
+    model.set("viewer_state", viewer.state);
     model.save_changes();
-    draw();
+    scheduleDraw();
   }
 
   function setVisualizerState(patch) {
@@ -62,46 +85,164 @@ function render({ model, el, signal }) {
       ...visualizer,
       state: normalizeVisualizerState({ ...(visualizer.state || {}), ...patch }, visualPayload),
     });
-    model.set("visualizer", visualizer);
+    model.set("visualizer_state", visualizer.state);
     model.save_changes();
-    draw();
+    scheduleDraw();
+  }
+
+  function setCleaningState(patch) {
+    captureFocus(root, ui);
+    const cleaningPayload = cleaning.payload || {};
+    cleaning = normalizeCleaning({
+      ...cleaning,
+      state: normalizeCleaningState({ ...(cleaning.state || {}), ...patch }, cleaningPayload),
+    });
+    model.set("cleaning_state", cleaning.state);
+    model.save_changes();
+    scheduleDraw();
+  }
+
+  function setModelingState(patch) {
+    captureFocus(root, ui);
+    const modelingPayload = modeling.payload || {};
+    modeling = normalizeModeling({
+      ...modeling,
+      state: normalizeModelingState({ ...(modeling.state || {}), ...patch }, modelingPayload),
+    });
+    model.set("modeling_state", modeling.state);
+    model.save_changes();
+    scheduleDraw();
   }
 
   function setUi(patch) {
     captureFocus(root, ui);
     Object.assign(ui, patch);
-    draw();
+    scheduleDraw();
   }
 
   function sendCommand(action, extra = {}) {
-    model.set("command", {
+    captureFocus(root, ui);
+    primeCommandSurface(action, extra);
+    const command = commandPayload(action, extra);
+    commandStatus = pendingCommandStatus(action);
+    model.set("command", command);
+    model.save_changes();
+    sendWidgetMessage({ type: "stateframe_command", command, state });
+    scheduleDraw();
+  }
+
+  function commandPayload(action, extra = {}) {
+    return {
       nonce: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       action,
       selectedTreeId: state.selectedTreeId,
       selectedEntryId: state.selectedEntryId,
       saveMode: Boolean(state.saveMode),
       ...extra,
-    });
-    model.save_changes();
+    };
   }
 
-  function openSelectedViewer() {
-    viewer = { status: "loading", payload: null, state: {}, message: "Loading selected state" };
-    model.set("viewer", viewer);
-    model.save_changes();
-    setState({ viewMode: "viewer" });
+  function primeCommandSurface(action, extra = {}) {
+    if (action === "open_viewer") {
+      viewer = { status: "loading", payload: null, state: {}, message: "Loading selected state" };
+      model.set("viewer", viewer);
+      model.set("viewer_state", {});
+      state = normalizeState({ ...state, viewMode: "viewer" }, payload);
+      model.set("state", state);
+    } else if (action === "open_visualizer") {
+      visualizer = { status: "loading", payload: null, state: {}, preview: null, message: "Loading visualizer" };
+      model.set("visualizer", visualizer);
+      model.set("visualizer_state", {});
+      state = normalizeState({ ...state, viewMode: "visualizer" }, payload);
+      model.set("state", state);
+    } else if (action === "open_cleaning") {
+      cleaning = { status: "loading", payload: null, state: {}, preview: null, message: "Loading cleaning workbench" };
+      model.set("cleaning", cleaning);
+      model.set("cleaning_state", {});
+      state = normalizeState({ ...state, viewMode: "cleaning" }, payload);
+      model.set("state", state);
+    } else if (action === "open_modeling") {
+      modeling = { status: "loading", payload: null, state: {}, preview: null, message: "Loading modeling workbench" };
+      model.set("modeling", modeling);
+      model.set("modeling_state", {});
+      state = normalizeState({ ...state, viewMode: "modeling" }, payload);
+      model.set("state", state);
+    } else if (action === "browse_files" && ["files", "get_data"].includes(extra.viewMode)) {
+      state = normalizeState({
+        ...state,
+        viewMode: extra.viewMode,
+        getDataTab: extra.getDataTab || state.getDataTab || "files",
+        selectedFilePath: null,
+      }, payload);
+      model.set("state", state);
+    } else if (action === "render_visualizer") {
+      visualizer = normalizeVisualizer({
+        ...visualizer,
+        status: "rendering",
+        preview: null,
+        message: "Rendering visual",
+      });
+    } else if (action === "save_visualizer_leaf") {
+      visualizer = normalizeVisualizer({
+        ...visualizer,
+        status: "saving",
+        message: "Saving visual leaf",
+      });
+    }
+  }
+
+  function pendingCommandStatus(action) {
+    const messages = {
+      open_viewer: "Loading selected state",
+      save_viewer_branch: "Saving branch",
+      save_plot_leaf: "Saving plot leaf",
+      save_entry_note: "Saving notes",
+      save_source_connection: "Saving source connection",
+      delete_source_connection: "Deleting source connection",
+      delete_selected: "Deleting selected items",
+      refresh_sources: "Refreshing source connections",
+      open_visualizer: "Loading visualizer",
+      render_visualizer: "Rendering visual",
+      save_visualizer_leaf: "Saving visual leaf",
+      open_cleaning: "Loading cleaning workbench",
+      apply_cleaning: "Applying cleaning branch",
+      open_modeling: "Loading modeling workbench",
+      apply_modeling: "Applying modeling branch",
+      run_modeling_experiment: "Running modeling experiment",
+      refresh: "Refreshing workspace web",
+      browse_files: "Loading workspace files",
+      scan_file: "Scanning selected file",
+      query_data: "Running source query",
+    };
+    return { status: "loading", action, message: messages[action] || "Working" };
+  }
+
+  function openSelectedViewer(extra = {}) {
     sendCommand("open_viewer", {
       height: payload.view?.height || 640,
       maxRows: 500,
+      ...extra,
     });
   }
 
   function openSelectedVisualizer(extra = {}) {
-    visualizer = { status: "loading", payload: null, state: {}, preview: null, message: "Loading visualizer" };
-    model.set("visualizer", visualizer);
-    model.save_changes();
-    setState({ viewMode: "visualizer" });
     sendCommand("open_visualizer", {
+      height: payload.view?.height || 640,
+      maxRows: 500,
+      ...extra,
+    });
+  }
+
+  function openSelectedCleaning(extra = {}) {
+    sendCommand("open_cleaning", {
+      height: payload.view?.height || 640,
+      maxRows: 500,
+      ...extra,
+    });
+  }
+
+  function openSelectedModeling(extra = {}) {
+    sendCommand("open_modeling", {
       height: payload.view?.height || 640,
       maxRows: 500,
       ...extra,
@@ -113,54 +254,111 @@ function render({ model, el, signal }) {
     payload = model.get("payload") || {};
     state = normalizeState(model.get("state"), payload);
     if (focusedKey(root) !== "web-search") ui.webSearchDraft = state.search || "";
-    draw();
+    scheduleDraw();
   }
 
   function onStateChange() {
     captureFocus(root, ui);
     state = normalizeState(model.get("state"), payload);
     if (focusedKey(root) !== "web-search") ui.webSearchDraft = state.search || "";
-    draw();
+    scheduleDraw();
   }
 
   function onViewerChange() {
     captureFocus(root, ui);
     viewer = normalizeViewer(model.get("viewer"));
-    draw();
+    scheduleDraw();
+  }
+
+  function onViewerStateChange() {
+    captureFocus(root, ui);
+    if (viewer.payload) {
+      viewer = normalizeViewer({ ...viewer, state: model.get("viewer_state") || viewer.state || {} });
+    }
+    scheduleDraw();
   }
 
   function onVisualizerChange() {
     captureFocus(root, ui);
     visualizer = normalizeVisualizer(model.get("visualizer"));
-    draw();
+    scheduleDraw();
+  }
+
+  function onVisualizerStateChange() {
+    captureFocus(root, ui);
+    if (visualizer.payload) {
+      visualizer = normalizeVisualizer({ ...visualizer, state: model.get("visualizer_state") || visualizer.state || {} });
+    }
+    scheduleDraw();
+  }
+
+  function onCleaningChange() {
+    captureFocus(root, ui);
+    cleaning = normalizeCleaning(model.get("cleaning"));
+    scheduleDraw();
+  }
+
+  function onCleaningStateChange() {
+    captureFocus(root, ui);
+    if (cleaning.payload) {
+      cleaning = normalizeCleaning({ ...cleaning, state: model.get("cleaning_state") || cleaning.state || {} });
+    }
+    scheduleDraw();
+  }
+
+  function onModelingChange() {
+    captureFocus(root, ui);
+    modeling = normalizeModeling(model.get("modeling"));
+    scheduleDraw();
+  }
+
+  function onModelingStateChange() {
+    captureFocus(root, ui);
+    if (modeling.payload) {
+      modeling = normalizeModeling({ ...modeling, state: model.get("modeling_state") || modeling.state || {} });
+    }
+    scheduleDraw();
   }
 
   function onFilesChange() {
     captureFocus(root, ui);
     files = normalizeFiles(model.get("files"));
-    draw();
+    scheduleDraw();
   }
 
   function onCommandStatusChange() {
     captureFocus(root, ui);
     commandStatus = model.get("command_status") || {};
-    draw();
+    scheduleDraw();
   }
 
   model.on("change:payload", onPayloadChange);
   model.on("change:state", onStateChange);
   model.on("change:viewer", onViewerChange);
+  model.on("change:viewer_state", onViewerStateChange);
   model.on("change:visualizer", onVisualizerChange);
+  model.on("change:visualizer_state", onVisualizerStateChange);
+  model.on("change:cleaning", onCleaningChange);
+  model.on("change:cleaning_state", onCleaningStateChange);
+  model.on("change:modeling", onModelingChange);
+  model.on("change:modeling_state", onModelingStateChange);
   model.on("change:files", onFilesChange);
   model.on("change:command_status", onCommandStatusChange);
   signal.addEventListener("abort", () => {
     model.off("change:payload", onPayloadChange);
     model.off("change:state", onStateChange);
     model.off("change:viewer", onViewerChange);
+    model.off("change:viewer_state", onViewerStateChange);
     model.off("change:visualizer", onVisualizerChange);
+    model.off("change:visualizer_state", onVisualizerStateChange);
+    model.off("change:cleaning", onCleaningChange);
+    model.off("change:cleaning_state", onCleaningStateChange);
+    model.off("change:modeling", onModelingChange);
+    model.off("change:modeling_state", onModelingStateChange);
     model.off("change:files", onFilesChange);
     model.off("change:command_status", onCommandStatusChange);
     if (ui.webSearchTimer) clearTimeout(ui.webSearchTimer);
+    if (drawFrame !== null) cancelAnimationFrame(drawFrame);
   });
 
   function draw() {
@@ -206,6 +404,30 @@ function render({ model, el, signal }) {
       return;
     }
 
+    if (state.viewMode === "cleaning") {
+      root.appendChild(renderCleaning(
+        cleaning,
+        commandStatus,
+        setCleaningState,
+        sendCommand,
+        setState,
+      ));
+      queueRestoreUiState(root, ui);
+      return;
+    }
+
+    if (state.viewMode === "modeling") {
+      root.appendChild(renderModeling(
+        modeling,
+        commandStatus,
+        setModelingState,
+        sendCommand,
+        setState,
+      ));
+      queueRestoreUiState(root, ui);
+      return;
+    }
+
     if (state.viewMode === "get_data") {
       root.appendChild(renderGetData(payload, files, commandStatus, state, setState, sendCommand, ui, setUi));
       queueRestoreUiState(root, ui);
@@ -238,7 +460,7 @@ function render({ model, el, signal }) {
       onPreview: (width) => body.style.setProperty("--stateframe-web-left-width", `${width}px`),
       onCommit: (width) => setState({ panelWidths: { ...state.panelWidths, webLeft: width } }),
     }));
-    body.appendChild(renderDetail(payload, selected, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer));
+    body.appendChild(renderDetail(payload, selected, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling));
     root.appendChild(body);
     queueRestoreUiState(root, ui);
   }
@@ -264,7 +486,7 @@ function normalizeState(raw, payload) {
     ? raw.deleteEntryIds.filter((id) => entryIds.has(id) && id !== (selectedTree?.tree_detail?.root_entry_id || selectedTree?.root_entry_id))
     : [];
   const sorts = new Set(["updated", "name", "entries", "states"]);
-  const modes = new Set(["web", "viewer", "visualizer", "get_data", "files", "leaf"]);
+  const modes = new Set(["web", "viewer", "visualizer", "cleaning", "modeling", "get_data", "files", "leaf"]);
   const tabs = new Set(["files", "query", "connections"]);
   const sourceIds = new Set((payload.sources || []).map((source) => source.id));
   const connectionIds = new Set((payload.source_connections || []).map((source) => source.id));
@@ -314,23 +536,160 @@ function normalizeVisualizer(raw) {
   };
 }
 
+function normalizeCleaning(raw) {
+  const payload = raw?.payload || null;
+  return {
+    status: raw?.status || (payload ? "ready" : "empty"),
+    payload,
+    state: payload ? normalizeCleaningState(raw?.state, payload) : {},
+    preview: raw?.preview || null,
+    message: raw?.message || "",
+  };
+}
+
+function normalizeModeling(raw) {
+  const payload = raw?.payload || null;
+  return {
+    status: raw?.status || (payload ? "ready" : "empty"),
+    payload,
+    state: payload ? normalizeModelingState(raw?.state, payload) : {},
+    preview: raw?.preview || null,
+    message: raw?.message || "",
+  };
+}
+
+function normalizeCleaningState(raw, payload) {
+  const actions = payload?.cleaning?.actions || [];
+  const presets = payload?.cleaning?.presets || [];
+  const ids = new Set(actions.map((action) => action.id).filter(Boolean));
+  const presetIds = new Set(presets.map((preset) => preset.id).filter(Boolean));
+  const defaultIds = actions
+    .filter((action) => action.applies_by_default !== false && action.id)
+    .map((action) => action.id);
+  const selected = Array.isArray(raw?.selectedActionIds)
+    ? raw.selectedActionIds.filter((id) => ids.has(id))
+    : defaultIds;
+  const selectedActionId = ids.has(raw?.selectedActionId)
+    ? raw.selectedActionId
+    : (selected[0] || actions[0]?.id || null);
+  const nullPolicies = new Set(["preserve", "treat_as_false", "treat_as_true", "false_to_null", "true_to_null"]);
+  const outputs = new Set(["int", "bool_nullable", "bool", "yes_no", "yn"]);
+  const outlierPolicies = new Set(["skip", "flag", "null", "clip", "drop"]);
+  const outlierMethods = new Set(["iqr", "zscore", "modified_zscore", "percentile"]);
+  const fallbackPreset = presets.find((preset) => preset.id === "safe_defaults")?.id || presets[0]?.id || "";
+  const activePreset = raw?.activePreset === "custom" || presetIds.has(raw?.activePreset)
+    ? raw.activePreset
+    : fallbackPreset;
+  return {
+    selectedActionIds: selected,
+    selectedActionId,
+    actionControlValues: normalizeActionControlValues(raw?.actionControlValues, ids),
+    binaryNullPolicy: nullPolicies.has(raw?.binaryNullPolicy) ? raw.binaryNullPolicy : "preserve",
+    binaryOutput: outputs.has(raw?.binaryOutput) ? raw.binaryOutput : "int",
+    applyAmbiguousBinary: Boolean(raw?.applyAmbiguousBinary),
+    outlierPolicy: outlierPolicies.has(raw?.outlierPolicy) ? raw.outlierPolicy : "skip",
+    outlierMethod: outlierMethods.has(raw?.outlierMethod) ? raw.outlierMethod : "iqr",
+    activePreset,
+    search: raw?.search || "",
+  };
+}
+
+function normalizeModelingState(raw, payload) {
+  const actions = payload?.modeling?.actions || [];
+  const ids = new Set(actions.map((action) => action.id).filter(Boolean));
+  const defaultIds = actions
+    .filter((action) => action.applies_by_default !== false && action.id)
+    .map((action) => action.id);
+  const selected = Array.isArray(raw?.selectedActionIds)
+    ? raw.selectedActionIds.filter((id) => ids.has(id))
+    : defaultIds;
+  const selectedActionId = ids.has(raw?.selectedActionId)
+    ? raw.selectedActionId
+    : (selected[0] || actions[0]?.id || null);
+  const scaleMethods = new Set(["none", "standard", "minmax", "robust", "maxabs"]);
+  const experiment = normalizeModelingExperiment(raw?.experiment, payload?.default_experiment, payload?.experiment_catalog);
+  return {
+    selectedActionIds: selected,
+    selectedActionId,
+    actionControlValues: normalizeActionControlValues(raw?.actionControlValues, ids),
+    includeTarget: raw?.includeTarget !== false,
+    dropIdentifiers: raw?.dropIdentifiers !== false,
+    impute: raw?.impute !== false,
+    addIndicators: raw?.addIndicators !== false,
+    encode: raw?.encode !== false,
+    dateFeatures: raw?.dateFeatures !== false,
+    scaleMethod: scaleMethods.has(raw?.scaleMethod) ? raw.scaleMethod : "none",
+    experiment,
+    search: raw?.search || "",
+  };
+}
+
+function normalizeModelingExperiment(raw, defaults = {}, catalog = {}) {
+  const base = defaults || {};
+  const tasks = new Set((catalog?.tasks || []).map((item) => item.id));
+  const estimators = new Set((catalog?.estimators || []).map((item) => item.id));
+  const split = { ...(base.split || {}), ...(raw?.split || {}) };
+  const validation = { ...(base.validation || {}), ...(raw?.validation || {}) };
+  const preprocessing = { ...(base.preprocessing || {}), ...(raw?.preprocessing || {}) };
+  const search = { ...(base.search || {}), ...(raw?.search || {}) };
+  const explanation = { ...(base.explanation || {}), ...(raw?.explanation || {}) };
+  const clustering = { ...(base.clustering || {}), ...(raw?.clustering || {}) };
+  return {
+    ...base,
+    ...raw,
+    task: tasks.has(raw?.task) ? raw.task : (base.task || "auto"),
+    estimator: estimators.has(raw?.estimator) ? raw.estimator : (base.estimator || "random_forest"),
+    split,
+    validation,
+    preprocessing,
+    search,
+    explanation,
+    clustering,
+  };
+}
+
+function visualColumnLookup(payload) {
+  const lookup = new Map();
+  for (const column of payload?.columns || []) {
+    const id = column?.id;
+    if (!id) continue;
+    for (const value of [column.id, column.source_name, column.name, column.display_name, column.label]) {
+      if (value === undefined || value === null || value === "") continue;
+      const key = String(value);
+      lookup.set(key, id);
+      lookup.set(key.toLowerCase(), id);
+    }
+  }
+  return lookup;
+}
+
+function resolveVisualColumnId(value, lookup) {
+  if (value === undefined || value === null || value === "") return null;
+  const key = String(value);
+  return lookup.get(key) || lookup.get(key.toLowerCase()) || null;
+}
+
 function normalizeVisualizerState(raw, payload) {
   const catalog = payload?.catalog || {};
   const plotTypes = Array.isArray(catalog.plot_types) ? catalog.plot_types : [];
   const ids = new Set(plotTypes.map((item) => item.id));
   const kind = ids.has(raw?.kind) ? raw.kind : plotTypes[0]?.id || "histogram";
   const definition = plotTypes.find((item) => item.id === kind) || plotTypes[0] || {};
-  const columns = new Set((payload?.columns || []).map((column) => column.id));
+  const lookup = visualColumnLookup(payload);
   const fields = {};
   for (const field of definition.fields || []) {
     const value = raw?.fields?.[field.slot];
     if (field.multiple) {
       const values = Array.isArray(value)
-        ? value.filter((column) => columns.has(column))
-        : String(value || "").split(",").map((item) => item.trim()).filter((column) => columns.has(column));
+        ? value.map((column) => resolveVisualColumnId(column, lookup)).filter(Boolean)
+        : String(value || "")
+          .split(",")
+          .map((item) => resolveVisualColumnId(item.trim(), lookup))
+          .filter(Boolean);
       if (values.length) fields[field.slot] = values;
-    } else if (columns.has(value)) {
-      fields[field.slot] = value;
+    } else {
+      const resolved = resolveVisualColumnId(value, lookup);
+      if (resolved) fields[field.slot] = resolved;
     }
   }
   if (!Object.keys(fields).length) {
@@ -340,11 +699,21 @@ function normalizeVisualizerState(raw, payload) {
       if (firstField) fields[firstField.slot] = first;
     }
   }
+  const filters = Array.isArray(raw?.filters)
+    ? raw.filters
+      .map((filter) => ({
+        ...filter,
+        column: resolveVisualColumnId(filter?.column, lookup) || "",
+      }))
+      .filter((filter) => filter.column)
+    : [];
   return {
     kind,
     fields,
-    filters: Array.isArray(raw?.filters) ? raw.filters : [],
+    filters,
     options: raw?.options || {},
+    controlMode: ["basic", "advanced", "expert"].includes(raw?.controlMode) ? raw.controlMode : "basic",
+    controlQuery: raw?.controlQuery || "",
     title: raw?.title || "",
     note: raw?.note || "",
     collapsedPanels: {
@@ -360,16 +729,18 @@ function normalizeVisualizerState(raw, payload) {
 
 function normalizeViewerState(raw, payload) {
   const allIds = (payload.columns || []).map((column) => column.id);
+  const allIdSet = new Set(allIds);
   const rawOrder = Array.isArray(raw?.columnOrder) ? raw.columnOrder : [];
+  const rawOrderSet = new Set(rawOrder);
   const columnOrder = [
-    ...rawOrder.filter((id) => allIds.includes(id)),
-    ...allIds.filter((id) => !rawOrder.includes(id)),
+    ...rawOrder.filter((id) => allIdSet.has(id)),
+    ...allIds.filter((id) => !rawOrderSet.has(id)),
   ];
   const hiddenColumnIds = Array.isArray(raw?.hiddenColumnIds)
-    ? raw.hiddenColumnIds.filter((id) => allIds.includes(id))
+    ? raw.hiddenColumnIds.filter((id) => allIdSet.has(id))
     : [];
   const sorts = Array.isArray(raw?.sorts)
-    ? raw.sorts.filter((sort) => allIds.includes(sort.id) && ["asc", "desc"].includes(sort.direction))
+    ? raw.sorts.filter((sort) => allIdSet.has(sort.id) && ["asc", "desc"].includes(sort.direction))
     : [];
   return {
     columnOrder,
@@ -377,7 +748,7 @@ function normalizeViewerState(raw, payload) {
     sorts,
     filters: raw?.filters || {},
     globalSearch: raw?.globalSearch || "",
-    selectedColumnId: allIds.includes(raw?.selectedColumnId) ? raw.selectedColumnId : allIds[0] || null,
+    selectedColumnId: allIdSet.has(raw?.selectedColumnId) ? raw.selectedColumnId : allIds[0] || null,
     showIndex: raw?.showIndex !== false,
     widths: raw?.widths || {},
     collapsedPanels: {
@@ -389,6 +760,16 @@ function normalizeViewerState(raw, payload) {
       inspector: clampNumber(raw?.panelWidths?.inspector, 320, 240, 600),
     },
   };
+}
+
+function normalizeActionControlValues(raw, ids) {
+  if (!raw || typeof raw !== "object") return {};
+  const result = {};
+  for (const [actionId, values] of Object.entries(raw)) {
+    if (!ids.has(actionId) || !values || typeof values !== "object" || Array.isArray(values)) continue;
+    result[actionId] = { ...values };
+  }
+  return result;
 }
 
 function normalizeFiles(raw) {
@@ -418,11 +799,15 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
     ? "stateframe embedded viewer"
     : state.viewMode === "visualizer"
       ? "stateframe visualizer"
-      : state.viewMode === "get_data" || state.viewMode === "files"
-        ? "stateframe get data"
-        : state.viewMode === "leaf"
-          ? "stateframe leaf"
-          : payload.title || "stateframe workspace web";
+      : state.viewMode === "cleaning"
+        ? "stateframe cleaning"
+        : state.viewMode === "modeling"
+          ? "stateframe modeling"
+          : state.viewMode === "get_data" || state.viewMode === "files"
+            ? "stateframe get data"
+            : state.viewMode === "leaf"
+              ? "stateframe leaf"
+              : payload.title || "stateframe workspace web";
   const subtitle = document.createElement("div");
   subtitle.className = "stateframe-web-subtitle";
   const workspaceName = payload.workspace?.name || payload.settings?.name || "workspace";
@@ -430,18 +815,23 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
     ? statusText(commandStatus) || "Open state from web, shape it, then save a branch"
     : state.viewMode === "visualizer"
       ? statusText(commandStatus) || "Build Plotly visuals from tracked dataframe states"
-      : state.viewMode === "get_data" || state.viewMode === "files"
-        ? statusText(commandStatus) || `${workspaceName} / ${files.current_path || "."}`
-        : statusText(commandStatus) || `${workspaceName} / ${payload.settings?.root || ""}`;
+      : state.viewMode === "cleaning"
+        ? statusText(commandStatus) || "Preview, select, and apply cleaning operations as a branch"
+        : state.viewMode === "modeling"
+          ? statusText(commandStatus) || "Preview feature prep, encoding, imputation, and scaling as a branch"
+          : state.viewMode === "get_data" || state.viewMode === "files"
+            ? statusText(commandStatus) || `${workspaceName} / ${files.current_path || "."}`
+            : statusText(commandStatus) || `${workspaceName} / ${payload.settings?.root || ""}`;
   titleGroup.append(title, subtitle);
 
   const controls = document.createElement("div");
   controls.className = "stateframe-web-controls";
+  const backToWeb = () => setState(backToWebState(commandStatus));
 
   if (state.viewMode === "viewer") {
     controls.classList.add("is-viewer");
     controls.append(
-      button("Back", () => setState({ viewMode: "web" })),
+      button("Back", backToWeb),
       button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
       button("Save Branch", () => setUi({ saveBranchOpen: true })),
       button("Refresh", () => sendCommand("refresh")),
@@ -449,14 +839,28 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
   } else if (state.viewMode === "visualizer") {
     controls.classList.add("is-viewer");
     controls.append(
-      button("Back", () => setState({ viewMode: "web" })),
+      button("Back", backToWeb),
+      button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
+      button("Refresh", () => sendCommand("refresh")),
+    );
+  } else if (state.viewMode === "cleaning") {
+    controls.classList.add("is-viewer");
+    controls.append(
+      button("Back", backToWeb),
+      button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
+      button("Refresh", () => sendCommand("refresh")),
+    );
+  } else if (state.viewMode === "modeling") {
+    controls.classList.add("is-viewer");
+    controls.append(
+      button("Back", backToWeb),
       button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
       button("Refresh", () => sendCommand("refresh")),
     );
   } else if (state.viewMode === "leaf") {
     controls.classList.add("is-viewer");
     controls.append(
-      button("Back", () => setState({ viewMode: "web" })),
+      button("Back", backToWeb),
       button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
       button("Refresh", () => sendCommand("refresh")),
     );
@@ -538,14 +942,10 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
     } else {
       controls.append(
         button(state.saveMode ? "Save Mode On" : "Save Mode Off", () => setState({ saveMode: !state.saveMode })),
-        button("Visualizer", () => {
-          setState({ viewMode: "visualizer" });
-          sendCommand("open_visualizer", { height: payload.view?.height || 640, maxRows: 500 });
-        }),
-        button("Get Data", () => {
-          setState({ viewMode: "get_data", getDataTab: "files" });
-          sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" });
-        }),
+        button("Clean", () => sendCommand("open_cleaning", { height: payload.view?.height || 640, maxRows: 500 })),
+        button("Model", () => sendCommand("open_modeling", { height: payload.view?.height || 640, maxRows: 500 })),
+        button("Visualizer", () => sendCommand("open_visualizer", { height: payload.view?.height || 640, maxRows: 500 })),
+        button("Get Data", () => sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" })),
       );
       if (canDelete) controls.append(button("Delete Mode", () => setState({ deleteMode: true, deleteTreeIds: [], deleteEntryIds: [] })));
       controls.append(button("Refresh", () => sendCommand("refresh")));
@@ -554,6 +954,14 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
 
   toolbar.append(titleGroup, controls);
   return toolbar;
+}
+
+function backToWebState(commandStatus) {
+  const patch = { viewMode: "web" };
+  if (commandStatus?.status === "saved" && commandStatus.entry_id) {
+    patch.selectedEntryId = commandStatus.entry_id;
+  }
+  return patch;
 }
 
 function renderStats(payload) {
@@ -1050,7 +1458,7 @@ function renderConnectionConfig(payload, commandStatus, state, setState, sendCom
   return panel;
 }
 
-function renderDetail(payload, tree, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer) {
+function renderDetail(payload, tree, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
   const panel = document.createElement("aside");
   panel.className = "stateframe-web-detail";
   panel.dataset.scrollKey = "web-detail";
@@ -1083,7 +1491,7 @@ function renderDetail(payload, tree, selectedEntry, state, setState, openSelecte
   }
   panel.appendChild(section("Tree Entries", renderEntries(tree, selectedEntry, state, setState)));
   if (selectedEntry) {
-    panel.appendChild(section("Selected State", renderEntryDetail(tree, selectedEntry, openSelectedViewer, openSelectedVisualizer, setState)));
+    panel.appendChild(section("Selected State", renderEntryDetail(tree, selectedEntry, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState)));
   }
   panel.appendChild(section("Summary", keyValueList({
     Dataset: tree.dataset_name || "",
@@ -1255,7 +1663,7 @@ function entryThumbnailPreview(entry) {
   return null;
 }
 
-function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualizer, setState) {
+function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-entry-detail";
   if (entry.path?.length) {
@@ -1277,6 +1685,12 @@ function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualiz
     const visualize = button("Visualizer", () => openSelectedVisualizer());
     visualize.disabled = !canOpen;
     actions.append(visualize);
+    const clean = button("Clean", () => openSelectedCleaning());
+    clean.disabled = !canOpen;
+    actions.append(clean);
+    const model = button("Model", () => openSelectedModeling());
+    model.disabled = !canOpen;
+    actions.append(model);
   }
   if (outputArtifacts.length) {
     actions.append(button("Open Leaf", () => setState({ viewMode: "leaf" })));
@@ -1560,6 +1974,1058 @@ function renderSavedFiles(files) {
   return list;
 }
 
+function renderCleaning(cleaning, commandStatus, setCleaningState, sendCommand, setState) {
+  const shell = document.createElement("div");
+  shell.className = "stateframe-web-cleaning";
+
+  if (cleaning.status === "loading") {
+    shell.appendChild(empty("Loading cleaning workbench..."));
+    return shell;
+  }
+  if (cleaning.status === "error") {
+    const box = empty(cleaning.message || commandStatus.message || "Could not open the cleaning workbench.");
+    box.classList.add("is-error");
+    shell.appendChild(box);
+    return shell;
+  }
+  if (!cleaning.payload) {
+    shell.appendChild(empty("No cleaning workbench is loaded yet. Go back, select a state, then open Clean."));
+    return shell;
+  }
+
+  const payload = cleaning.payload;
+  const cleaningState = normalizeCleaningState(cleaning.state, payload);
+  const actions = payload.cleaning?.actions || [];
+  const selected = new Set(cleaningState.selectedActionIds || []);
+  const selectedAction = actions.find((action) => action.id === cleaningState.selectedActionId) || actions.find((action) => selected.has(action.id)) || actions[0] || null;
+
+  const top = document.createElement("div");
+  top.className = "stateframe-web-cleaning-top";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-viewer-title";
+  title.textContent = payload.title || "Cleaning workbench";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-viewer-meta";
+  meta.textContent = `${formatInt(actions.length)} action${actions.length === 1 ? "" : "s"} / ${formatInt(selected.size)} selected / ${formatInt(payload.view?.row_count || 0)} rows`;
+  const apply = button("Apply Branch", () => sendCommand("apply_cleaning", { cleaningState }));
+  apply.disabled = selected.size === 0 || (commandStatus?.status === "loading" && commandStatus.action === "apply_cleaning");
+  const safePreset = (payload.cleaning?.presets || []).find((preset) => preset.id === "safe_defaults");
+  const defaults = button("Select Defaults", () => setCleaningState({
+    ...(safePreset
+      ? cleaningPresetPatch(safePreset, actions)
+      : {
+          selectedActionIds: actions.filter((action) => action.applies_by_default !== false).map((action) => action.id).filter(Boolean),
+          activePreset: "custom",
+        }),
+  }));
+  const all = button("All", () => setCleaningState({ selectedActionIds: actions.map((action) => action.id).filter(Boolean), activePreset: "custom" }));
+  const none = button("None", () => setCleaningState({ selectedActionIds: [], activePreset: "custom" }));
+  top.append(title, meta, defaults, all, none, apply);
+  shell.appendChild(top);
+  const presets = renderCleaningPresets(payload, cleaningState, setCleaningState, actions);
+  if (presets) shell.appendChild(presets);
+
+  if (commandStatus?.status === "saved" && commandStatus.action === "apply_cleaning") {
+    const saved = document.createElement("div");
+    saved.className = "stateframe-web-status is-saved";
+    saved.appendChild(textSpan(`Saved: ${commandStatus.title || commandStatus.entry_id || "cleaning branch"}`, ""));
+    if (commandStatus.entry_id) {
+      const view = button("View Branch", () => setState({ viewMode: "web", selectedEntryId: commandStatus.entry_id }));
+      view.classList.add("is-tiny");
+      saved.appendChild(view);
+    }
+    shell.appendChild(saved);
+  } else if (commandStatus?.status === "error") {
+    const error = document.createElement("div");
+    error.className = "stateframe-web-status is-error";
+    error.textContent = commandStatus.message || "Action failed";
+    shell.appendChild(error);
+  }
+
+  const body = document.createElement("div");
+  body.className = "stateframe-web-cleaning-body";
+  body.appendChild(renderCleaningActions(actions, cleaningState, setCleaningState, "cleaning"));
+  body.appendChild(renderCleaningDetail(selectedAction, "cleaning", cleaningState, setCleaningState));
+  body.appendChild(renderCleaningControls(payload, cleaningState, setCleaningState));
+  shell.appendChild(body);
+  return shell;
+}
+
+function renderModeling(modeling, commandStatus, setModelingState, sendCommand, setState) {
+  const shell = document.createElement("div");
+  shell.className = "stateframe-web-cleaning";
+
+  if (modeling.status === "loading") {
+    shell.appendChild(empty("Loading modeling workbench..."));
+    return shell;
+  }
+  if (modeling.status === "error") {
+    const box = empty(modeling.message || commandStatus.message || "Could not open the modeling workbench.");
+    box.classList.add("is-error");
+    shell.appendChild(box);
+    return shell;
+  }
+  if (!modeling.payload) {
+    shell.appendChild(empty("No modeling workbench is loaded yet. Go back, select a state, then open Model."));
+    return shell;
+  }
+
+  const payload = modeling.payload;
+  const modelingState = normalizeModelingState(modeling.state, payload);
+  const actions = payload.modeling?.actions || [];
+  const selected = new Set(modelingState.selectedActionIds || []);
+  const selectedAction = actions.find((action) => action.id === modelingState.selectedActionId) || actions.find((action) => selected.has(action.id)) || actions[0] || null;
+
+  const top = document.createElement("div");
+  top.className = "stateframe-web-cleaning-top";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-viewer-title";
+  title.textContent = payload.title || "Modeling readiness";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-viewer-meta";
+  meta.textContent = `${formatInt(actions.length)} action${actions.length === 1 ? "" : "s"} / ${formatInt(selected.size)} selected / ${formatInt(payload.view?.row_count || 0)} rows`;
+  const apply = button("Apply Branch", () => sendCommand("apply_modeling", { modelingState }));
+  apply.disabled = selected.size === 0 || (commandStatus?.status === "loading" && commandStatus.action === "apply_modeling");
+  const experimentTask = modelingState.experiment?.task || payload.default_experiment?.task || "";
+  const runLabel = !payload.modeling?.target && experimentTask === "clustering" ? "Run Clustering" : "Run Experiment";
+  const run = button(runLabel, () => sendCommand("run_modeling_experiment", { modelingState }));
+  run.disabled = commandStatus?.status === "loading" && commandStatus.action === "run_modeling_experiment";
+  const defaults = button("Select Defaults", () => setModelingState({
+    selectedActionIds: actions.filter((action) => action.applies_by_default !== false).map((action) => action.id).filter(Boolean),
+  }));
+  const all = button("All", () => setModelingState({ selectedActionIds: actions.map((action) => action.id).filter(Boolean) }));
+  const none = button("None", () => setModelingState({ selectedActionIds: [] }));
+  top.append(title, meta, defaults, all, none, run, apply);
+  shell.appendChild(top);
+
+  if (commandStatus?.status === "saved" && commandStatus.action === "apply_modeling") {
+    const saved = document.createElement("div");
+    saved.className = "stateframe-web-status is-saved";
+    saved.appendChild(textSpan(`Saved: ${commandStatus.title || commandStatus.entry_id || "modeling branch"}`, ""));
+    if (commandStatus.entry_id) {
+      const view = button("View Branch", () => setState({ viewMode: "web", selectedEntryId: commandStatus.entry_id }));
+      view.classList.add("is-tiny");
+      saved.appendChild(view);
+    }
+    shell.appendChild(saved);
+  } else if (commandStatus?.status === "error") {
+    const error = document.createElement("div");
+    error.className = "stateframe-web-status is-error";
+    error.textContent = commandStatus.message || "Action failed";
+    shell.appendChild(error);
+  }
+  if (modeling.preview?.kind === "modeling_experiment") {
+    shell.appendChild(renderModelingExperimentResult(modeling.preview.result || {}));
+  }
+
+  const body = document.createElement("div");
+  body.className = "stateframe-web-cleaning-body";
+  body.appendChild(renderCleaningActions(actions, modelingState, setModelingState, "modeling"));
+  body.appendChild(renderCleaningDetail(selectedAction, "modeling", modelingState, setModelingState));
+  body.appendChild(renderModelingControls(payload, modelingState, setModelingState));
+  shell.appendChild(body);
+  return shell;
+}
+
+function renderCleaningActions(actions, cleaningState, setCleaningState, kind = "cleaning") {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-actions";
+  panel.dataset.scrollKey = `${kind}-actions`;
+  const search = document.createElement("input");
+  search.className = "stateframe-web-input";
+  search.type = "search";
+  search.placeholder = "Search actions";
+  search.dataset.focusKey = `${kind}-search`;
+  search.value = cleaningState.search || "";
+  search.addEventListener("input", () => setCleaningState({ search: search.value }));
+  panel.appendChild(search);
+
+  const selected = new Set(cleaningState.selectedActionIds || []);
+  const query = String(cleaningState.search || "").trim().toLowerCase();
+  const filtered = actions.filter((action) => {
+    if (!query) return true;
+    return [action.column, action.title, action.action, action.reason, action.risk]
+      .some((value) => String(value || "").toLowerCase().includes(query));
+  });
+  if (!filtered.length) {
+    panel.appendChild(empty(`No ${kind} actions match.`));
+    return panel;
+  }
+  const groups = groupBy(filtered, (action) => action.family || action.action || "cleaning");
+  for (const [group, groupActions] of Object.entries(groups)) {
+    const label = document.createElement("div");
+    label.className = "stateframe-web-cleaning-family";
+    label.textContent = group;
+    panel.appendChild(label);
+    for (const action of groupActions) {
+      const row = document.createElement("label");
+      row.className = "stateframe-web-cleaning-action";
+      if (action.id === cleaningState.selectedActionId) row.classList.add("is-selected");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selected.has(action.id);
+      checkbox.addEventListener("change", (event) => {
+        event.stopPropagation();
+        setCleaningState({ selectedActionIds: toggleArrayValue(cleaningState.selectedActionIds || [], action.id), activePreset: "custom" });
+      });
+      const main = document.createElement("button");
+      main.type = "button";
+      main.className = "stateframe-web-cleaning-action-main";
+      main.addEventListener("click", (event) => {
+        event.preventDefault();
+        setCleaningState({ selectedActionId: action.id });
+      });
+      main.append(
+        textSpan(action.title || action.action, "stateframe-web-cleaning-action-title"),
+        textSpan(`${action.column} / ${action.risk || "risk"} / ${formatPercent(action.confidence)}`, "stateframe-web-cleaning-action-meta"),
+      );
+      const count = document.createElement("span");
+      count.className = "stateframe-web-cleaning-count";
+      count.textContent = action.affected_rows === null || action.affected_rows === undefined
+        ? ""
+        : formatInt(action.affected_rows);
+      row.append(checkbox, main, count);
+      panel.appendChild(row);
+    }
+  }
+  return panel;
+}
+
+function renderCleaningPresets(payload, cleaningState, setCleaningState, actions) {
+  const presets = payload.cleaning?.presets || [];
+  if (!presets.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-presets";
+  for (const preset of presets) {
+    const item = button(preset.label || preset.id, () => setCleaningState(cleaningPresetPatch(preset, actions)));
+    item.classList.add("stateframe-web-cleaning-preset");
+    if (cleaningState.activePreset === preset.id) item.classList.add("is-selected");
+    item.title = preset.description || preset.label || preset.id;
+    item.setAttribute("aria-label", item.title);
+    const count = document.createElement("span");
+    count.className = "stateframe-web-cleaning-preset-count";
+    count.textContent = formatInt(preset.selectedActionCount || (preset.selectedActionIds || []).length);
+    item.appendChild(count);
+    wrap.appendChild(item);
+  }
+  if (cleaningState.activePreset === "custom") {
+    const custom = document.createElement("span");
+    custom.className = "stateframe-web-cleaning-preset-custom";
+    custom.textContent = "Custom";
+    wrap.appendChild(custom);
+  }
+  return wrap;
+}
+
+function cleaningPresetPatch(preset, actions) {
+  const ids = new Set(actions.map((action) => action.id).filter(Boolean));
+  const selectedActionIds = (preset.selectedActionIds || []).filter((id) => ids.has(id));
+  const options = preset.options || {};
+  return {
+    selectedActionIds,
+    selectedActionId: selectedActionIds[0] || actions[0]?.id || null,
+    actionControlValues: normalizeActionControlValues(preset.actionControlValues || {}, ids),
+    binaryNullPolicy: options.binaryNullPolicy || "preserve",
+    binaryOutput: options.binaryOutput || "int",
+    applyAmbiguousBinary: Boolean(options.applyAmbiguousBinary),
+    outlierPolicy: options.outlierPolicy || "skip",
+    outlierMethod: options.outlierMethod || "iqr",
+    activePreset: preset.id,
+  };
+}
+
+function renderCleaningDetail(action, kind = "cleaning", planState = {}, setPlanState = null) {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-detail";
+  panel.dataset.scrollKey = `${kind}-detail`;
+  if (!action) {
+    panel.appendChild(empty(`No ${kind} actions were suggested for this state.`));
+    return panel;
+  }
+  const title = document.createElement("div");
+  title.className = "stateframe-web-cleaning-detail-title";
+  title.textContent = action.title || action.action;
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-cleaning-detail-meta";
+  meta.textContent = `${action.column} / ${action.before_dtype || ""}${action.after_dtype ? ` -> ${action.after_dtype}` : ""}`;
+  panel.append(title, meta);
+  if (action.reason) panel.appendChild(textSpan(action.reason, "stateframe-web-cleaning-reason"));
+  panel.appendChild(section("Operation", keyValueList({
+    Action: action.action,
+    Risk: action.risk,
+    Confidence: formatPercent(action.confidence),
+    "Affected rows": action.affected_rows === null || action.affected_rows === undefined ? "" : formatInt(action.affected_rows),
+    "Applies by default": action.applies_by_default === false ? "no" : "yes",
+  })));
+  panel.appendChild(section("Preview", renderPreviewObject(action.preview || {})));
+  if (Array.isArray(action.examples) && action.examples.length) {
+    panel.appendChild(section("Rows To Inspect", renderCleaningExamples(action.examples)));
+  }
+  if (Array.isArray(action.controls) && action.controls.length) {
+    const values = effectiveActionControlValues(action, planState);
+    panel.appendChild(section(
+      "Controls",
+      setPlanState
+        ? renderActionControls(action, action.controls, values, planState, setPlanState, kind)
+        : renderCleaningControlSummary(action.controls, values),
+    ));
+  }
+  return panel;
+}
+
+function renderCleaningControls(payload, cleaningState, setCleaningState) {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-controls";
+  panel.dataset.scrollKey = "cleaning-controls";
+  const summary = payload.cleaning || {};
+  const actions = summary.actions || [];
+  panel.appendChild(section("Selected Impact", renderSelectedCleaningImpact(actions, cleaningState, payload.view?.row_count || 0)));
+  panel.appendChild(section("Plan Summary", keyValueList({
+    Actions: formatInt(summary.action_count || 0),
+    Columns: formatInt(summary.affected_column_count || 0),
+    Preset: cleaningPresetLabel(summary.presets || [], cleaningState.activePreset),
+    "Binary nulls": cleaningState.binaryNullPolicy,
+    "Outlier treatment": cleaningState.outlierPolicy,
+  })));
+
+  const binary = document.createElement("div");
+  binary.className = "stateframe-web-cleaning-control-stack";
+  binary.append(
+    selectSetting("Binary output", cleaningState.binaryOutput, [
+      ["int", "1 / 0"],
+      ["bool_nullable", "True / False / null"],
+      ["bool", "True / False"],
+      ["yes_no", "Yes / No"],
+      ["yn", "Y / N"],
+    ], (value) => setCleaningState({ binaryOutput: value, activePreset: "custom" }), "cleaning-binary-output"),
+    selectSetting("Null policy", cleaningState.binaryNullPolicy, [
+      ["preserve", "Preserve nulls"],
+      ["treat_as_false", "Nulls false"],
+      ["treat_as_true", "Nulls true"],
+      ["false_to_null", "False/0 to null"],
+      ["true_to_null", "True/1 to null"],
+    ], (value) => setCleaningState({ binaryNullPolicy: value, activePreset: "custom" }), "cleaning-binary-null"),
+    checkboxSetting("Apply ambiguous binary mappings", cleaningState.applyAmbiguousBinary, (value) => setCleaningState({ applyAmbiguousBinary: value, activePreset: "custom" }), "cleaning-ambiguous"),
+  );
+  panel.appendChild(section("Binary Flags", binary));
+
+  const outlier = document.createElement("div");
+  outlier.className = "stateframe-web-cleaning-control-stack";
+  outlier.append(
+    selectSetting("Treatment", cleaningState.outlierPolicy, [
+      ["skip", "Inspect only"],
+      ["flag", "Add indicator"],
+      ["null", "Set null"],
+      ["clip", "Clip"],
+      ["drop", "Drop rows"],
+    ], (value) => setCleaningState({ outlierPolicy: value, activePreset: "custom" }), "cleaning-outlier-policy"),
+    selectSetting("Method", cleaningState.outlierMethod, [
+      ["iqr", "IQR fences"],
+      ["zscore", "Z-score"],
+      ["modified_zscore", "Modified z-score"],
+      ["percentile", "Percentile"],
+    ], (value) => setCleaningState({ outlierMethod: value, activePreset: "custom" }), "cleaning-outlier-method"),
+  );
+  panel.appendChild(section("Outliers", outlier));
+  panel.appendChild(section("Columns", renderCleaningColumnSummary(payload.columns || [])));
+  return panel;
+}
+
+function renderSelectedCleaningImpact(actions, cleaningState, rowCount = 0) {
+  const selected = selectedCleaningActions(actions, cleaningState);
+  const effects = selected.map((action) => cleaningActionEffect(action, cleaningState));
+  const transforming = effects.filter((effect) => effect.active);
+  const reviewOnly = selected.length - transforming.length;
+  const affectedRows = selected.reduce((total, action) => total + Number(action.affected_rows || 0), 0);
+  const columnCount = new Set(selected
+    .map((action) => String(action.column || ""))
+    .filter((column) => column && !column.startsWith("__")))
+    .size;
+  const mediumOrHigher = selected.filter((action) => ["medium", "high"].includes(String(action.risk || "").toLowerCase())).length;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-impact";
+  const grid = document.createElement("div");
+  grid.className = "stateframe-web-cleaning-impact-grid";
+  grid.append(
+    cleaningImpactCard("Selected", selected.length),
+    cleaningImpactCard("Transforms", transforming.length),
+    cleaningImpactCard("Review-only", reviewOnly),
+    cleaningImpactCard("Columns", columnCount),
+    cleaningImpactCard("Rows", selected.length ? (affectedRows || rowCount || 0) : 0),
+    cleaningImpactCard("Risk items", mediumOrHigher),
+  );
+  wrap.appendChild(grid);
+  if (transforming.length) {
+    const labels = transforming
+      .slice(0, 4)
+      .map((effect) => effect.label)
+      .filter(Boolean)
+      .join(" / ");
+    if (labels) wrap.appendChild(textSpan(labels, "stateframe-web-cleaning-impact-note"));
+  } else if (selected.length) {
+    wrap.appendChild(textSpan("Inspection only", "stateframe-web-cleaning-impact-note"));
+  }
+  return wrap;
+}
+
+function cleaningImpactCard(label, value) {
+  const item = document.createElement("div");
+  item.className = "stateframe-web-cleaning-impact-card";
+  item.append(
+    textSpan(formatInt(value), "stateframe-web-cleaning-impact-value"),
+    textSpan(label, "stateframe-web-cleaning-impact-label"),
+  );
+  return item;
+}
+
+function cleaningPresetLabel(presets, activePreset) {
+  if (activePreset === "custom") return "Custom";
+  const preset = presets.find((item) => item.id === activePreset);
+  return preset?.label || activePreset || "";
+}
+
+function selectedCleaningActions(actions, cleaningState) {
+  const selected = new Set(cleaningState.selectedActionIds || []);
+  return actions.filter((action) => selected.has(action.id));
+}
+
+function cleaningActionEffect(action, cleaningState) {
+  const values = effectiveActionControlValues(action, cleaningState);
+  const actionType = action.action || action.operation_id || "";
+  if (actionType === "column_rename_review") {
+    const active = String(values.treatment || "inspect") === "apply";
+    return { active, label: active ? "Rename columns" : "Inspect renames" };
+  }
+  if (actionType === "duplicate_row_review") {
+    const active = String(values.treatment || "inspect") === "drop";
+    return { active, label: active ? "Drop duplicates" : "Inspect duplicates" };
+  }
+  if (actionType === "missing_value_review") {
+    const treatment = String(values.treatment || "inspect");
+    const active = treatment !== "inspect" || Boolean(values.add_indicator);
+    return { active, label: active ? `Missing: ${treatment.replace(/_/g, " ")}` : "Inspect missing" };
+  }
+  if (actionType === "numeric_outlier_review") {
+    let treatment = String(values.treatment || cleaningState.outlierPolicy || "skip");
+    if (["inspect", "skip"].includes(treatment) && cleaningState.outlierPolicy !== "skip") treatment = cleaningState.outlierPolicy;
+    const active = !["inspect", "skip"].includes(treatment);
+    return { active, label: active ? `Outliers: ${treatment}` : "Inspect outliers" };
+  }
+  if (actionType === "geo_coordinate_review") {
+    const treatment = String(values.treatment || "inspect");
+    const active = !["inspect", "skip", ""].includes(treatment);
+    return { active, label: active ? `Coordinates: ${treatment.replace(/_/g, " ")}` : "Inspect coordinates" };
+  }
+  if (actionType === "category_value_review") {
+    const active = mappingHasEntries(values.mapping);
+    return { active, label: active ? "Map categories" : "Inspect categories" };
+  }
+  if (actionType === "binary_mapping_review") {
+    const active = Boolean(cleaningState.applyAmbiguousBinary);
+    return { active, label: active ? "Map reviewed binaries" : "Inspect binaries" };
+  }
+  if (actionType === "trim_strings") {
+    const active = values.strip !== false;
+    return { active, label: active ? "Trim strings" : "Inspect strings" };
+  }
+  if (actionType === "missing_like_to_null") return { active: true, label: "Missing tokens to null" };
+  if (actionType === "parse_numeric") return { active: true, label: "Parse numbers" };
+  if (actionType === "parse_datetime") return { active: true, label: "Parse dates" };
+  if (actionType === "binary_mapping") return { active: true, label: "Map binaries" };
+  return { active: true, label: action.title || actionType };
+}
+
+function mappingHasEntries(value) {
+  if (!value) return false;
+  if (typeof value === "object" && !Array.isArray(value)) return Object.keys(value).length > 0;
+  const text = String(value || "").trim();
+  return Boolean(text);
+}
+
+function renderModelingControls(payload, modelingState, setModelingState) {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-controls";
+  panel.dataset.scrollKey = "modeling-controls";
+  const summary = payload.modeling || {};
+  const experiment = modelingState.experiment || payload.default_experiment || {};
+  panel.appendChild(section("Plan Summary", keyValueList({
+    Actions: formatInt(summary.action_count || 0),
+    Target: summary.target || "No target selected",
+    Task: summary.target ? (summary.task || "") : `Unsupervised (${experiment.task || "clustering"})`,
+    "Scale method": modelingState.scaleMethod,
+  })));
+
+  const toggles = document.createElement("div");
+  toggles.className = "stateframe-web-cleaning-control-stack";
+  const featureSettings = [
+    checkboxSetting("Drop identifiers", modelingState.dropIdentifiers, (value) => setModelingState({ dropIdentifiers: value }), "modeling-drop-identifiers"),
+    checkboxSetting("Impute missing values", modelingState.impute, (value) => setModelingState({ impute: value }), "modeling-impute"),
+    checkboxSetting("Add imputation indicators", modelingState.addIndicators, (value) => setModelingState({ addIndicators: value }), "modeling-indicators"),
+    checkboxSetting("Encode categories", modelingState.encode, (value) => setModelingState({ encode: value }), "modeling-encode"),
+    checkboxSetting("Add date features", modelingState.dateFeatures, (value) => setModelingState({ dateFeatures: value }), "modeling-date-features"),
+  ];
+  if (summary.target) {
+    featureSettings.unshift(checkboxSetting("Keep target column", modelingState.includeTarget, (value) => setModelingState({ includeTarget: value }), "modeling-include-target"));
+  }
+  toggles.append(...featureSettings);
+  panel.appendChild(section("Feature Prep", toggles));
+
+  const scaling = document.createElement("div");
+  scaling.className = "stateframe-web-cleaning-control-stack";
+  scaling.append(
+    selectSetting("Numeric scaling", modelingState.scaleMethod, [
+      ["none", "None"],
+      ["standard", "Standard"],
+      ["minmax", "Min/max"],
+      ["robust", "Robust"],
+      ["maxabs", "Max abs"],
+    ], (value) => setModelingState({ scaleMethod: value }), "modeling-scale"),
+  );
+  panel.appendChild(section("Scaling", scaling));
+  panel.appendChild(section("Experiment", renderModelingExperimentControls(payload, modelingState, setModelingState)));
+  panel.appendChild(section("Columns", renderCleaningColumnSummary(payload.columns || [])));
+  return panel;
+}
+
+function renderModelingExperimentControls(payload, modelingState, setModelingState) {
+  const catalog = payload.experiment_catalog || {};
+  const experiment = modelingState.experiment || payload.default_experiment || {};
+  const updateExperiment = (patch) => setModelingState({ experiment: mergeDeep(experiment, patch) });
+  const stack = document.createElement("div");
+  stack.className = "stateframe-web-cleaning-control-stack";
+  stack.append(
+    selectSetting("Task", experiment.task || "auto", (catalog.tasks || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ task: value }), "modeling-exp-task"),
+    selectSetting("Estimator", experiment.estimator || "random_forest", (catalog.estimators || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ estimator: value }), "modeling-exp-estimator"),
+    numberSetting("Test size", experiment.split?.test_size ?? 0.25, (value) => updateExperiment({ split: { test_size: Number(value) } }), "modeling-exp-test-size", "0.05", "0.6", "0.05"),
+    numberSetting("CV folds", experiment.validation?.cv_folds ?? 5, (value) => updateExperiment({ validation: { cv_folds: Number(value) } }), "modeling-exp-cv", "2", "20", "1"),
+    selectSetting("Validation", experiment.validation?.strategy || "holdout", (catalog.validation?.strategies || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ validation: { strategy: value } }), "modeling-exp-validation"),
+    selectSetting("Encoder", experiment.preprocessing?.encoder || "onehot", (catalog.preprocessing?.encoders || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ preprocessing: { encoder: value } }), "modeling-exp-encoder"),
+    selectSetting("Scaler", experiment.preprocessing?.scaler || "auto", (catalog.preprocessing?.scalers || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ preprocessing: { scaler: value } }), "modeling-exp-scaler"),
+    checkboxSetting("Grid search", Boolean(experiment.search?.enabled), (value) => updateExperiment({ search: { enabled: value } }), "modeling-exp-grid"),
+    checkboxSetting("SHAP observability", experiment.explanation?.enabled !== false, (value) => updateExperiment({ explanation: { enabled: value } }), "modeling-exp-shap"),
+    numberSetting("Clusters", experiment.clustering?.n_clusters ?? 3, (value) => updateExperiment({ clustering: { n_clusters: Number(value) } }), "modeling-exp-clusters", "2", "30", "1"),
+  );
+  return stack;
+}
+
+function renderModelingExperimentResult(result) {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-detail";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-cleaning-detail-title";
+  title.textContent = `Experiment: ${result.estimator || "model"} / ${result.task || ""}`;
+  panel.appendChild(title);
+  panel.appendChild(section("Metrics", renderModelingMetricTiles(result.metrics || {})));
+  if (result.holdout?.confusion_matrix) {
+    panel.appendChild(section("Confusion Matrix", renderModelingConfusionMatrix(result.holdout.confusion_matrix, result.holdout.class_labels || [])));
+  }
+  if (result.holdout?.classification_report) {
+    panel.appendChild(section("Precision / Recall Report", renderModelingClassificationReport(result.holdout.classification_report)));
+  }
+  if (result.holdout?.curves?.precision_recall?.length || result.holdout?.curves?.roc?.length) {
+    panel.appendChild(section("Curves", renderModelingCurvePanel(result.holdout.curves || {})));
+  }
+  const search = result.search || {};
+  if (search.enabled) {
+    panel.appendChild(section("Best Parameters", keyValueList(search.best_params || {})));
+  }
+  const explanation = result.explanation || {};
+  panel.appendChild(section("Observability", keyValueList({
+    Method: explanation.method || "",
+    "Rows explained": explanation.sample_rows || "",
+    Warnings: (result.warnings || []).join("; "),
+  })));
+  const features = explanation.top_features || result.feature_importance || [];
+  if (features.length) {
+    panel.appendChild(section("Top Features", renderModelingFeatureBars(features)));
+  }
+  if (Array.isArray(explanation.beeswarm) && explanation.beeswarm.length) {
+    panel.appendChild(section("SHAP Beeswarm", renderModelingBeeswarmPlot(explanation.beeswarm)));
+  }
+  if (Array.isArray(explanation.records) && explanation.records.length) {
+    panel.appendChild(section("Individual SHAP Records", renderModelingShapRecords(explanation.records)));
+  }
+  return panel;
+}
+
+function renderModelingMetricTiles(metrics) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-report-grid";
+  const keys = Object.keys(metrics || {}).filter((key) => typeof metrics[key] !== "object").slice(0, 12);
+  if (!keys.length) return keyValueList(metrics || {});
+  for (const key of keys) {
+    const tile = document.createElement("div");
+    tile.className = "stateframe-web-model-metric";
+    tile.append(
+      textSpan(formatNumber(metrics[key]), "stateframe-web-model-metric-value"),
+      textSpan(key.replaceAll("_", " "), "stateframe-web-model-metric-label"),
+    );
+    wrap.appendChild(tile);
+  }
+  return wrap;
+}
+
+function renderModelingConfusionMatrix(matrix, labels) {
+  const rows = Array.isArray(matrix) ? matrix : [];
+  const maxValue = Math.max(1, ...rows.flat().map((value) => Number(value) || 0));
+  const table = document.createElement("table");
+  table.className = "stateframe-web-model-matrix";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  head.appendChild(th("actual \\ predicted"));
+  rows.forEach((_row, index) => head.appendChild(th(labels[index] ?? index)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  rows.forEach((row, rowIndex) => {
+    const tr = document.createElement("tr");
+    tr.appendChild(th(labels[rowIndex] ?? rowIndex));
+    row.forEach((value) => {
+      const cell = td(value);
+      const intensity = Math.max(0.08, Math.min(1, Number(value || 0) / maxValue));
+      cell.style.background = `rgba(37, 99, 235, ${0.08 + intensity * 0.48})`;
+      cell.style.color = intensity > 0.55 ? "#ffffff" : "#0f172a";
+      tr.appendChild(cell);
+    });
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+  return table;
+}
+
+function renderModelingCurvePanel(curves) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-curves";
+  if (curves.precision_recall?.length) {
+    wrap.appendChild(renderModelingCurveChart(curves.precision_recall, {
+      title: "Precision / Recall",
+      xKey: "recall",
+      yKey: "precision",
+      xLabel: "recall",
+      yLabel: "precision",
+    }));
+  }
+  if (curves.roc?.length) {
+    wrap.appendChild(renderModelingCurveChart(curves.roc, {
+      title: "ROC",
+      xKey: "fpr",
+      yKey: "tpr",
+      xLabel: "false positive rate",
+      yLabel: "true positive rate",
+      diagonal: true,
+    }));
+  }
+  return wrap.children.length ? wrap : empty("No curve data available.");
+}
+
+function renderModelingCurveChart(rows, config) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-model-curve";
+  card.appendChild(textSpan(config.title, "stateframe-web-model-chart-title"));
+  const width = 320;
+  const height = 190;
+  const margin = { left: 42, right: 12, top: 12, bottom: 34 };
+  const xValues = rows.map((row) => Number(row[config.xKey])).filter(Number.isFinite);
+  const yValues = rows.map((row) => Number(row[config.yKey])).filter(Number.isFinite);
+  const xMin = Math.min(0, ...xValues);
+  const xMax = Math.max(1, ...xValues);
+  const yMin = Math.min(0, ...yValues);
+  const yMax = Math.max(1, ...yValues);
+  const xScale = (value) => margin.left + ((value - xMin) / Math.max(0.000001, xMax - xMin)) * (width - margin.left - margin.right);
+  const yScale = (value) => height - margin.bottom - ((value - yMin) / Math.max(0.000001, yMax - yMin)) * (height - margin.top - margin.bottom);
+  const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  svg.appendChild(svgNode("line", { x1: margin.left, y1: height - margin.bottom, x2: width - margin.right, y2: height - margin.bottom, class: "stateframe-web-model-axis" }));
+  svg.appendChild(svgNode("line", { x1: margin.left, y1: margin.top, x2: margin.left, y2: height - margin.bottom, class: "stateframe-web-model-axis" }));
+  if (config.diagonal) {
+    svg.appendChild(svgNode("line", { x1: xScale(0), y1: yScale(0), x2: xScale(1), y2: yScale(1), class: "stateframe-web-model-diagonal" }));
+  }
+  const points = rows
+    .map((row) => [Number(row[config.xKey]), Number(row[config.yKey])])
+    .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
+    .map(([x, y]) => `${xScale(x)},${yScale(y)}`)
+    .join(" ");
+  svg.appendChild(svgNode("polyline", { points, class: "stateframe-web-model-curve-line" }));
+  svg.appendChild(svgNode("text", { x: width / 2, y: height - 8, class: "stateframe-web-model-axis-label" }, config.xLabel));
+  svg.appendChild(svgNode("text", { x: 10, y: margin.top + 8, class: "stateframe-web-model-axis-label" }, config.yLabel));
+  card.appendChild(svg);
+  return card;
+}
+
+function renderModelingClassificationReport(report) {
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["class", "precision", "recall", "f1-score", "support"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const [label, row] of Object.entries(report || {})) {
+    if (!row || typeof row !== "object") continue;
+    const tr = document.createElement("tr");
+    tr.append(td(label), td(formatNumber(row.precision)), td(formatNumber(row.recall)), td(formatNumber(row["f1-score"])), td(formatNumber(row.support)));
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return table;
+}
+
+function renderModelingBeeswarmSummary(rows) {
+  const grouped = {};
+  for (const row of rows) {
+    if (!grouped[row.feature]) grouped[row.feature] = [];
+    grouped[row.feature].push(Math.abs(Number(row.shap_value || 0)));
+  }
+  const summary = Object.entries(grouped)
+    .map(([feature, values]) => ({ feature, value: values.reduce((a, b) => a + b, 0) / Math.max(1, values.length), count: values.length }))
+    .sort((a, b) => b.value - a.value);
+  return renderModelingFeatureRows(summary.map((row) => ({ feature: row.feature, mean_abs_shap: row.value, count: row.count })));
+}
+
+function renderModelingFeatureBars(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-bars";
+  const prepared = (rows || []).slice(0, 15).map((row) => ({
+    feature: row.feature || "",
+    value: Number(row.mean_abs_shap ?? row.permutation_importance ?? row.importance ?? row.cluster_separation ?? 0),
+  }));
+  const maxValue = Math.max(0.000001, ...prepared.map((row) => Math.abs(row.value)));
+  for (const row of prepared) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-model-bar-row";
+    const label = textSpan(row.feature, "stateframe-web-model-bar-label");
+    const track = document.createElement("div");
+    track.className = "stateframe-web-model-bar-track";
+    const fill = document.createElement("div");
+    fill.className = "stateframe-web-model-bar-fill";
+    fill.style.width = `${Math.max(2, Math.abs(row.value) / maxValue * 100)}%`;
+    track.appendChild(fill);
+    const value = textSpan(formatNumber(row.value), "stateframe-web-model-bar-value");
+    item.append(label, track, value);
+    wrap.appendChild(item);
+  }
+  return wrap.children.length ? wrap : empty("No feature importance available.");
+}
+
+function renderModelingBeeswarmPlot(rows) {
+  const grouped = {};
+  for (const row of rows || []) {
+    if (!grouped[row.feature]) grouped[row.feature] = [];
+    grouped[row.feature].push(row);
+  }
+  const features = Object.entries(grouped)
+    .map(([feature, values]) => ({
+      feature,
+      values,
+      score: values.reduce((total, row) => total + Math.abs(Number(row.shap_value || 0)), 0) / Math.max(1, values.length),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
+  const allValues = features.flatMap((item) => item.values.map((row) => Number(row.shap_value || 0))).filter(Number.isFinite);
+  const minValue = Math.min(-0.000001, ...allValues);
+  const maxValue = Math.max(0.000001, ...allValues);
+  const zero = ((0 - minValue) / Math.max(0.000001, maxValue - minValue)) * 100;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-beeswarm";
+  for (const item of features) {
+    const row = document.createElement("div");
+    row.className = "stateframe-web-model-beeswarm-row";
+    const label = textSpan(item.feature, "stateframe-web-model-beeswarm-label");
+    const lane = document.createElement("div");
+    lane.className = "stateframe-web-model-beeswarm-lane";
+    const zeroLine = document.createElement("span");
+    zeroLine.className = "stateframe-web-model-beeswarm-zero";
+    zeroLine.style.left = `${zero}%`;
+    lane.appendChild(zeroLine);
+    item.values.slice(0, 80).forEach((point, index) => {
+      const value = Number(point.shap_value || 0);
+      const dot = document.createElement("span");
+      dot.className = value >= 0 ? "stateframe-web-model-beeswarm-dot is-positive" : "stateframe-web-model-beeswarm-dot is-negative";
+      dot.style.left = `${((value - minValue) / Math.max(0.000001, maxValue - minValue)) * 100}%`;
+      dot.style.top = `${10 + (index % 5) * 5}px`;
+      dot.title = `${item.feature}: ${formatNumber(value)} / value ${formatNumber(point.feature_value)}`;
+      lane.appendChild(dot);
+    });
+    row.append(label, lane);
+    wrap.appendChild(row);
+  }
+  return wrap.children.length ? wrap : empty("No SHAP beeswarm rows available.");
+}
+
+function renderModelingShapRecords(records) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-records";
+  for (const record of records.slice(0, 20)) {
+    const details = document.createElement("details");
+    details.className = "stateframe-web-model-record";
+    const summary = document.createElement("summary");
+    summary.textContent = `Row ${record.index} / base ${formatNumber(record.base_value)} / sum ${formatNumber(record.shap_sum)}`;
+    details.appendChild(summary);
+    details.appendChild(renderModelingContributionBars(record.top_contributions || []));
+    wrap.appendChild(details);
+  }
+  return wrap;
+}
+
+function renderModelingContributionBars(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-contribs";
+  const maxValue = Math.max(0.000001, ...rows.map((row) => Math.abs(Number(row.shap_value || 0))));
+  for (const row of rows.slice(0, 12)) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-model-contrib-row";
+    const label = textSpan(row.feature || "", "stateframe-web-model-bar-label");
+    const track = document.createElement("div");
+    track.className = "stateframe-web-model-contrib-track";
+    const fill = document.createElement("div");
+    fill.className = Number(row.shap_value || 0) >= 0 ? "stateframe-web-model-contrib-fill is-positive" : "stateframe-web-model-contrib-fill is-negative";
+    fill.style.width = `${Math.max(2, Math.abs(Number(row.shap_value || 0)) / maxValue * 100)}%`;
+    track.appendChild(fill);
+    const value = textSpan(`${formatNumber(row.shap_value)} (${formatNumber(row.feature_value)})`, "stateframe-web-model-bar-value");
+    item.append(label, track, value);
+    wrap.appendChild(item);
+  }
+  return wrap.children.length ? wrap : empty("No row contributions available.");
+}
+
+function svgNode(name, attrs = {}, text = null) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attrs)) {
+    node.setAttribute(key, String(value));
+  }
+  if (text !== null) node.textContent = text;
+  return node;
+}
+
+function renderModelingFeatureRows(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-column-list";
+  for (const row of rows.slice(0, 15)) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-cleaning-column";
+    const value = row.mean_abs_shap ?? row.permutation_importance ?? row.importance ?? row.cluster_separation ?? "";
+    item.append(
+      textSpan(row.feature || "", "stateframe-web-visual-column-name"),
+      textSpan(formatNumber(value), "stateframe-web-visual-column-meta"),
+    );
+    wrap.appendChild(item);
+  }
+  return wrap;
+}
+
+function renderPreviewObject(value) {
+  if (!value || !Object.keys(value).length) return empty("No preview details.");
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-preview";
+  for (const [key, item] of Object.entries(value)) {
+    const row = document.createElement("div");
+    row.className = "stateframe-web-cleaning-preview-row";
+    row.append(textSpan(key, "stateframe-web-cleaning-preview-key"), textSpan(cleaningPreviewText(item), "stateframe-web-cleaning-preview-value"));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function renderCleaningExamples(examples) {
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const keys = Array.from(new Set(examples.flatMap((row) => Object.keys(row || {})))).slice(0, 5);
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  for (const key of keys) head.appendChild(th(key));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const row of examples.slice(0, 8)) {
+    const tr = document.createElement("tr");
+    for (const key of keys) tr.appendChild(td(row[key]));
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return table;
+}
+
+function renderCleaningControlSummary(controls, values) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-control-summary";
+  for (const control of controls) {
+    const row = document.createElement("div");
+    row.className = "stateframe-web-cleaning-preview-row";
+    const value = Object.prototype.hasOwnProperty.call(values, control.id) ? values[control.id] : control.default;
+    row.append(textSpan(control.label || control.id, "stateframe-web-cleaning-preview-key"), textSpan(cleaningPreviewText(value), "stateframe-web-cleaning-preview-value"));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function renderActionControls(action, controls, values, planState, setPlanState, kind) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-control-stack";
+  for (const control of controls) {
+    wrap.appendChild(renderActionControl(action, control, values, planState, setPlanState, kind));
+  }
+  return wrap;
+}
+
+function renderActionControl(action, control, values, planState, setPlanState, kind) {
+  const label = document.createElement("label");
+  label.className = "stateframe-web-visual-option";
+  const title = document.createElement("span");
+  title.textContent = control.label || control.id;
+  const current = Object.prototype.hasOwnProperty.call(values, control.id) ? values[control.id] : control.default ?? "";
+  const focusKey = `${kind}-action-${action.id}-${control.id}`;
+  let input;
+  if (control.kind === "select") {
+    input = document.createElement("select");
+    input.className = "stateframe-web-select";
+    for (const choice of control.choices || []) {
+      const option = document.createElement("option");
+      option.value = choice.value;
+      option.textContent = choice.label;
+      input.appendChild(option);
+    }
+    input.value = String(current ?? "");
+    input.addEventListener("change", () => updateActionControl(action.id, control.id, input.value, planState, setPlanState));
+  } else if (control.kind === "checkbox") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(current);
+    input.addEventListener("change", () => updateActionControl(action.id, control.id, input.checked, planState, setPlanState));
+  } else if (control.kind === "textarea" || control.kind === "mapping") {
+    input = document.createElement("textarea");
+    input.className = "stateframe-web-textarea";
+    input.value = control.kind === "mapping" && current && typeof current === "object"
+      ? JSON.stringify(current, null, 2)
+      : String(current ?? "");
+    input.addEventListener("input", () => updateActionControl(action.id, control.id, input.value, planState, setPlanState));
+  } else {
+    input = document.createElement("input");
+    input.className = "stateframe-web-input";
+    input.type = control.kind === "number" ? "number" : "text";
+    input.value = current ?? "";
+    input.addEventListener("input", () => {
+      const value = control.kind === "number" ? input.value : input.value;
+      updateActionControl(action.id, control.id, value, planState, setPlanState);
+    });
+  }
+  input.dataset.focusKey = focusKey;
+  label.append(title, input);
+  if (control.help) label.appendChild(textSpan(control.help, "stateframe-web-visual-help"));
+  return label;
+}
+
+function effectiveActionControlValues(action, planState) {
+  return {
+    ...(action?.control_values || {}),
+    ...((planState?.actionControlValues || {})[action?.id] || {}),
+  };
+}
+
+function updateActionControl(actionId, controlId, value, planState, setPlanState) {
+  const actionControlValues = { ...(planState.actionControlValues || {}) };
+  actionControlValues[actionId] = {
+    ...(actionControlValues[actionId] || {}),
+    [controlId]: value,
+  };
+  const patch = { actionControlValues };
+  if (Object.prototype.hasOwnProperty.call(planState || {}, "activePreset")) patch.activePreset = "custom";
+  setPlanState(patch);
+}
+
+function renderCleaningColumnSummary(columns) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-column-list";
+  for (const column of columns.slice(0, 24)) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-cleaning-column";
+    item.append(
+      textSpan(column.display_name || column.source_name || column.name || "", "stateframe-web-visual-column-name"),
+      textSpan(`${column.semantic_type || "unknown"} / ${column.dtype || ""}`, "stateframe-web-visual-column-meta"),
+    );
+    wrap.appendChild(item);
+  }
+  return wrap;
+}
+
+function selectSetting(label, value, choices, onChange, focusKey) {
+  const wrap = document.createElement("label");
+  wrap.className = "stateframe-web-visual-option";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const select = document.createElement("select");
+  select.className = "stateframe-web-select";
+  select.dataset.focusKey = focusKey;
+  for (const [choiceValue, choiceLabel] of choices) {
+    const option = document.createElement("option");
+    option.value = choiceValue;
+    option.textContent = choiceLabel;
+    select.appendChild(option);
+  }
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+  wrap.append(title, select);
+  return wrap;
+}
+
+function numberSetting(label, value, onChange, focusKey, min = null, max = null, step = "1") {
+  const wrap = document.createElement("label");
+  wrap.className = "stateframe-web-visual-option";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.className = "stateframe-web-input";
+  input.dataset.focusKey = focusKey;
+  input.value = value ?? "";
+  if (min !== null) input.min = min;
+  if (max !== null) input.max = max;
+  input.step = step;
+  input.addEventListener("input", () => onChange(input.value));
+  wrap.append(title, input);
+  return wrap;
+}
+
+function checkboxSetting(label, checked, onChange, focusKey) {
+  const wrap = document.createElement("label");
+  wrap.className = "stateframe-web-visual-option";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.dataset.focusKey = focusKey;
+  input.checked = Boolean(checked);
+  input.addEventListener("change", () => onChange(input.checked));
+  wrap.append(title, input);
+  return wrap;
+}
+
+function mergeDeep(base, patch) {
+  const result = { ...(base || {}) };
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      result[key] = mergeDeep(result[key] || {}, value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function cleaningPreviewText(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.map((item) => typeof item === "object" ? compactJson(item) : String(item)).join("; ");
+  if (typeof value === "object") return compactJson(value);
+  if (typeof value === "number") return formatNumber(value);
+  return String(value);
+}
+
+function groupBy(items, fn) {
+  const groups = {};
+  for (const item of items) {
+    const key = String(fn(item));
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(item);
+  }
+  return groups;
+}
+
 function renderVisualizer(visualizer, commandStatus, setVisualizerState, sendCommand, setState, ui, setUi) {
   const shell = document.createElement("div");
   shell.className = "stateframe-web-visualizer";
@@ -1593,12 +3059,16 @@ function renderVisualizer(visualizer, commandStatus, setVisualizerState, sendCom
   meta.textContent = `${formatInt(payload.view?.row_count || 0)} source rows / ${formatInt((payload.columns || []).length)} columns / Plotly`;
   const render = button("Render", () => sendCommand("render_visualizer", {
     visualSpec: buildVisualSpec(payload, visualState),
+    visualState,
     note: visualState.note || "",
   }));
   const save = button("Save Leaf", () => sendCommand("save_visualizer_leaf", {
     visualSpec: buildVisualSpec(payload, visualState),
+    visualState,
     note: visualState.note || "",
   }));
+  render.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
+  save.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
   const libraryToggle = tinyButton(visualState.collapsedPanels.library ? "Show Library" : "Hide Library", () => {
     setVisualizerState({
       collapsedPanels: {
@@ -1662,7 +3132,7 @@ function renderVisualizer(visualizer, commandStatus, setVisualizerState, sendCom
       collapsedPanels: { ...visualState.collapsedPanels, library: false },
     })));
   }
-  body.appendChild(renderVisualCanvas(payload, visualizer.preview, visualState, setVisualizerState, sendCommand));
+  body.appendChild(renderVisualCanvas(payload, visualizer.preview, visualState, setVisualizerState, sendCommand, commandStatus));
   if (!visualState.collapsedPanels.inspector) {
     body.appendChild(horizontalPanelResizer({
       className: "stateframe-web-visual-resizer",
@@ -1698,6 +3168,7 @@ function renderVisualLibrary(payload, visualState, setVisualizerState) {
   collapse.classList.add("is-layout");
   header.append(label, collapse);
   panel.appendChild(header);
+  panel.appendChild(renderVisualSuggestions(payload, visualState, setVisualizerState));
   const groups = new Map();
   for (const definition of payload.catalog?.plot_types || []) {
     const family = definition.family || "Visuals";
@@ -1735,6 +3206,46 @@ function renderVisualLibrary(payload, visualState, setVisualizerState) {
   return panel;
 }
 
+function renderVisualSuggestions(payload, visualState, setVisualizerState) {
+  const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-suggestions";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-visual-family-title";
+  title.textContent = "Suggested";
+  wrap.appendChild(title);
+  if (!suggestions.length) {
+    const hint = document.createElement("div");
+    hint.className = "stateframe-web-visual-type-description";
+    hint.textContent = "No automatic suggestions for this state yet.";
+    wrap.appendChild(hint);
+    return wrap;
+  }
+  for (const suggestion of suggestions.slice(0, 8)) {
+    const spec = suggestion.spec || {};
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "stateframe-web-visual-suggestion";
+    if (spec.kind === visualState.kind && spec.title === visualState.title) item.classList.add("is-selected");
+    item.addEventListener("click", () => setVisualizerState({
+      kind: spec.kind || visualState.kind,
+      fields: spec.fields || {},
+      filters: Array.isArray(spec.filters) ? spec.filters : [],
+      options: spec.options || {},
+      title: spec.title || suggestion.title || "",
+    }));
+    const itemTitle = document.createElement("div");
+    itemTitle.className = "stateframe-web-visual-type-title";
+    itemTitle.textContent = suggestion.title || spec.title || spec.kind || "Suggested visual";
+    const meta = document.createElement("div");
+    meta.className = "stateframe-web-visual-type-description";
+    meta.textContent = [spec.kind, suggestion.reason].filter(Boolean).join(" / ");
+    item.append(itemTitle, meta);
+    wrap.appendChild(item);
+  }
+  return wrap;
+}
+
 function renderVisualPanelRail(label, title, onClick) {
   const button = document.createElement("button");
   button.type = "button";
@@ -1746,7 +3257,7 @@ function renderVisualPanelRail(label, title, onClick) {
   return button;
 }
 
-function renderVisualCanvas(payload, preview, visualState, setVisualizerState, sendCommand) {
+function renderVisualCanvas(payload, preview, visualState, setVisualizerState, sendCommand, commandStatus) {
   const panel = document.createElement("section");
   panel.className = "stateframe-web-visual-canvas";
   panel.dataset.scrollKey = "visual-canvas";
@@ -1760,15 +3271,19 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   title.addEventListener("input", () => setVisualizerState({ title: title.value }));
   const render = button("Render", () => sendCommand("render_visualizer", {
     visualSpec: buildVisualSpec(payload, { ...visualState, title: title.value }),
+    visualState: { ...visualState, title: title.value },
     note: visualState.note || "",
   }));
   const save = button("Save Leaf", () => sendCommand("save_visualizer_leaf", {
     visualSpec: buildVisualSpec(payload, { ...visualState, title: title.value }),
+    visualState: { ...visualState, title: title.value },
     note: visualState.note || "",
   }));
+  render.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
+  save.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
   controls.append(title, render, save);
   panel.appendChild(controls);
-  panel.appendChild(renderVisualPreview(preview));
+  panel.appendChild(renderVisualPreview(preview, commandStatus));
   const note = document.createElement("textarea");
   note.className = "stateframe-web-textarea stateframe-web-visual-note";
   note.placeholder = "Leaf note. Markdown is supported after save.";
@@ -1779,9 +3294,26 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   return panel;
 }
 
-function renderVisualPreview(preview) {
+function renderVisualPreview(preview, commandStatus = {}) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-preview";
+  if (commandIsLoading(commandStatus, "render_visualizer")) {
+    wrap.classList.add("is-loading");
+    wrap.appendChild(empty(commandStatus.message || "Rendering visual..."));
+    return wrap;
+  }
+  if (commandIsLoading(commandStatus, "save_visualizer_leaf")) {
+    wrap.classList.add("is-loading");
+    if (preview) {
+      const badge = document.createElement("div");
+      badge.className = "stateframe-web-visual-preview-header";
+      badge.textContent = commandStatus.message || "Saving visual leaf...";
+      wrap.appendChild(badge);
+    } else {
+      wrap.appendChild(empty(commandStatus.message || "Saving visual leaf..."));
+      return wrap;
+    }
+  }
   if (!preview) {
     wrap.appendChild(empty("Choose a plot type, bind columns, then render a preview."));
     return wrap;
@@ -1909,7 +3441,7 @@ function renderVisualInspector(payload, definition, visualState, setVisualizerSt
   panel.appendChild(section("Fields", renderVisualFields(payload, definition, visualState, setVisualizerState)));
   panel.appendChild(section("Columns", renderVisualColumns(payload, definition, visualState, setVisualizerState)));
   panel.appendChild(section("Filters", renderVisualFilters(payload, visualState, setVisualizerState)));
-  panel.appendChild(section("Options", renderVisualOptions(definition, visualState, setVisualizerState, ui, setUi)));
+  panel.appendChild(section("Options", renderVisualOptions(payload, definition, visualState, setVisualizerState, ui, setUi)));
   return panel;
 }
 
@@ -2026,29 +3558,140 @@ function renderVisualFilters(payload, visualState, setVisualizerState) {
   return wrap;
 }
 
-function renderVisualOptions(definition, visualState, setVisualizerState, ui, setUi) {
+function renderVisualOptions(payload, definition, visualState, setVisualizerState, ui, setUi) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-options";
+  const visibleGroups = [];
+  let shownCount = 0;
+  let availableCount = 0;
   for (const group of definition.option_groups || []) {
+    const visibleControls = (group.controls || []).filter((control) => {
+      if (!visualControlMatchesMode(control, visualState.controlMode)) return false;
+      if (!visualControlMatchesQuery(control, visualState.controlQuery)) return false;
+      return visualControlApplies(control, group, definition, visualState, payload);
+    });
+    const relevantControls = (group.controls || []).filter((control) => visualControlApplies(control, group, definition, visualState, payload));
+    availableCount += relevantControls.length;
+    shownCount += visibleControls.length;
+    if (!visibleControls.length) continue;
+    visibleGroups.push({ ...group, controls: visibleControls });
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "stateframe-web-visual-control-toolbar";
+  const mode = document.createElement("select");
+  mode.className = "stateframe-web-select";
+  mode.dataset.focusKey = "visual-control-mode";
+  [
+    ["basic", "Basic"],
+    ["advanced", "Advanced"],
+    ["expert", "Expert"],
+  ].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    mode.appendChild(option);
+  });
+  mode.value = visualState.controlMode || "basic";
+  mode.addEventListener("change", () => setVisualizerState({ controlMode: mode.value }));
+  const query = document.createElement("input");
+  query.className = "stateframe-web-input";
+  query.placeholder = "Find controls";
+  query.dataset.focusKey = "visual-control-query";
+  query.value = visualState.controlQuery || "";
+  query.addEventListener("input", () => setVisualizerState({ controlQuery: query.value }));
+  toolbar.append(mode, query, textSpan(`${shownCount} shown / ${availableCount} relevant`, "stateframe-web-visual-control-count"));
+  wrap.appendChild(toolbar);
+
+  if (!visibleGroups.length) {
+    wrap.appendChild(empty("No controls match the current mode and search."));
+    return wrap;
+  }
+
+  for (const group of visibleGroups) {
     const details = document.createElement("details");
     details.className = "stateframe-web-visual-option-group";
     const key = `${definition.id}:${group.id}`;
-    details.open = ui.visualOptionOpen[key] !== false;
+    const defaultOpen = visualOptionGroupDefaultOpen(group, visualState);
+    details.open = Object.prototype.hasOwnProperty.call(ui.visualOptionOpen, key) ? ui.visualOptionOpen[key] !== false : defaultOpen;
     details.addEventListener("toggle", () => {
       ui.visualOptionOpen[key] = details.open;
     });
     const summary = document.createElement("summary");
-    summary.textContent = group.title;
+    summary.textContent = `${group.title} (${group.controls.length})`;
     details.appendChild(summary);
     const body = document.createElement("div");
     body.className = "stateframe-web-visual-option-body";
-    for (const control of group.controls || []) {
+    for (const control of group.controls) {
       body.appendChild(renderVisualOptionControl(control, visualState, setVisualizerState));
     }
     details.appendChild(body);
     wrap.appendChild(details);
   }
   return wrap;
+}
+
+function visualControlMatchesMode(control, mode) {
+  const rank = { basic: 0, advanced: 1, expert: 2 };
+  const current = rank[mode || "basic"] ?? 0;
+  const level = rank[control.level || "advanced"] ?? 1;
+  return level <= current;
+}
+
+function visualControlMatchesQuery(control, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  return [
+    control.id,
+    control.label,
+    control.help,
+    control.level,
+    ...(control.choices || []).flatMap((choice) => [choice.value, choice.label]),
+  ].some((value) => String(value || "").toLowerCase().includes(needle));
+}
+
+function visualControlApplies(control, group, definition, visualState, payload) {
+  const id = control.id;
+  const fields = visualState.fields || {};
+  const slots = new Set((definition.fields || []).map((field) => field.slot));
+  if (["facet_col_wrap", "facet_shared_x", "facet_shared_y"].includes(id)) {
+    return Boolean(fields.facet || fields.facet_row || slots.has("facet") || slots.has("facet_row"));
+  }
+  if (id === "x_rangeslider") {
+    return Boolean(fields.x || slots.has("x"));
+  }
+  if (id.startsWith("x_") || ["log_x", "reverse_x", "sort_x", "x_reference", "x_reference_label"].includes(id)) {
+    return Boolean(fields.x || fields.theta || fields.values || fields.locations || slots.has("x") || slots.has("theta") || slots.has("values") || slots.has("locations"));
+  }
+  if (id.startsWith("y_") || ["log_y", "reverse_y", "zero_line"].includes(id)) {
+    return Boolean(fields.y || fields.r || fields.values || slots.has("y") || slots.has("r") || slots.has("values"));
+  }
+  if (["color_sequence", "continuous_color_scale", "show_legend"].includes(id)) {
+    return Boolean(fields.color || slots.has("color") || definition.family === "Geographic" || definition.family === "Matrix");
+  }
+  if (["date_bucket", "rolling_window", "rolling_stat", "cumulative"].includes(id)) {
+    const xColumn = fields.x;
+    const column = (payload.columns || []).find((item) => item.id === xColumn);
+    const type = String(column?.semantic_type || column?.dtype || "").toLowerCase();
+    return Boolean(fields.x && (type.includes("date") || type.includes("time") || ["line", "area", "bar"].includes(definition.id)));
+  }
+  if (["top_n", "top_n_direction", "top_n_mode", "other_label", "include_missing_category", "missing_category_label"].includes(id)) {
+    return Boolean(fields.x || fields.names || fields.path || fields.locations || definition.id === "missingness");
+  }
+  if (["sample_rows", "sample_method", "sample_seed", "dedupe_rows"].includes(id)) return true;
+  if (["aggregation", "value_transform", "sort_by"].includes(id)) {
+    return Boolean(fields.x || fields.y || fields.values || fields.names || fields.path || definition.id === "missingness");
+  }
+  if (group.id === "references") {
+    return Boolean(fields.x || fields.y || fields.values || fields.r);
+  }
+  return true;
+}
+
+function visualOptionGroupDefaultOpen(group, visualState) {
+  if (visualState.controlMode === "expert") return group.id !== "advanced";
+  if (visualState.controlMode === "advanced") return ["marks", "data", "axes", "references"].includes(group.id);
+  return ["marks", "data"].includes(group.id);
 }
 
 function renderVisualOptionControl(control, visualState, setVisualizerState) {
@@ -2177,8 +3820,21 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
     });
   });
   const visualizerButton = button("Visualizer", () => {
-    setState({ viewMode: "visualizer" });
     sendCommand("open_visualizer", {
+      height: payload.view?.height || 640,
+      maxRows: 500,
+      viewerState,
+    });
+  });
+  const cleanButton = button("Clean", () => {
+    sendCommand("open_cleaning", {
+      height: payload.view?.height || 640,
+      maxRows: 500,
+      viewerState,
+    });
+  });
+  const modelButton = button("Model", () => {
+    sendCommand("open_modeling", {
       height: payload.view?.height || 640,
       maxRows: 500,
       viewerState,
@@ -2188,7 +3844,7 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
   loadFull.title = payload.view?.truncated
     ? "Send all rows for this selected state to the browser preview."
     : "All rows are already loaded in the browser preview.";
-  top.append(title, meta, search, matchCount, previousMatch, nextMatch, columnsToggle, inspectorToggle, clear, loadFull, visualizerButton, save);
+  top.append(title, meta, search, matchCount, previousMatch, nextMatch, columnsToggle, inspectorToggle, clear, loadFull, cleanButton, modelButton, visualizerButton, save);
   shell.appendChild(renderViewerLineageBar(payload, viewerState, ui, setUi));
   shell.appendChild(top);
 
@@ -2385,10 +4041,12 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  const limit = 500;
+  const visibleCellWidth = Math.max(1, visibleColumns.length + (state.showIndex ? 1 : 0));
+  const limit = Math.max(40, Math.min(500, Math.floor(VIEWER_GRID_CELL_BUDGET / visibleCellWidth)));
   const activeVirtualIndex = activeMatch?.virtualIndex ?? 0;
   const start = activeVirtualIndex >= limit ? Math.max(0, activeVirtualIndex - 25) : 0;
   const rows = computed.indices.slice(start, start + limit);
+  const bodyFragment = document.createDocumentFragment();
   for (const rowIndex of rows) {
     const tr = document.createElement("tr");
     if (state.showIndex) tr.appendChild(td(payload.index?.[rowIndex] ?? rowIndex));
@@ -2408,15 +4066,16 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
       }
       tr.appendChild(cell);
     }
-    tbody.appendChild(tr);
+    bodyFragment.appendChild(tr);
   }
+  tbody.appendChild(bodyFragment);
   table.appendChild(tbody);
   wrap.appendChild(table);
   if (computed.indices.length > limit) {
     const note = document.createElement("div");
     note.className = "stateframe-web-grid-note";
     const end = Math.min(computed.indices.length, start + limit);
-    note.textContent = `Showing rows ${formatInt(start + 1)}-${formatInt(end)} of ${formatInt(computed.indices.length)} matched preview rows. Save branch still applies the full viewer state in Python.`;
+    note.textContent = `Showing rows ${formatInt(start + 1)}-${formatInt(end)} of ${formatInt(computed.indices.length)} matched preview rows across ${formatInt(visibleColumns.length)} visible columns. Save branch still applies the full viewer state in Python.`;
     wrap.appendChild(note);
   }
   return wrap;
@@ -2675,31 +4334,48 @@ function visualDefinition(payload, kind) {
 
 function defaultFieldsForVisual(payload, definition) {
   const fields = {};
-  for (const field of definition.fields || []) {
-    const column = defaultVisualColumn(payload, definition, field);
+  const fieldDefs = definition.fields || [];
+  const requiredFields = fieldDefs.filter((field) => field.required);
+  const fieldsToFill = requiredFields.length ? requiredFields : fieldDefs.slice(0, 1);
+  const used = new Set();
+  for (const field of fieldsToFill) {
+    const column = defaultVisualColumn(payload, definition, field, used);
     if (column) {
       fields[field.slot] = field.multiple ? [column] : column;
-      if (field.required) break;
+      if (!field.multiple) used.add(column);
     }
   }
   return fields;
 }
 
-function defaultVisualColumn(payload, definition, field = null) {
+function defaultVisualColumn(payload, definition, field = null, used = new Set()) {
   const columns = payload?.columns || [];
   if (!columns.length) return null;
+  const available = columns.filter((column) => !used.has(column.id));
+  const pool = available.length ? available : columns;
   const wanted = new Set(field?.semantic || []);
-  const numeric = columns.find((column) => ["numeric", "amount", "percentage", "proportion"].includes(String(column.semantic_type || "").toLowerCase()));
-  const datetime = columns.find((column) => String(column.semantic_type || "").toLowerCase().includes("datetime"));
-  const categorical = columns.find((column) => ["category", "string", "postal_code", "geographic"].includes(String(column.semantic_type || "").toLowerCase()));
+  const nameOf = (column) => String(column.source_name || column.display_name || column.id || "").toLowerCase();
+  const semanticOf = (column) => String(column.semantic_type || "").toLowerCase();
+  const numeric = pool.find((column) => ["numeric", "amount", "numeric-like", "percentage", "proportion", "numeric_discrete"].includes(semanticOf(column)));
+  const datetime = pool.find((column) => semanticOf(column).includes("datetime"));
+  const categorical = pool.find((column) => ["category", "string", "postal_code", "geographic", "binary", "nullable_binary", "boolean"].includes(semanticOf(column)));
+  const latitude = pool.find((column) => /(^|_|\b)(lat|latitude)($|_|\b)/.test(nameOf(column)));
+  const longitude = pool.find((column) => /(^|_|\b)(lon|lng|long|longitude)($|_|\b)/.test(nameOf(column)));
+  const location = pool.find((column) => ["geographic", "postal_code"].includes(semanticOf(column)) || /(^|_|\b)(state|country|county|zip|postal|postcode)($|_|\b)/.test(nameOf(column)));
   if (wanted.size) {
-    const match = columns.find((column) => wanted.has(String(column.semantic_type || "").toLowerCase()));
+    const match = pool.find((column) => wanted.has(semanticOf(column)));
     if (match) return match.id;
   }
-  if (["histogram", "box", "violin", "ecdf", "scatter", "line", "area"].includes(definition?.id) && numeric) return numeric.id;
-  if (definition?.id === "line" && datetime) return datetime.id;
-  if (["bar", "pie", "treemap"].includes(definition?.id) && categorical) return categorical.id;
-  return columns[0].id || null;
+  if (field?.slot === "lat" && latitude) return latitude.id;
+  if (field?.slot === "lon" && longitude) return longitude.id;
+  if (field?.slot === "locations" && location) return location.id;
+  if (field?.slot === "path" && categorical) return categorical.id;
+  if (field?.slot === "values" && numeric) return numeric.id;
+  if (field?.slot === "y" && numeric) return numeric.id;
+  if (field?.slot === "x" && definition?.id === "line" && datetime) return datetime.id;
+  if (["histogram", "box", "violin", "strip", "ecdf", "scatter", "density_heatmap", "density_contour", "line", "area"].includes(definition?.id) && numeric) return numeric.id;
+  if (["bar", "pie", "treemap", "sunburst", "parallel_categories"].includes(definition?.id) && categorical) return categorical.id;
+  return pool[0].id || null;
 }
 
 function updateVisualFilter(index, patch, state, setVisualizerState) {
@@ -2733,12 +4409,56 @@ function cleanObject(value) {
   return result;
 }
 
-function computeViewerRows(payload, state) {
-  const indices = [];
+function viewerPayloadCache(payload) {
+  let cache = VIEWER_PAYLOAD_CACHE.get(payload);
+  if (cache) return cache;
   const columns = payload.columns || [];
+  const columnById = new Map();
+  const columnIndexById = new Map();
+  columns.forEach((column, index) => {
+    columnById.set(column.id, column);
+    columnIndexById.set(column.id, index);
+  });
+  cache = {
+    columnById,
+    columnIndexById,
+    computedRows: null,
+    rowSearchText: null,
+  };
+  VIEWER_PAYLOAD_CACHE.set(payload, cache);
+  return cache;
+}
+
+function viewerRowsSignature(state) {
+  return JSON.stringify({
+    globalSearch: state.globalSearch || "",
+    filters: state.filters || {},
+    sorts: state.sorts || [],
+    hiddenColumnIds: state.hiddenColumnIds || [],
+    columnOrder: state.columnOrder || [],
+  });
+}
+
+function rowSearchText(payload) {
+  const cache = viewerPayloadCache(payload);
+  if (cache.rowSearchText) return cache.rowSearchText;
+  cache.rowSearchText = (payload.rows || []).map((row) => (
+    row || []
+  ).map((value) => String(value ?? "")).join("\u0001").toLowerCase());
+  return cache.rowSearchText;
+}
+
+function computeViewerRows(payload, state) {
+  const cache = viewerPayloadCache(payload);
+  const signature = viewerRowsSignature(state);
+  if (cache.computedRows?.signature === signature) {
+    return cache.computedRows.value;
+  }
+  const indices = [];
   const query = String(state.globalSearch || "").trim().toLowerCase();
+  const searchText = query ? rowSearchText(payload) : null;
   for (let rowIndex = 0; rowIndex < (payload.rows || []).length; rowIndex += 1) {
-    if (query && !columns.some((column) => String(valueFor(payload, rowIndex, column) ?? "").toLowerCase().includes(query))) continue;
+    if (query && !searchText[rowIndex]?.includes(query)) continue;
     if (!passesFilters(payload, state, rowIndex)) continue;
     indices.push(rowIndex);
   }
@@ -2746,10 +4466,12 @@ function computeViewerRows(payload, state) {
   if (sorts.length) {
     indices.sort((a, b) => compareRows(payload, a, b, sorts));
   }
-  return {
+  const value = {
     indices,
     matches: query ? findViewerMatches(payload, visibleViewerColumns(payload, state), indices, query) : [],
   };
+  cache.computedRows = { signature, value };
+  return value;
 }
 
 function findViewerMatches(payload, visibleColumns, indices, needle) {
@@ -2830,7 +4552,7 @@ function positiveModulo(value, modulo) {
 }
 
 function orderedViewerColumns(payload, state) {
-  const byId = new Map((payload.columns || []).map((column) => [column.id, column]));
+  const byId = viewerPayloadCache(payload).columnById;
   return (state.columnOrder || []).map((id) => byId.get(id)).filter(Boolean);
 }
 
@@ -2840,11 +4562,12 @@ function visibleViewerColumns(payload, state) {
 }
 
 function getViewerColumn(payload, id) {
-  return (payload.columns || []).find((column) => column.id === id) || null;
+  return viewerPayloadCache(payload).columnById.get(id) || null;
 }
 
 function valueFor(payload, rowIndex, column) {
-  const index = (payload.columns || []).findIndex((item) => item.id === column.id);
+  const index = viewerPayloadCache(payload).columnIndexById.get(column.id);
+  if (index === undefined) return undefined;
   return payload.rows?.[rowIndex]?.[index];
 }
 
@@ -3655,6 +5378,11 @@ function statusText(status) {
   if (!status?.status) return "";
   if (status.status === "error") return status.message || "Action failed";
   return status.message || "";
+}
+
+function commandIsLoading(status, ...actions) {
+  if (status?.status !== "loading") return false;
+  return !actions.length || actions.includes(status.action);
 }
 
 function formatCell(value) {

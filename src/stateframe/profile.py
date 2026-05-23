@@ -388,7 +388,7 @@ def _numeric_metrics(series: pd.Series) -> dict[str, Any]:
 
 
 def _datetime_metrics(series: pd.Series) -> dict[str, Any]:
-    parsed = pd.to_datetime(series, errors="coerce")
+    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
     values = parsed.dropna()
     if values.empty:
         return {"datetime_parse_ratio": 0.0, "parse_success_ratio": 0.0}

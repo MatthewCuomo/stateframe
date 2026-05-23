@@ -141,6 +141,17 @@ register(
 )
 register(
     LensSpec(
+        id="modeling.readiness",
+        family="modeling",
+        title="Preview modeling readiness",
+        aliases=["modeling.plan", "modeling.prepare", "feature_prep"],
+        cost="cheap",
+        evidence_sources=["model", "statistical", "quality", "cleaning"],
+        output_types=["metric_table", "transform_plan", "feature_prep_plan"],
+    )
+)
+register(
+    LensSpec(
         id="footprint.optimize",
         family="performance",
         title="Optimize DataFrame memory footprint",
@@ -263,6 +274,20 @@ register(
 )
 register(
     LensSpec(
+        id="target.best_splits",
+        family="target",
+        title="Best target-aware splits",
+        aliases=["target.splits", "best_splits", "entropy.splits"],
+        required_roles=["target"],
+        compatible_targets=["binary_classification", "multiclass_classification", "regression"],
+        cost="medium",
+        evidence_sources=["target", "relationship", "statistical"],
+        output_types=["metric_table", "split_candidates"],
+        visual_kinds=["split_gain_bar"],
+    )
+)
+register(
+    LensSpec(
         id="target.importance",
         family="target",
         title="What matters to this target?",
@@ -272,6 +297,32 @@ register(
         evidence_sources=["target", "model", "relationship", "visual"],
         output_types=["metric_table", "visual", "insights"],
         visual_kinds=["importance_bar"],
+    )
+)
+register(
+    LensSpec(
+        id="modeling.baseline",
+        family="modeling",
+        title="Train a quick modeling baseline",
+        aliases=["baseline.model", "modeling.smoke_test"],
+        required_roles=["target"],
+        compatible_targets=["binary_classification", "multiclass_classification", "regression"],
+        cost="medium",
+        evidence_sources=["target", "model", "statistical"],
+        output_types=["metric_table", "model_summary"],
+    )
+)
+register(
+    LensSpec(
+        id="modeling.experiment",
+        family="modeling",
+        title="Run a modeling experiment",
+        aliases=["model.train", "modeling.train", "train.model"],
+        required_roles=["target"],
+        compatible_targets=["binary_classification", "multiclass_classification", "regression"],
+        cost="expensive",
+        evidence_sources=["target", "model", "statistical"],
+        output_types=["model_summary", "metric_table", "explanations"],
     )
 )
 register(

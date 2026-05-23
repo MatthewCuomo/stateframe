@@ -34,8 +34,14 @@ def run_lens(profile: Profile, lens_id: str, **params: Any) -> LensResult:
         return target_candidates(profile)
     if lens_id == "target.associations":
         return target_associations(profile, **params)
+    if lens_id == "target.best_splits":
+        return target_best_splits(profile, **params)
     if lens_id == "target.importance":
         return target_importance(profile, **params)
+    if lens_id == "modeling.baseline":
+        return modeling_baseline(profile, **params)
+    if lens_id == "modeling.experiment":
+        return modeling_experiment(profile, **params)
     if lens_id == "distribution.numeric":
         return numeric_distribution(profile, **params)
     if lens_id == "categorical.value_counts":
@@ -46,6 +52,8 @@ def run_lens(profile: Profile, lens_id: str, **params: Any) -> LensResult:
         return text_lengths(profile, **params)
     if lens_id == "cleaning.transform_preview":
         return cleaning_transform_preview(profile, **params)
+    if lens_id == "modeling.readiness":
+        return modeling_readiness(profile, **params)
     if lens_id == "footprint.optimize":
         return footprint_optimize(profile, **params)
     raise ValueError(f"Unknown lens: {lens_id}")
@@ -503,6 +511,76 @@ def target_associations(profile: Profile, column: str | None = None, limit: int 
     )
 
 
+def target_best_splits(
+    profile: Profile,
+    column: str | None = None,
+    *,
+    limit: int = 20,
+    max_thresholds: int = 16,
+    max_levels: int = 20,
+    min_leaf: int = 5,
+) -> LensResult:
+    target = column or profile.target
+    if target is None:
+        raise ValueError("target.best_splits requires a target column.")
+    if target not in profile.data.columns:
+        raise ValueError(f"Target column not found: {target}")
+
+    df = profile.data
+    target_profile = profile.column(target)
+    target_task = profile.target_profile.task if profile.target_profile else None
+    is_regression = target_task == "regression" or (
+        target_task not in {"binary_classification", "multiclass_classification"}
+        and target_profile.semantic_type in {"numeric", "amount", "numeric-like", "percentage", "proportion"}
+    )
+    target_values = pd.to_numeric(df[target], errors="coerce") if is_regression else df[target].astype("string")
+    valid_target = target_values.notna()
+    parent_impurity = _variance_impurity(target_values[valid_target]) if is_regression else _entropy(target_values[valid_target])
+    rows: list[dict[str, Any]] = []
+
+    for name, column_profile in profile.column_profiles.items():
+        if name == target or column_profile.semantic_type in {"identifier", "mostly_missing", "constant", "text"}:
+            continue
+        feature = df[name]
+        if _is_numeric_semantic(column_profile.semantic_type):
+            rows.extend(
+                _numeric_split_candidates(
+                    feature,
+                    target_values,
+                    feature_name=name,
+                    is_regression=is_regression,
+                    parent_impurity=parent_impurity,
+                    max_thresholds=max_thresholds,
+                    min_leaf=min_leaf,
+                )
+            )
+        elif _is_categorical_semantic(column_profile.semantic_type):
+            rows.extend(
+                _categorical_split_candidates(
+                    feature,
+                    target_values,
+                    feature_name=name,
+                    is_regression=is_regression,
+                    parent_impurity=parent_impurity,
+                    max_levels=max_levels,
+                    min_leaf=min_leaf,
+                )
+            )
+
+    rows = sorted(rows, key=lambda item: float(item.get("gain") or 0.0), reverse=True)[:limit]
+    return LensResult(
+        id="target.best_splits",
+        title=f"Best target splits for {target}",
+        data={
+            "target": target,
+            "criterion": "variance_reduction" if is_regression else "entropy_information_gain",
+            "parent_impurity": clean_metric(parent_impurity),
+            "min_leaf": int(min_leaf),
+            "splits": rows,
+        },
+    )
+
+
 def mixed_associations(
     profile: Profile,
     *,
@@ -632,11 +710,81 @@ def cleaning_transform_preview(profile: Profile) -> LensResult:
     return LensResult(
         id="cleaning.transform_preview",
         title="Cleaning transformation preview",
-        data={
-            "actions": [action.to_dict() for action in plan.actions],
-            "action_count": len(plan.actions),
-            "binary_null_policy": plan.binary_null_policy,
-        },
+        data=plan.operation_preview(),
+    )
+
+
+def modeling_readiness(profile: Profile, **kwargs: Any) -> LensResult:
+    plan = profile.modeling_plan(**kwargs)
+    return LensResult(
+        id="modeling.readiness",
+        title="Modeling readiness plan",
+        data=plan.operation_preview(),
+    )
+
+
+def modeling_experiment(profile: Profile, spec: dict[str, Any] | None = None, **kwargs: Any) -> LensResult:
+    from stateframe.modeling import run_modeling_experiment
+
+    result = run_modeling_experiment(profile, spec, **kwargs)
+    return LensResult(
+        id="modeling.experiment",
+        title=f"Modeling experiment: {result.estimator}",
+        data=result.to_dict(),
+    )
+
+
+def modeling_baseline(
+    profile: Profile,
+    *,
+    target: str | None = None,
+    max_features: int = 40,
+    test_size: float = 0.25,
+    random_state: int = 42,
+) -> LensResult:
+    target = target or profile.target
+    if target is None:
+        raise ValueError("modeling.baseline requires a target column.")
+    if target not in profile.data.columns:
+        raise ValueError(f"Target column not found: {target}")
+
+    prepared = _prepare_model_frame(profile, target=target, max_features=max_features)
+    if prepared["X"].empty or prepared["X"].shape[0] < 8:
+        data = {
+            "target": target,
+            "task": prepared["task"],
+            "model_type": "not_run",
+            "reason": "not enough usable rows or features after preprocessing",
+            "row_count": int(prepared["X"].shape[0]),
+            "feature_count": int(prepared["X"].shape[1]),
+            "baseline_score": None,
+            "model_score": None,
+        }
+    else:
+        try:
+            data = _sklearn_modeling_baseline(
+                prepared["X"],
+                prepared["y"],
+                task=prepared["task"],
+                target=target,
+                test_size=test_size,
+                random_state=random_state,
+            )
+        except Exception as exc:
+            data = {
+                "target": target,
+                "task": prepared["task"],
+                "model_type": "not_run",
+                "fallback_reason": str(exc),
+                "row_count": int(prepared["X"].shape[0]),
+                "feature_count": int(prepared["X"].shape[1]),
+                "baseline_score": None,
+                "model_score": None,
+            }
+    return LensResult(
+        id="modeling.baseline",
+        title=f"Modeling baseline for {target}",
+        data=data,
     )
 
 
@@ -811,6 +959,162 @@ def _categorical_categorical_association(
     }
 
 
+def _numeric_split_candidates(
+    feature: pd.Series,
+    target: pd.Series,
+    *,
+    feature_name: str,
+    is_regression: bool,
+    parent_impurity: float,
+    max_thresholds: int,
+    min_leaf: int,
+) -> list[dict[str, Any]]:
+    values = pd.to_numeric(feature, errors="coerce")
+    frame = pd.DataFrame({"feature": values, "target": target}).dropna()
+    if frame.shape[0] < min_leaf * 2 or frame["feature"].nunique() < 2:
+        return []
+    quantiles = np.linspace(0.05, 0.95, max(3, int(max_thresholds)))
+    thresholds = sorted(set(float(value) for value in frame["feature"].quantile(quantiles).dropna().tolist()))
+    rows: list[dict[str, Any]] = []
+    for threshold in thresholds:
+        left = frame[frame["feature"] <= threshold]["target"]
+        right = frame[frame["feature"] > threshold]["target"]
+        row = _split_row(
+            feature_name,
+            "numeric_threshold",
+            is_regression=is_regression,
+            parent_impurity=parent_impurity,
+            left=left,
+            right=right,
+            min_leaf=min_leaf,
+            condition=f"<= {threshold:.6g}",
+            threshold=threshold,
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _categorical_split_candidates(
+    feature: pd.Series,
+    target: pd.Series,
+    *,
+    feature_name: str,
+    is_regression: bool,
+    parent_impurity: float,
+    max_levels: int,
+    min_leaf: int,
+) -> list[dict[str, Any]]:
+    frame = pd.DataFrame({"feature": feature.astype("string"), "target": target}).dropna()
+    if frame.shape[0] < min_leaf * 2 or frame["feature"].nunique() < 2:
+        return []
+    levels = frame["feature"].value_counts().head(max_levels).index.tolist()
+    rows: list[dict[str, Any]] = []
+    for level in levels:
+        left = frame[frame["feature"] == level]["target"]
+        right = frame[frame["feature"] != level]["target"]
+        row = _split_row(
+            feature_name,
+            "category_one_vs_rest",
+            is_regression=is_regression,
+            parent_impurity=parent_impurity,
+            left=left,
+            right=right,
+            min_leaf=min_leaf,
+            condition=f"== {level}",
+            level=clean_metric(level),
+        )
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _split_row(
+    feature_name: str,
+    split_type: str,
+    *,
+    is_regression: bool,
+    parent_impurity: float,
+    left: pd.Series,
+    right: pd.Series,
+    min_leaf: int,
+    condition: str,
+    threshold: float | None = None,
+    level: Any = None,
+) -> dict[str, Any] | None:
+    left = left.dropna()
+    right = right.dropna()
+    left_count = int(left.shape[0])
+    right_count = int(right.shape[0])
+    total = left_count + right_count
+    if left_count < min_leaf or right_count < min_leaf or total <= 0:
+        return None
+    impurity_fn = _variance_impurity if is_regression else _entropy
+    left_impurity = impurity_fn(left)
+    right_impurity = impurity_fn(right)
+    weighted = (left_count / total) * left_impurity + (right_count / total) * right_impurity
+    gain = max(0.0, float(parent_impurity - weighted))
+    row = {
+        "column": feature_name,
+        "split_type": split_type,
+        "condition": condition,
+        "criterion": "variance_reduction" if is_regression else "information_gain",
+        "gain": clean_metric(gain),
+        "parent_impurity": clean_metric(parent_impurity),
+        "weighted_child_impurity": clean_metric(weighted),
+        "left_count": left_count,
+        "right_count": right_count,
+        "left_summary": _target_side_summary(left, is_regression=is_regression),
+        "right_summary": _target_side_summary(right, is_regression=is_regression),
+    }
+    if threshold is not None:
+        row["threshold"] = clean_metric(threshold)
+    if level is not None:
+        row["level"] = level
+    return row
+
+
+def _entropy(values: pd.Series) -> float:
+    counts = values.dropna().astype("string").value_counts()
+    total = float(counts.sum())
+    if total <= 0:
+        return 0.0
+    probs = counts / total
+    return float(-(probs * np.log2(probs)).sum())
+
+
+def _variance_impurity(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return 0.0
+    return float(numeric.var(ddof=0))
+
+
+def _target_side_summary(values: pd.Series, *, is_regression: bool) -> dict[str, Any]:
+    if is_regression:
+        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        return clean_metrics(
+            {
+                "mean": numeric.mean() if not numeric.empty else None,
+                "median": numeric.median() if not numeric.empty else None,
+                "min": numeric.min() if not numeric.empty else None,
+                "max": numeric.max() if not numeric.empty else None,
+            }
+        )
+    counts = values.astype("string").value_counts().head(8)
+    total = int(counts.sum())
+    return {
+        "top_values": [
+            {
+                "value": clean_metric(value),
+                "count": int(count),
+                "ratio": int(count) / total if total else 0.0,
+            }
+            for value, count in counts.items()
+        ]
+    }
+
+
 def _missingness_associations(profile: Profile, *, max_pairs: int) -> list[dict[str, Any]]:
     columns = [
         column.name
@@ -970,6 +1274,90 @@ def _sklearn_target_importance(
         "feature_importance": feature_rows,
         "permutation_importance": permutation_rows,
         "notes": ["Exploratory feature importance; this is not causal evidence."],
+    }
+
+
+def _sklearn_modeling_baseline(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    task: str,
+    target: str,
+    test_size: float,
+    random_state: int,
+) -> dict[str, Any]:
+    from sklearn.dummy import DummyClassifier, DummyRegressor
+    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+    from sklearn.metrics import accuracy_score, balanced_accuracy_score, mean_absolute_error, r2_score
+    from sklearn.model_selection import train_test_split
+
+    is_classification = task in {"binary_classification", "multiclass_classification"}
+    stratify = y if is_classification and y.nunique(dropna=True) > 1 and y.value_counts().min() >= 2 else None
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=max(0.1, min(float(test_size), 0.5)),
+        random_state=random_state,
+        stratify=stratify,
+    )
+    if is_classification:
+        baseline = DummyClassifier(strategy="most_frequent")
+        model = RandomForestClassifier(n_estimators=100, random_state=random_state, n_jobs=-1, min_samples_leaf=2)
+        baseline.fit(X_train, y_train)
+        model.fit(X_train, y_train)
+        baseline_pred = baseline.predict(X_test)
+        model_pred = model.predict(X_test)
+        baseline_score = {
+            "accuracy": clean_metric(accuracy_score(y_test, baseline_pred)),
+            "balanced_accuracy": clean_metric(balanced_accuracy_score(y_test, baseline_pred)),
+        }
+        model_score = {
+            "accuracy": clean_metric(accuracy_score(y_test, model_pred)),
+            "balanced_accuracy": clean_metric(balanced_accuracy_score(y_test, model_pred)),
+        }
+    else:
+        y_train_num = pd.to_numeric(y_train, errors="coerce")
+        y_test_num = pd.to_numeric(y_test, errors="coerce")
+        keep_train = y_train_num.notna()
+        keep_test = y_test_num.notna()
+        X_train, y_train_num = X_train.loc[keep_train], y_train_num.loc[keep_train]
+        X_test, y_test_num = X_test.loc[keep_test], y_test_num.loc[keep_test]
+        if X_train.empty or X_test.empty:
+            raise ValueError("not enough numeric target values for regression baseline")
+        baseline = DummyRegressor(strategy="median")
+        model = RandomForestRegressor(n_estimators=120, random_state=random_state, n_jobs=-1, min_samples_leaf=2)
+        baseline.fit(X_train, y_train_num)
+        model.fit(X_train, y_train_num)
+        baseline_pred = baseline.predict(X_test)
+        model_pred = model.predict(X_test)
+        baseline_score = _regression_scores(y_test_num, baseline_pred)
+        model_score = _regression_scores(y_test_num, model_pred)
+
+    return {
+        "target": target,
+        "task": task,
+        "model_type": type(model).__name__,
+        "baseline_type": type(baseline).__name__,
+        "validation": "random_holdout",
+        "test_size": clean_metric(test_size),
+        "row_count": int(X.shape[0]),
+        "train_row_count": int(X_train.shape[0]),
+        "test_row_count": int(X_test.shape[0]),
+        "feature_count": int(X.shape[1]),
+        "baseline_score": baseline_score,
+        "model_score": model_score,
+        "notes": ["Fast modeling smoke test; use a proper validation design before trusting performance."],
+    }
+
+
+def _regression_scores(y_true: pd.Series, prediction: Any) -> dict[str, Any]:
+    from sklearn.metrics import mean_absolute_error, r2_score
+
+    errors = np.asarray(y_true) - np.asarray(prediction)
+    return {
+        "mae": clean_metric(mean_absolute_error(y_true, prediction)),
+        "rmse": clean_metric(float(np.sqrt(np.mean(errors ** 2)))),
+        "r2": clean_metric(r2_score(y_true, prediction)) if len(y_true) >= 2 else None,
     }
 
 

@@ -800,6 +800,11 @@ class Profile:
 
         return plot_recommendations(self, n=n, **kwargs)
 
+    def visual_recommendations(self, *, limit: int = 18):
+        from stateframe.visualizer import visual_recommendations
+
+        return visual_recommendations(self, limit=limit)
+
     def view(
         self,
         *,
@@ -976,7 +981,50 @@ class Profile:
                 operation="cleaning.apply",
                 params=kwargs,
                 summary={
-                    "action_count": len(plan.actions),
+                    **plan.summary(),
+                    "row_count": int(result.shape[0]),
+                    "column_count": int(result.shape[1]),
+                },
+            )
+        return result
+
+    def modeling_plan(self, **kwargs: Any):
+        from stateframe.modeling import build_modeling_plan
+
+        return build_modeling_plan(self, **kwargs)
+
+    def default_modeling_spec(self, **kwargs: Any):
+        from stateframe.modeling import default_modeling_experiment_spec
+
+        return default_modeling_experiment_spec(self, **kwargs)
+
+    def modeling_experiment(self, spec: dict[str, Any] | None = None, **kwargs: Any):
+        from stateframe.modeling import run_modeling_experiment
+
+        return run_modeling_experiment(self, spec, **kwargs)
+
+    def apply_modeling_plan(
+        self,
+        *,
+        record: bool = True,
+        title: str = "Apply modeling readiness plan",
+        **kwargs: Any,
+    ):
+        plan_kwargs = {
+            key: kwargs.pop(key)
+            for key in ["max_categories", "include_scaling"]
+            if key in kwargs
+        }
+        plan = self.modeling_plan(**plan_kwargs)
+        result = plan.apply(**kwargs)
+        if record and self.ledger is not None:
+            self.ledger.record_state(
+                result,
+                title=title,
+                operation="modeling.prepare.apply",
+                params={**plan_kwargs, **kwargs},
+                summary={
+                    **plan.summary(),
                     "row_count": int(result.shape[0]),
                     "column_count": int(result.shape[1]),
                 },
@@ -1016,6 +1064,7 @@ class Profile:
         parent_id: str | None = None,
         copy_data: bool = True,
         options: list[dict[str, Any]] | None = None,
+        summary: dict[str, Any] | None = None,
         code: str = "",
         note: str = "",
         **kwargs: Any,
@@ -1031,6 +1080,7 @@ class Profile:
             parent_id=parent_id,
             copy_data=copy_data,
             options=options,
+            summary=summary,
             code=code,
             note=note,
             params=kwargs,

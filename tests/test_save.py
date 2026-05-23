@@ -49,6 +49,25 @@ def test_save_data_writes_parquet_and_attaches_artifact(tmp_path):
     assert tree_payload["profile"]["ledger"]["entries"][-1]["artifacts"]
 
 
+def test_save_data_normalizes_mixed_object_columns_for_parquet(tmp_path):
+    sf.save.configure(root=tmp_path, session_name="messy csv notebook")
+    raw = pd.DataFrame(
+        {
+            "Street #": pd.Series(["100", 220, None], dtype=object),
+            "price": [350000, 410000, 385000],
+        }
+    )
+    scan = sf.scan(raw, name="messy_realestate")
+
+    result = scan.save_data(name="root_snapshot")
+    loaded = sf.save.load_data(result.path)
+    metadata = json.loads(result.path.with_suffix(result.path.suffix + ".json").read_text(encoding="utf-8"))
+
+    assert loaded["Street #"].tolist()[:2] == ["100", "220"]
+    assert loaded["Street #"].isna().iloc[2]
+    assert metadata["parquet_coercions"][0]["column"] == "Street #"
+
+
 def test_profile_save_shortcuts(tmp_path):
     sf.save.configure(root=tmp_path, session_name="shortcut notebook")
     scan = sf.scan(pd.DataFrame({"x": [1, 2, 3]}), name="shortcut")

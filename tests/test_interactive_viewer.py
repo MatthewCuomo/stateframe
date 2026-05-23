@@ -42,6 +42,22 @@ def test_viewer_payload_includes_rows_columns_and_column_intelligence():
     assert any(rec["lens"] == "target.balance" for rec in churn["recommendations"])
 
 
+def test_viewer_payload_keeps_cleaning_plan_opt_in():
+    df = pd.DataFrame(
+        {
+            "flag": ["Yes", "No", None],
+            "amount": [10, None, 30],
+        }
+    )
+    profile = sf.scan(df)
+
+    payload = build_viewer_payload(profile)
+    payload_with_cleaning = build_viewer_payload(profile, include_cleaning=True)
+
+    assert "cleaning" not in payload
+    assert payload_with_cleaning["cleaning"]["actions"]
+
+
 def test_apply_view_state_filters_sorts_and_reorders_dataframe():
     df = pd.DataFrame(
         {

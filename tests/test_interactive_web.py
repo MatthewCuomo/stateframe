@@ -228,6 +228,19 @@ def test_web_visualizer_renders_and_saves_plotly_leaf(tmp_path):
     assert preview["plotly_json"]["data"]
     assert preview["preview_data_url"].startswith("data:image/png;base64,")
 
+    average_spec = {
+        "kind": "bar",
+        "title": "Average segment sales",
+        "fields": {
+            "x": column_ids["segment"],
+            "y": column_ids["amount"],
+        },
+        "field_options": {"y": {"stat": "mean"}},
+    }
+    average_preview = web.render_visualizer(average_spec)
+    assert average_preview["spec"]["field_options"]["y"]["stat"] == "mean"
+    assert average_preview["plotly_json"]["layout"]["yaxis"]["title"]["text"] == "Mean of amount"
+
     scatter_spec = {
         "kind": "scatter",
         "title": "Sales scatter",

@@ -707,9 +707,11 @@ function normalizeVisualizerState(raw, payload) {
       }))
       .filter((filter) => filter.column)
     : [];
+  const fieldOptions = normalizeVisualFieldOptions(payload, definition, fields, raw?.fieldOptions || raw?.field_options || {}, raw?.options || {});
   return {
     kind,
     fields,
+    fieldOptions,
     filters,
     options: raw?.options || {},
     controlMode: ["basic", "advanced", "expert"].includes(raw?.controlMode) ? raw.controlMode : "basic",
@@ -3187,11 +3189,15 @@ function renderVisualLibrary(payload, visualState, setVisualizerState) {
       item.type = "button";
       item.className = "stateframe-web-visual-type";
       if (definition.id === visualState.kind) item.classList.add("is-selected");
-      item.addEventListener("click", () => setVisualizerState({
-        kind: definition.id,
-        fields: defaultFieldsForVisual(payload, definition),
-        options: {},
-      }));
+      item.addEventListener("click", () => {
+        const fields = defaultFieldsForVisual(payload, definition);
+        setVisualizerState({
+          kind: definition.id,
+          fields,
+          fieldOptions: defaultFieldOptionsForVisual(payload, definition, fields),
+          options: {},
+        });
+      });
       const name = document.createElement("div");
       name.className = "stateframe-web-visual-type-title";
       name.textContent = definition.title;
@@ -3230,6 +3236,7 @@ function renderVisualSuggestions(payload, visualState, setVisualizerState) {
     item.addEventListener("click", () => setVisualizerState({
       kind: spec.kind || visualState.kind,
       fields: spec.fields || {},
+      fieldOptions: spec.field_options || spec.fieldOptions || {},
       filters: Array.isArray(spec.filters) ? spec.filters : [],
       options: spec.options || {},
       title: spec.title || suggestion.title || "",
@@ -3283,6 +3290,7 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   save.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
   controls.append(title, render, save);
   panel.appendChild(controls);
+  panel.appendChild(section("Plot Recipe", renderVisualRecipe(payload, visualState)));
   panel.appendChild(renderVisualPreview(preview, commandStatus));
   const note = document.createElement("textarea");
   note.className = "stateframe-web-textarea stateframe-web-visual-note";
@@ -3292,6 +3300,56 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   note.addEventListener("input", () => setVisualizerState({ note: note.value }));
   panel.appendChild(section("Leaf Notes", note));
   return panel;
+}
+
+function renderVisualRecipe(payload, visualState) {
+  const definition = visualDefinition(payload, visualState.kind);
+  const fields = visualState.fields || {};
+  const fieldOptions = visualState.fieldOptions || {};
+  const rows = {};
+  rows.Type = definition.title || visualState.kind || "";
+  const groupParts = [];
+  for (const slot of ["x", "names", "locations", "path", "color", "facet", "facet_row", "theta"]) {
+    const value = fields[slot];
+    if (!value) continue;
+    groupParts.push(`${slot}: ${visualFieldLabel(payload, value)}`);
+  }
+  rows.Grouping = groupParts.join(" / ") || "None";
+  const measureSlot = ["y", "values", "r", "z", "size"].find((slot) => fields[slot]);
+  if (measureSlot) {
+    const stat = fieldOptions[measureSlot]?.stat || defaultFieldOptionForSlot(payload, definition, measureSlot, fields[measureSlot]).stat || "raw";
+    rows.Measure = `${visualStatLabel(stat)} ${visualFieldLabel(payload, fields[measureSlot])}`;
+  } else {
+    rows.Measure = "Record count";
+  }
+  const bucketSlot = ["x", "date"].find((slot) => fieldOptions[slot]?.bucket && fieldOptions[slot].bucket !== "none");
+  rows.Bucket = bucketSlot ? `${bucketSlot}: ${fieldOptions[bucketSlot].bucket}` : "";
+  rows.Rows = formatInt(payload.view?.row_count || 0);
+  return keyValueList(rows);
+}
+
+function visualFieldLabel(payload, value) {
+  if (Array.isArray(value)) return value.map((item) => visualFieldLabel(payload, item)).join(", ");
+  const column = (payload.columns || []).find((item) => item.id === value || item.source_name === value || item.display_name === value);
+  return column?.display_name || column?.source_name || value || "";
+}
+
+function visualStatLabel(value) {
+  return {
+    none: "Raw",
+    raw: "Raw",
+    count: "Count of",
+    sum: "Sum of",
+    mean: "Mean of",
+    median: "Median of",
+    min: "Min of",
+    max: "Max of",
+    nunique: "Distinct count of",
+    p25: "P25 of",
+    p75: "P75 of",
+    p90: "P90 of",
+    p95: "P95 of",
+  }[value] || String(value || "").replace(/_/g, " ");
 }
 
 function renderVisualPreview(preview, commandStatus = {}) {
@@ -3470,12 +3528,24 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     select.value = Array.isArray(current) ? current[0] || "" : current || "";
     select.addEventListener("change", () => {
       const next = { ...(visualState.fields || {}) };
+      const nextFieldOptions = { ...(visualState.fieldOptions || {}) };
       if (field.multiple) next[field.slot] = select.value ? [select.value] : [];
-      else if (select.value) next[field.slot] = select.value;
-      else delete next[field.slot];
-      setVisualizerState({ fields: next });
+      else if (select.value) {
+        next[field.slot] = select.value;
+        const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, select.value);
+        if (Object.keys(defaults).length) nextFieldOptions[field.slot] = { ...defaults, ...(nextFieldOptions[field.slot] || {}) };
+        else delete nextFieldOptions[field.slot];
+      } else {
+        delete next[field.slot];
+        delete nextFieldOptions[field.slot];
+      }
+      setVisualizerState({ fields: next, fieldOptions: nextFieldOptions });
     });
     row.append(label, select);
+    if (!field.multiple && current) {
+      const behavior = renderVisualFieldBehavior(payload, definition, field, visualState, setVisualizerState);
+      if (behavior) row.appendChild(behavior);
+    }
     if (field.multiple) {
       const input = document.createElement("input");
       input.className = "stateframe-web-input";
@@ -3492,6 +3562,83 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     wrap.appendChild(row);
   }
   return wrap.children.length ? wrap : empty("This visual does not require field bindings.");
+}
+
+function renderVisualFieldBehavior(payload, definition, field, visualState, setVisualizerState) {
+  const columnId = visualState.fields?.[field.slot];
+  if (!columnId) return null;
+  const current = {
+    ...defaultFieldOptionForSlot(payload, definition, field.slot, columnId),
+    ...((visualState.fieldOptions || {})[field.slot] || {}),
+  };
+  const controls = [];
+  if (visualSlotSupportsStat(definition.id, field.slot)) {
+    controls.push(visualFieldSelect("Summary", current.stat || "mean", visualStatChoices(definition.id, field.slot), (value) => {
+      updateVisualFieldOption(field.slot, { stat: value }, visualState, setVisualizerState);
+    }, `visual-field-${field.slot}-stat`));
+  }
+  const column = (payload.columns || []).find((item) => item.id === columnId);
+  if (["x", "date"].includes(field.slot) && visualColumnLooksDate(column) && ["line", "area", "bar"].includes(definition.id)) {
+    controls.push(visualFieldSelect("Bucket", current.bucket || "none", [
+      ["none", "None"],
+      ["day", "Day"],
+      ["week", "Week"],
+      ["month", "Month"],
+      ["quarter", "Quarter"],
+      ["year", "Year"],
+    ], (value) => updateVisualFieldOption(field.slot, { bucket: value }, visualState, setVisualizerState), `visual-field-${field.slot}-bucket`));
+  }
+  if (!controls.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-field-behavior";
+  wrap.append(...controls);
+  return wrap;
+}
+
+function visualFieldSelect(label, value, choices, onChange, focusKey) {
+  const wrap = document.createElement("label");
+  wrap.className = "stateframe-web-visual-field-control";
+  const text = document.createElement("span");
+  text.textContent = label;
+  const select = document.createElement("select");
+  select.className = "stateframe-web-select";
+  select.dataset.focusKey = focusKey;
+  for (const [choiceValue, choiceLabel] of choices) {
+    const option = document.createElement("option");
+    option.value = choiceValue;
+    option.textContent = choiceLabel;
+    select.appendChild(option);
+  }
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+  wrap.append(text, select);
+  return wrap;
+}
+
+function visualStatChoices(kind, slot) {
+  const base = [
+    ["count", "Record count"],
+    ["sum", "Sum"],
+    ["mean", "Mean"],
+    ["median", "Median"],
+    ["min", "Min"],
+    ["max", "Max"],
+    ["nunique", "Distinct count"],
+    ["p25", "P25"],
+    ["p75", "P75"],
+    ["p90", "P90"],
+    ["p95", "P95"],
+  ];
+  if (["line", "area", "bar", "lollipop", "slope", "bump_chart", "radar"].includes(kind)) {
+    return [["none", "Raw values"], ...base];
+  }
+  return base;
+}
+
+function updateVisualFieldOption(slot, patch, visualState, setVisualizerState) {
+  const fieldOptions = { ...(visualState.fieldOptions || {}) };
+  fieldOptions[slot] = { ...(fieldOptions[slot] || {}), ...patch };
+  setVisualizerState({ fieldOptions });
 }
 
 function renderVisualColumns(payload, definition, visualState, setVisualizerState) {
@@ -3670,15 +3817,20 @@ function visualControlApplies(control, group, definition, visualState, payload) 
     return Boolean(fields.color || slots.has("color") || definition.family === "Geographic" || definition.family === "Matrix");
   }
   if (["date_bucket", "rolling_window", "rolling_stat", "cumulative"].includes(id)) {
+    if (id === "date_bucket" && fields.x) return false;
     const xColumn = fields.x;
     const column = (payload.columns || []).find((item) => item.id === xColumn);
     const type = String(column?.semantic_type || column?.dtype || "").toLowerCase();
     return Boolean(fields.x && (type.includes("date") || type.includes("time") || ["line", "area", "bar"].includes(definition.id)));
   }
+  if (id === "calendar_aggregation" && fields.values && visualSlotSupportsStat(definition.id, "values")) return false;
   if (["top_n", "top_n_direction", "top_n_mode", "other_label", "include_missing_category", "missing_category_label"].includes(id)) {
     return Boolean(fields.x || fields.names || fields.path || fields.locations || definition.id === "missingness");
   }
   if (["sample_rows", "sample_method", "sample_seed", "dedupe_rows"].includes(id)) return true;
+  if (id === "aggregation" && visualHasMeasureBehavior(definition, fields)) {
+    return false;
+  }
   if (["aggregation", "value_transform", "sort_by"].includes(id)) {
     return Boolean(fields.x || fields.y || fields.values || fields.names || fields.path || definition.id === "missingness");
   }
@@ -3686,6 +3838,10 @@ function visualControlApplies(control, group, definition, visualState, payload) 
     return Boolean(fields.x || fields.y || fields.values || fields.r);
   }
   return true;
+}
+
+function visualHasMeasureBehavior(definition, fields) {
+  return ["y", "values", "r", "z"].some((slot) => fields?.[slot] && visualSlotSupportsStat(definition.id, slot));
 }
 
 function visualOptionGroupDefaultOpen(group, visualState) {
@@ -4322,6 +4478,7 @@ function buildVisualSpec(payload, state) {
     title: state.title || "",
     note: state.note || "",
     fields: cleanObject(state.fields || {}),
+    field_options: cleanObject(state.fieldOptions || {}),
     filters: (state.filters || []).filter((filter) => filter?.column && filter?.op),
     options: cleanObject(state.options || {}),
   };
@@ -4376,6 +4533,85 @@ function defaultVisualColumn(payload, definition, field = null, used = new Set()
   if (["histogram", "box", "violin", "strip", "ecdf", "scatter", "density_heatmap", "density_contour", "line", "area"].includes(definition?.id) && numeric) return numeric.id;
   if (["bar", "pie", "treemap", "sunburst", "parallel_categories"].includes(definition?.id) && categorical) return categorical.id;
   return pool[0].id || null;
+}
+
+function normalizeVisualFieldOptions(payload, definition, fields, rawOptions, legacyOptions = {}) {
+  const result = {};
+  const raw = rawOptions && typeof rawOptions === "object" && !Array.isArray(rawOptions) ? rawOptions : {};
+  for (const field of definition.fields || []) {
+    const value = fields?.[field.slot];
+    if (!value || field.multiple) continue;
+    const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, value);
+    const current = raw[field.slot] && typeof raw[field.slot] === "object" && !Array.isArray(raw[field.slot])
+      ? raw[field.slot]
+      : {};
+    if (!Object.keys(current).length && defaults.stat && legacyOptions?.aggregation && visualSlotSupportsStat(definition.id, field.slot)) {
+      current.stat = legacyOptions.aggregation;
+    }
+    if (!Object.keys(current).length && defaults.bucket && legacyOptions?.date_bucket && ["x", "date"].includes(field.slot)) {
+      current.bucket = legacyOptions.date_bucket;
+    }
+    const merged = { ...defaults, ...current };
+    if (Object.keys(merged).length) result[field.slot] = merged;
+  }
+  return result;
+}
+
+function defaultFieldOptionsForVisual(payload, definition, fields) {
+  const result = {};
+  for (const field of definition.fields || []) {
+    const value = fields?.[field.slot];
+    if (!value || field.multiple) continue;
+    const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, value);
+    if (Object.keys(defaults).length) result[field.slot] = defaults;
+  }
+  return result;
+}
+
+function defaultFieldOptionForSlot(payload, definition, slot, columnId) {
+  const options = {};
+  const column = (payload?.columns || []).find((item) => item.id === columnId);
+  const kind = definition?.id || "";
+  if (["y", "values", "r", "z"].includes(slot) && visualSlotSupportsStat(kind, slot)) {
+    options.stat = defaultVisualStat(column, kind, slot);
+  }
+  if (["x", "date"].includes(slot) && visualColumnLooksDate(column) && ["line", "area", "bar"].includes(kind)) {
+    options.bucket = "none";
+  }
+  return options;
+}
+
+function visualSlotSupportsStat(kind, slot) {
+  if (["scatter", "box", "violin", "strip", "ecdf", "histogram", "scatter_matrix", "parallel_coordinates", "parallel_categories", "pca_scatter", "qq_plot", "autocorrelation"].includes(kind)) {
+    return false;
+  }
+  if (slot === "z") return kind === "heatmap";
+  if (slot === "values") return ["pie", "treemap", "sunburst", "choropleth", "calendar_heatmap"].includes(kind);
+  if (slot === "r") return kind === "radar";
+  if (slot === "y") return ["line", "area", "bar", "lollipop", "slope", "bump_chart", "pareto", "waterfall", "funnel"].includes(kind);
+  return false;
+}
+
+function defaultVisualStat(column, kind, slot) {
+  if (!column) return slot === "values" && kind === "pie" ? "count" : "mean";
+  const name = String(column.source_name || column.display_name || column.id || "").toLowerCase();
+  const semantic = String(column.semantic_type || "").toLowerCase();
+  if (kind === "pie" && slot === "values" && !visualColumnLooksNumeric(column)) return "count";
+  if (semantic.includes("percentage") || semantic.includes("proportion") || name.includes("rate") || name.includes("ratio")) return "mean";
+  if (["price", "score", "percent", "sqft", "square_foot", "bed", "bath"].some((token) => name.includes(token))) return "mean";
+  if (["revenue", "volume", "total", "amount", "qty", "quantity", "count"].some((token) => name.includes(token))) return "sum";
+  if (["amount", "nonnegative_amount"].includes(semantic)) return "sum";
+  return "mean";
+}
+
+function visualColumnLooksNumeric(column) {
+  const text = `${column?.semantic_type || ""} ${column?.dtype || ""}`.toLowerCase();
+  return ["numeric", "amount", "int", "float", "double", "decimal", "percentage", "proportion"].some((token) => text.includes(token));
+}
+
+function visualColumnLooksDate(column) {
+  const text = `${column?.semantic_type || ""} ${column?.dtype || ""}`.toLowerCase();
+  return text.includes("date") || text.includes("time");
 }
 
 function updateVisualFilter(index, patch, state, setVisualizerState) {

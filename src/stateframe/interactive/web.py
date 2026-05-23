@@ -2475,6 +2475,15 @@ def _visual_recommendations_for_payload(
             key: resolve(value)
             for key, value in dict(spec.get("fields") or {}).items()
         }
+        field_options = {}
+        for slot, values in dict(spec.get("field_options") or {}).items():
+            if not isinstance(values, dict):
+                continue
+            field_options[str(slot)] = {
+                key: resolve(value) if key in {"weight", "column"} else value
+                for key, value in values.items()
+            }
+        spec["field_options"] = field_options
         filters = []
         for filter_spec in spec.get("filters") or []:
             if not isinstance(filter_spec, dict):
@@ -2661,6 +2670,7 @@ def _initial_visualizer_state(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "kind": kind,
         "fields": fields,
+        "fieldOptions": {},
         "filters": [],
         "options": {},
         "title": "",
@@ -2684,6 +2694,7 @@ def _spec_from_visualizer_state(state: dict[str, Any]) -> dict[str, Any]:
         "title": state.get("title") or "",
         "note": state.get("note") or "",
         "fields": dict(state.get("fields") or {}),
+        "field_options": dict(state.get("fieldOptions") or state.get("field_options") or {}),
         "filters": list(state.get("filters") or []),
         "options": dict(state.get("options") or {}),
     }
@@ -2723,6 +2734,15 @@ def _resolve_visual_spec_columns(
         key: resolve(value)
         for key, value in dict(spec.get("fields") or {}).items()
     }
+    field_options = {}
+    for slot, values in dict(spec.get("field_options") or {}).items():
+        if not isinstance(values, dict):
+            continue
+        resolved_values = {
+            key: resolve(value) if key in {"weight", "column"} else value
+            for key, value in values.items()
+        }
+        field_options[str(slot)] = resolved_values
     filters = []
     for filter_spec in spec.get("filters") or []:
         if not isinstance(filter_spec, dict):
@@ -2734,6 +2754,7 @@ def _resolve_visual_spec_columns(
     return {
         **spec,
         "fields": fields,
+        "field_options": field_options,
         "filters": filters,
     }
 

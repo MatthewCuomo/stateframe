@@ -1903,6 +1903,21 @@
   font-weight: 800;
 }
 
+.stateframe-web-visual-field-behavior {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 6px;
+}
+
+.stateframe-web-visual-field-control {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .stateframe-web-visual-column {
   display: grid;
   gap: 6px;

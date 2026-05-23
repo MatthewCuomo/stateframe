@@ -242,6 +242,95 @@ def test_visualizer_supports_weighted_and_percentile_aggregations():
     assert list(percentile.data[0].y) == [19.0, 190.0]
 
 
+def test_visualizer_field_options_control_measure_behavior_over_time():
+    df = pd.DataFrame(
+        {
+            "sold_date": pd.to_datetime(["2025-01-05", "2025-01-20", "2025-02-01", "2025-02-10"]),
+            "sold_price": [100_000, 200_000, 300_000, 500_000],
+        }
+    )
+
+    average = sf.visualize(
+        df,
+        {
+            "kind": "line",
+            "fields": {"x": "sold_date", "y": "sold_price"},
+            "field_options": {"x": {"bucket": "month"}, "y": {"stat": "mean"}},
+        },
+    )
+    total = sf.visualize(
+        df,
+        {
+            "kind": "line",
+            "fields": {"x": "sold_date", "y": "sold_price"},
+            "field_options": {"x": {"bucket": "month"}, "y": {"stat": "sum"}},
+        },
+    )
+
+    assert list(average.data[0].y) == [150_000, 400_000]
+    assert list(total.data[0].y) == [300_000, 800_000]
+    assert average.layout.yaxis.title.text == "Mean of sold_price"
+
+
+def test_visualizer_field_options_control_pie_slice_values():
+    df = pd.DataFrame(
+        {
+            "county": ["A", "A", "B", "B"],
+            "sold_price": [100_000, 200_000, 300_000, 500_000],
+            "owner": ["Ada", "Grace", "Ada", "Linus"],
+        }
+    )
+
+    average = sf.visualize(
+        df,
+        {
+            "kind": "pie",
+            "fields": {"names": "county", "values": "sold_price"},
+            "field_options": {"values": {"stat": "mean"}},
+            "options": {"sort_by": "x_ascending"},
+        },
+    )
+    distinct = sf.visualize(
+        df,
+        {
+            "kind": "pie",
+            "fields": {"names": "county", "values": "owner"},
+            "field_options": {"values": {"stat": "nunique"}},
+            "options": {"sort_by": "x_ascending"},
+        },
+    )
+    count = sf.visualize(
+        df,
+        {
+            "kind": "pie",
+            "fields": {"names": "county", "values": "sold_price"},
+            "field_options": {"values": {"stat": "count"}},
+            "options": {"sort_by": "x_ascending"},
+        },
+    )
+
+    assert list(average.data[0].labels) == ["A", "B"]
+    assert list(average.data[0].values) == [150_000, 400_000]
+    assert list(distinct.data[0].values) == [2, 2]
+    assert list(count.data[0].values) == [2, 2]
+
+
+def test_visualizer_recommends_average_price_over_time():
+    df = pd.DataFrame(
+        {
+            "sold_date": pd.date_range("2025-01-01", periods=120, freq="D"),
+            "sold_price": [250_000 + (index % 20) * 5_000 for index in range(120)],
+            "county": ["A", "B", "C", "D"] * 30,
+        }
+    )
+
+    suggestions = sf.scan(df, time="sold_date").visual_recommendations(limit=12)
+    line = next(item for item in suggestions if item.spec.kind == "line" and item.spec.fields.get("y") == "sold_price")
+
+    assert line.spec.field_options["y"]["stat"] == "mean"
+    assert "Average sold_price" in line.title
+
+
 def test_visualizer_supports_labels_range_slider_and_facet_axis_controls():
     df = pd.DataFrame(
         {

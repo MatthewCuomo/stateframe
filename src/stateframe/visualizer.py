@@ -39,6 +39,7 @@ class VisualSpec:
 
     kind: str
     fields: dict[str, Any] = field(default_factory=dict)
+    field_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     filters: list[dict[str, Any]] = field(default_factory=list)
     options: dict[str, Any] = field(default_factory=dict)
     title: str = ""
@@ -54,6 +55,7 @@ class VisualSpec:
             "title": self.title,
             "note": self.note,
             "fields": _json_safe(self.fields),
+            "field_options": _json_safe(self.field_options),
             "filters": _json_safe(self.filters),
             "options": _json_safe(self.options),
         }
@@ -140,6 +142,11 @@ def normalize_visual_spec(spec: VisualSpec | dict[str, Any]) -> VisualSpec:
             for key, value in dict(spec.get("fields") or {}).items()
             if value is not None and value != "" and value != []
         },
+        field_options={
+            str(key): dict(value)
+            for key, value in dict(spec.get("field_options") or spec.get("fieldOptions") or {}).items()
+            if isinstance(value, dict)
+        },
         filters=list(spec.get("filters") or []),
         options=dict(spec.get("options") or {}),
         version=int(spec.get("version") or 1),
@@ -212,6 +219,8 @@ def build_visual_artifact(
         "filter_count": len(spec_obj.filters),
         "sample_rows": int(spec_obj.options.get("sample_rows") or 0),
         "sample_method": str(spec_obj.options.get("sample_method") or ""),
+        "field_options": _json_safe(spec_obj.field_options),
+        "visual_recipe": _visual_recipe_summary(spec_obj),
     }
     return artifact, summary, _visual_code(spec_obj)
 
@@ -278,6 +287,7 @@ def _safe_render_spec(frame: pd.DataFrame, spec: VisualSpec) -> VisualSpec:
     return VisualSpec(
         kind=spec.kind,
         fields=dict(spec.fields),
+        field_options={key: dict(value) for key, value in (spec.field_options or {}).items()},
         filters=list(spec.filters),
         options=options,
         title=spec.title,
@@ -327,6 +337,7 @@ class _VisualRecommendationBuilder:
         score: float,
         fields: dict[str, Any],
         options: dict[str, Any] | None = None,
+        field_options: dict[str, dict[str, Any]] | None = None,
         family: str = "",
         columns: list[str] | None = None,
     ) -> None:
@@ -334,7 +345,13 @@ class _VisualRecommendationBuilder:
         if key in self._seen:
             return
         self._seen.add(key)
-        spec = VisualSpec(kind=kind, title=title, fields=fields, options=options or {})
+        spec = VisualSpec(
+            kind=kind,
+            title=title,
+            fields=fields,
+            field_options=field_options or {},
+            options=options or {},
+        )
         self.recommendations.append(
             VisualRecommendation(
                 id=f"visual.{kind}.{len(self.recommendations) + 1}",
@@ -410,23 +427,25 @@ class _VisualRecommendationBuilder:
         measures = self._preferred_measures()[:4] or self.numeric[:4]
         for measure in measures:
             bucket = _date_bucket_for_profile(self.profile.data, time)
+            stat = _default_measure_stat(measure)
             self._add(
                 kind="line",
-                title=f"{measure.name} over {time}",
+                title=f"{_stat_title(stat)} {measure.name} over {time}",
                 reason="A date-like column and numeric measure support a trend view.",
                 score=0.9 if self.profile.time == time else 0.84,
                 fields={"x": time, "y": measure.name},
-                options={"aggregation": "sum" if _measure_sums_well(measure.semantic_type) else "mean", "date_bucket": bucket, "markers": False},
+                field_options={"x": {"bucket": bucket}, "y": {"stat": stat}},
+                options={"markers": False},
                 family="Time and sequence",
                 columns=[time, measure.name],
             )
             self._add(
                 kind="calendar_heatmap",
-                title=f"{measure.name} calendar intensity",
+                title=f"{_stat_title(stat)} {measure.name} calendar intensity",
                 reason="A date-like column and numeric measure support day-level calendar intensity analysis.",
                 score=0.72,
                 fields={"date": time, "values": measure.name},
-                options={"calendar_aggregation": "sum" if _measure_sums_well(measure.semantic_type) else "mean"},
+                field_options={"date": {"bucket": "day"}, "values": {"stat": stat}},
                 family="Time and sequence",
                 columns=[time, measure.name],
             )
@@ -434,13 +453,14 @@ class _VisualRecommendationBuilder:
             category = self._low_cardinality_categories(max_unique=12)[:1]
             if category:
                 measure = measures[0]
+                stat = _default_measure_stat(measure)
                 self._add(
                     kind="area",
-                    title=f"{measure.name} over {time} by {category[0].name}",
+                    title=f"{_stat_title(stat)} {measure.name} over {time} by {category[0].name}",
                     reason="A time axis, measure, and low-cardinality category support a composition trend.",
                     score=0.78,
                     fields={"x": time, "y": measure.name, "color": category[0].name},
-                    options={"aggregation": "sum" if _measure_sums_well(measure.semantic_type) else "mean", "date_bucket": _date_bucket_for_profile(self.profile.data, time)},
+                    field_options={"x": {"bucket": _date_bucket_for_profile(self.profile.data, time)}, "y": {"stat": stat}},
                     family="Time and sequence",
                     columns=[time, measure.name, category[0].name],
                 )
@@ -450,7 +470,7 @@ class _VisualRecommendationBuilder:
                     reason="A time axis, category, and measure can show rank movement as a bump chart.",
                     score=0.69,
                     fields={"x": time, "y": measure.name, "color": category[0].name},
-                    options={"aggregation": "sum" if _measure_sums_well(measure.semantic_type) else "mean", "date_bucket": _date_bucket_for_profile(self.profile.data, time)},
+                    field_options={"x": {"bucket": _date_bucket_for_profile(self.profile.data, time)}, "y": {"stat": stat}},
                     family="Comparison",
                     columns=[time, measure.name, category[0].name],
                 )
@@ -462,24 +482,26 @@ class _VisualRecommendationBuilder:
             for measure in measures[:2]:
                 if category.name == measure.name:
                     continue
-                aggregation = "sum" if _measure_sums_well(measure.semantic_type) else "mean"
+                aggregation = _default_measure_stat(measure)
                 self._add(
                     kind="bar",
-                    title=f"{measure.name} by {category.name}",
+                    title=f"{_stat_title(aggregation)} {measure.name} by {category.name}",
                     reason="A category and measure support an aggregate comparison.",
                     score=0.84,
                     fields={"x": category.name, "y": measure.name},
-                    options={"aggregation": aggregation, "top_n": 20, "top_n_mode": "other", "sort_by": "y_descending", "show_value_labels": True},
+                    field_options={"y": {"stat": aggregation}},
+                    options={"top_n": 20, "top_n_mode": "other", "sort_by": "y_descending", "show_value_labels": True},
                     family="Comparison",
                     columns=[category.name, measure.name],
                 )
                 self._add(
                     kind="lollipop",
-                    title=f"{measure.name} lollipop by {category.name}",
+                    title=f"{_stat_title(aggregation)} {measure.name} lollipop by {category.name}",
                     reason="A lollipop chart gives a lean ranked comparison for category values.",
                     score=0.76,
                     fields={"x": category.name, "y": measure.name},
-                    options={"aggregation": aggregation, "top_n": 20, "sort_by": "y_descending"},
+                    field_options={"y": {"stat": aggregation}},
+                    options={"top_n": 20, "sort_by": "y_descending"},
                     family="Comparison",
                     columns=[category.name, measure.name],
                 )
@@ -489,7 +511,8 @@ class _VisualRecommendationBuilder:
                     reason="A Pareto view shows which categories drive cumulative contribution.",
                     score=0.79,
                     fields={"x": category.name, "y": measure.name},
-                    options={"aggregation": aggregation, "pareto_threshold": 80},
+                    field_options={"y": {"stat": aggregation}},
+                    options={"pareto_threshold": 80},
                     family="Comparison",
                     columns=[category.name, measure.name],
                 )
@@ -556,12 +579,14 @@ class _VisualRecommendationBuilder:
         if measures:
             fields["values"] = measures[0].name
             columns.append(measures[0].name)
+        field_options = {"values": {"stat": _default_measure_stat(measures[0])}} if measures else {"values": {"stat": "count"}}
         self._add(
             kind="treemap",
             title=f"{' / '.join(fields['path'])} composition",
             reason="Two categorical levels can be read as a hierarchy or nested composition.",
             score=0.73,
             fields=fields,
+            field_options=field_options,
             options={"top_n": 30},
             family="Composition",
             columns=columns,
@@ -572,6 +597,7 @@ class _VisualRecommendationBuilder:
             reason="Nested categories can also be inspected as a radial hierarchy.",
             score=0.68,
             fields=fields,
+            field_options=field_options,
             options={"top_n": 30},
             family="Composition",
             columns=columns,
@@ -611,12 +637,14 @@ class _VisualRecommendationBuilder:
         ]
         measures = self._preferred_measures()
         if locations and measures:
+            stat = _default_measure_stat(measures[0])
             self._add(
                 kind="choropleth",
-                title=f"{measures[0].name} by {locations[0].name}",
+                title=f"{_stat_title(stat)} {measures[0].name} by {locations[0].name}",
                 reason="A location-like code and numeric measure support a choropleth.",
                 score=0.72,
                 fields={"locations": locations[0].name, "values": measures[0].name},
+                field_options={"values": {"stat": stat}},
                 options=_choropleth_options(locations[0].name),
                 family="Geographic",
                 columns=[locations[0].name, measures[0].name],
@@ -925,13 +953,21 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
         if not path and x:
             path = [x]
         values = _field_value(fields.get("values")) or y
-        fig = px.treemap(data, path=path, values=values, color=color, **common_without_color)
+        plot_data, resolved_values = _prepare_hierarchy_data(data, path, values, options)
+        layout_data = plot_data
+        layout_x = path[0] if path else None
+        layout_y = resolved_values
+        fig = px.treemap(plot_data, path=path, values=resolved_values, color=color, **common_without_color)
     elif kind == "sunburst":
         path = _field_values(fields.get("path"))
         if not path and x:
             path = [x]
         values = _field_value(fields.get("values")) or y
-        fig = px.sunburst(data, path=path, values=values, color=color, **common_without_color)
+        plot_data, resolved_values = _prepare_hierarchy_data(data, path, values, options)
+        layout_data = plot_data
+        layout_x = path[0] if path else None
+        layout_y = resolved_values
+        fig = px.sunburst(plot_data, path=path, values=resolved_values, color=color, **common_without_color)
     elif kind == "geo_scatter":
         lat = _field_value(fields.get("lat"))
         lon = _field_value(fields.get("lon"))
@@ -954,10 +990,14 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
     elif kind == "choropleth":
         locations = _field_value(fields.get("locations"))
         values = _field_value(fields.get("values")) or y
+        plot_data, resolved_values = _prepare_location_aggregation(data, locations, values, options)
+        layout_data = plot_data
+        layout_x = locations
+        layout_y = resolved_values
         fig = px.choropleth(
-            data,
+            plot_data,
             locations=locations,
-            color=values,
+            color=resolved_values,
             hover_name=text,
             hover_data=hover or None,
             locationmode=options.get("locationmode") or "USA-states",
@@ -1109,7 +1149,7 @@ def _prepare_xy_aggregation(
 ) -> pd.DataFrame:
     if not x:
         return data
-    aggregation = str(options.get("aggregation") or "none")
+    aggregation = _aggregation_option(options)
     if aggregation == "none" and y:
         result = _top_n(data, x, options, value_column=y)
         result = _apply_value_transform(result, y=y, group_cols=[color, facet], options=options)
@@ -1122,16 +1162,15 @@ def _prepare_xy_aggregation(
     if aggregation == "count" or not y:
         result = data.groupby(group_cols, dropna=False).size().reset_index(name="value")
         options["_resolved_y"] = "value"
+        options["_resolved_y_label"] = "Record count"
     elif aggregation == "weighted_mean" and weight and weight in data.columns:
         result = _weighted_mean(data, group_cols=group_cols, y=y, weight=weight)
         options["_resolved_y"] = y
-    elif aggregation in {"p25", "p75", "p90", "p95"}:
-        quantile = {"p25": 0.25, "p75": 0.75, "p90": 0.9, "p95": 0.95}[aggregation]
-        result = data.groupby(group_cols, dropna=False)[y].quantile(quantile).reset_index()
-        options["_resolved_y"] = y
+        options["_resolved_y_label"] = _measure_label(y, aggregation)
     else:
-        result = data.groupby(group_cols, dropna=False)[y].agg(aggregation).reset_index()
+        result = _aggregate_grouped_values(data, group_cols=group_cols, value=y, aggregation=aggregation)
         options["_resolved_y"] = y
+        options["_resolved_y_label"] = _measure_label(y, aggregation)
     resolved_y = _resolved_y(y, options)
     result = _top_n(result, x, options, value_column=resolved_y)
     result = _apply_value_transform(result, y=resolved_y, group_cols=[color, facet], options=options)
@@ -1360,15 +1399,71 @@ def _prepare_pie_data(
     if not names:
         return data, values
     if values and values in data.columns:
-        aggregation = str(options.get("aggregation") or "sum")
-        result = data.groupby(names, dropna=False)[values].agg(aggregation).reset_index()
-        result = _top_n(result, names, options, value_column=values)
-        result = _apply_value_transform(result, y=values, group_cols=[], options=options)
-        return _sort_visual_data(result, x=names, y=values, options=options), values
+        aggregation = _aggregation_option(options, default="sum")
+        if aggregation == "none":
+            aggregation = "sum"
+        if aggregation == "count":
+            result = data.groupby(names, dropna=False).size().reset_index(name="value")
+            resolved_values = "value"
+        else:
+            result = _aggregate_grouped_values(data, group_cols=[names], value=values, aggregation=aggregation)
+            resolved_values = values
+        options["_resolved_y"] = resolved_values
+        options["_resolved_y_label"] = _measure_label(values, aggregation)
+        result = _top_n(result, names, options, value_column=resolved_values)
+        result = _apply_value_transform(result, y=resolved_values, group_cols=[], options=options)
+        return _sort_visual_data(result, x=names, y=resolved_values, options=options), resolved_values
     result = data.groupby(names, dropna=False).size().reset_index(name="value")
+    options["_resolved_y"] = "value"
+    options["_resolved_y_label"] = "Record count"
     result = _top_n(result, names, options, value_column="value")
     result = _apply_value_transform(result, y="value", group_cols=[], options=options)
     return _sort_visual_data(result, x=names, y="value", options=options), "value"
+
+
+def _prepare_location_aggregation(
+    data: pd.DataFrame,
+    locations: str | None,
+    values: str | None,
+    options: dict[str, Any],
+) -> tuple[pd.DataFrame, str | None]:
+    if not locations or locations not in data.columns:
+        return data, values
+    aggregation = _aggregation_option(options, default="sum")
+    if not values or values not in data.columns or aggregation == "count":
+        result = data.groupby(locations, dropna=False).size().reset_index(name="value")
+        options["_resolved_y"] = "value"
+        options["_resolved_y_label"] = "Record count"
+        return result, "value"
+    if aggregation == "none":
+        aggregation = "sum"
+    result = _aggregate_grouped_values(data, group_cols=[locations], value=values, aggregation=aggregation)
+    options["_resolved_y"] = values
+    options["_resolved_y_label"] = _measure_label(values, aggregation)
+    return result, values
+
+
+def _prepare_hierarchy_data(
+    data: pd.DataFrame,
+    path: list[str],
+    values: str | None,
+    options: dict[str, Any],
+) -> tuple[pd.DataFrame, str | None]:
+    group_cols = [column for column in path if column in data.columns]
+    if not group_cols:
+        return data, values
+    aggregation = _aggregation_option(options, default="sum")
+    if not values or values not in data.columns or aggregation == "count":
+        result = data.groupby(group_cols, dropna=False).size().reset_index(name="value")
+        options["_resolved_y"] = "value"
+        options["_resolved_y_label"] = "Record count"
+        return result, "value"
+    if aggregation == "none":
+        aggregation = "sum"
+    result = _aggregate_grouped_values(data, group_cols=group_cols, value=values, aggregation=aggregation)
+    options["_resolved_y"] = values
+    options["_resolved_y_label"] = _measure_label(values, aggregation)
+    return result, values
 
 
 def _heatmap_figure(
@@ -1386,14 +1481,30 @@ def _heatmap_figure(
     template = options.get("template") or "plotly_white"
     if x and y:
         if z and z in data.columns:
-            aggregation = str(options.get("aggregation") or "mean")
-            matrix = data.pivot_table(index=y, columns=x, values=z, aggfunc=aggregation)
+            aggregation = _aggregation_option(options, default="mean")
+            if aggregation == "none":
+                aggregation = "mean"
+            matrix_data = (
+                data.assign(**{z: pd.to_numeric(data[z], errors="coerce")})
+                if aggregation in {"sum", "mean", "median", "std", "var", "p25", "p75", "p90", "p95"}
+                else data
+            )
+            matrix = matrix_data.pivot_table(index=y, columns=x, values=z, aggfunc=_pivot_aggfunc(aggregation))
         else:
             matrix = data.pivot_table(index=y, columns=x, aggfunc="size", fill_value=0)
         return px.imshow(matrix, aspect="auto", color_continuous_scale=options.get("color_scale") or "Viridis", title=title, height=height, template=template)
     numeric = data[_numeric_columns(data)]
     corr = numeric.corr() if numeric.shape[1] >= 2 else pd.DataFrame()
     return px.imshow(corr, aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, title=title, height=height, template=template)
+
+
+def _pivot_aggfunc(aggregation: str) -> str | Any:
+    if aggregation in {"p25", "p75", "p90", "p95"}:
+        quantile = {"p25": 0.25, "p75": 0.75, "p90": 0.9, "p95": 0.95}[aggregation]
+        return lambda values: values.quantile(quantile)
+    if aggregation in {"sum", "mean", "median", "min", "max", "std", "var", "count", "nunique"}:
+        return aggregation
+    return "mean"
 
 
 def _correlation_heatmap_figure(
@@ -1777,9 +1888,14 @@ def _calendar_heatmap_figure(
         frame = frame[frame[date].dt.year == selected_year]
     if values and values in frame.columns:
         frame["_calendar_value"] = pd.to_numeric(frame[values], errors="coerce")
-        aggregation = str(options.get("calendar_aggregation") or options.get("aggregation") or "sum")
-        if aggregation in {"mean", "median", "min", "max"}:
+        aggregation = _normalize_aggregation(options.get("calendar_aggregation") or options.get("aggregation")) or "sum"
+        if aggregation == "count":
+            daily = frame.groupby(frame[date].dt.date).size().rename("value")
+        elif aggregation in {"mean", "median", "min", "max", "std", "var", "nunique"}:
             daily = getattr(frame.groupby(frame[date].dt.date)["_calendar_value"], aggregation)()
+        elif aggregation in {"p25", "p75", "p90", "p95"}:
+            quantile = {"p25": 0.25, "p75": 0.75, "p90": 0.9, "p95": 0.95}[aggregation]
+            daily = frame.groupby(frame[date].dt.date)["_calendar_value"].quantile(quantile)
         else:
             daily = frame.groupby(frame[date].dt.date)["_calendar_value"].sum()
     else:
@@ -1948,6 +2064,29 @@ def _weighted_mean(data: pd.DataFrame, *, group_cols: list[str], y: str, weight:
     return grouped.drop(columns=["_stateframe_weighted_sum", "_stateframe_weight_sum"])
 
 
+def _aggregate_grouped_values(
+    data: pd.DataFrame,
+    *,
+    group_cols: list[str],
+    value: str,
+    aggregation: str,
+) -> pd.DataFrame:
+    numeric_aggregations = {"sum", "mean", "median", "std", "var", "p25", "p75", "p90", "p95"}
+    working = data
+    if aggregation in numeric_aggregations:
+        working = data.assign(**{value: pd.to_numeric(data[value], errors="coerce")})
+    if aggregation in {"p25", "p75", "p90", "p95"}:
+        quantile = {"p25": 0.25, "p75": 0.75, "p90": 0.9, "p95": 0.95}[aggregation]
+        return working.groupby(group_cols, dropna=False)[value].quantile(quantile).reset_index()
+    if aggregation == "sum":
+        return working.groupby(group_cols, dropna=False)[value].sum(min_count=1).reset_index()
+    if aggregation in {"mean", "median", "std", "var"}:
+        return working.groupby(group_cols, dropna=False)[value].agg(aggregation).reset_index()
+    if aggregation in {"min", "max", "nunique"}:
+        return working.groupby(group_cols, dropna=False)[value].agg(aggregation).reset_index()
+    return working.groupby(group_cols, dropna=False)[value].agg("mean").reset_index()
+
+
 def _apply_layout_options(
     fig: Any,
     options: dict[str, Any],
@@ -1979,6 +2118,8 @@ def _apply_layout_options(
         fig.update_xaxes(title=str(options["x_label"]))
     if options.get("y_label"):
         fig.update_yaxes(title=str(options["y_label"]))
+    elif options.get("_resolved_y_label"):
+        fig.update_yaxes(title=str(options["_resolved_y_label"]))
     y_min = options.get("y_min")
     y_max = options.get("y_max")
     if y_min not in {None, ""} or y_max not in {None, ""}:
@@ -2130,10 +2271,10 @@ def _matplotlib_preview_data_url(frame: pd.DataFrame, spec: VisualSpec, title: s
 
     try:
         options = _resolved_options(spec)
-        data = frame
         x = _field_value(spec.fields.get("x"))
         y = _field_value(spec.fields.get("y"))
         color = _field_value(spec.fields.get("color"))
+        data = _apply_data_options(frame, x=x, y=y, options=options)
         fig, ax = plt.subplots(figsize=(7.2, 4.4), dpi=120)
         kind = spec.kind
         if kind == "histogram" and x and x in data.columns:
@@ -2146,7 +2287,12 @@ def _matplotlib_preview_data_url(frame: pd.DataFrame, spec: VisualSpec, title: s
                 ax.bar(counts.index.astype(str), counts.values, color="#2563eb", alpha=0.82)
                 ax.tick_params(axis="x", rotation=35)
         elif kind in {"scatter", "line"} and x and y and x in data.columns and y in data.columns:
-            plot_data = data[[x, y, *([color] if color and color in data.columns else [])]].dropna(subset=[x, y])
+            plot_data = (
+                _prepare_xy_aggregation(data, x=x, y=y, color=color, facet=None, weight=None, options=options)
+                if kind == "line" and _aggregation_option(options) != "none"
+                else data[[x, y, *([color] if color and color in data.columns else [])]].dropna(subset=[x, y])
+            )
+            y = _resolved_y(y, options) or y
             plot_data = plot_data.sort_values(x)
             x_values = _matplotlib_axis_values(plot_data[x])
             y_values = pd.to_numeric(plot_data[y], errors="coerce")
@@ -2218,7 +2364,34 @@ def _resolved_options(spec: VisualSpec) -> dict[str, Any]:
             if "default" in control:
                 options[control["id"]] = control["default"]
     options.update(spec.options or {})
+    _apply_field_options(spec, options)
     return options
+
+
+def _apply_field_options(spec: VisualSpec, options: dict[str, Any]) -> None:
+    field_options = {
+        str(slot): dict(values)
+        for slot, values in (spec.field_options or {}).items()
+        if isinstance(values, dict)
+    }
+    if not field_options:
+        return
+    options["_field_options"] = field_options
+    x_bucket = field_options.get("x", {}).get("bucket")
+    if x_bucket not in {None, "", "none"}:
+        options["date_bucket"] = x_bucket
+    date_bucket = field_options.get("date", {}).get("bucket")
+    if date_bucket not in {None, "", "none"}:
+        options["calendar_bucket"] = date_bucket
+    for slot in ("y", "values", "r", "z", "size"):
+        stat = _normalize_aggregation(field_options.get(slot, {}).get("stat"))
+        if stat is None:
+            continue
+        if spec.kind == "calendar_heatmap" and slot == "values":
+            options["calendar_aggregation"] = stat
+        elif slot in {"y", "values", "r", "z", "size"}:
+            options["aggregation"] = stat
+        options[f"_{slot}_stat"] = stat
 
 
 def _default_title(definition: dict[str, Any], spec: VisualSpec) -> str:
@@ -2228,6 +2401,102 @@ def _default_title(definition: dict[str, Any], spec: VisualSpec) -> str:
 
 def _resolved_y(y: str | None, options: dict[str, Any]) -> str | None:
     return options.get("_resolved_y") or y
+
+
+_AGGREGATION_ALIASES = {
+    "": "none",
+    "raw": "none",
+    "row": "none",
+    "rows": "count",
+    "record_count": "count",
+    "row_count": "count",
+    "count_rows": "count",
+    "distinct": "nunique",
+    "distinct_count": "nunique",
+    "unique": "nunique",
+    "unique_count": "nunique",
+    "average": "mean",
+    "avg": "mean",
+    "p25": "p25",
+    "q1": "p25",
+    "p75": "p75",
+    "q3": "p75",
+    "p90": "p90",
+    "p95": "p95",
+}
+
+_AGGREGATION_STATS = {
+    "none",
+    "count",
+    "sum",
+    "mean",
+    "median",
+    "min",
+    "max",
+    "std",
+    "var",
+    "nunique",
+    "weighted_mean",
+    "p25",
+    "p75",
+    "p90",
+    "p95",
+}
+
+
+def _normalize_aggregation(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value or "").strip().lower()
+    normalized = _AGGREGATION_ALIASES.get(normalized, normalized)
+    if normalized in _AGGREGATION_STATS:
+        return normalized
+    return None
+
+
+def _aggregation_option(options: dict[str, Any], default: str = "none") -> str:
+    return _normalize_aggregation(options.get("aggregation")) or default
+
+
+def _measure_label(column: str | None, aggregation: str) -> str:
+    label = str(column or "value")
+    titles = {
+        "none": label,
+        "count": "Record count",
+        "sum": f"Sum of {label}",
+        "mean": f"Mean of {label}",
+        "median": f"Median of {label}",
+        "min": f"Min of {label}",
+        "max": f"Max of {label}",
+        "std": f"Std dev of {label}",
+        "var": f"Variance of {label}",
+        "nunique": f"Distinct {label}",
+        "weighted_mean": f"Weighted mean of {label}",
+        "p25": f"P25 of {label}",
+        "p75": f"P75 of {label}",
+        "p90": f"P90 of {label}",
+        "p95": f"P95 of {label}",
+    }
+    return titles.get(aggregation, label)
+
+
+def _stat_title(stat: str) -> str:
+    return {
+        "count": "Record count",
+        "sum": "Total",
+        "mean": "Average",
+        "median": "Median",
+        "min": "Minimum",
+        "max": "Maximum",
+        "std": "Std dev",
+        "var": "Variance",
+        "nunique": "Distinct count",
+        "weighted_mean": "Weighted average",
+        "p25": "P25",
+        "p75": "P75",
+        "p90": "P90",
+        "p95": "P95",
+    }.get(stat, stat.replace("_", " ").title())
 
 
 def _field_value(value: Any) -> str | None:
@@ -2297,6 +2566,20 @@ def _visual_categorical_column(column: Any) -> bool:
 
 def _measure_sums_well(semantic_type: str) -> bool:
     return semantic_type in {"amount", "nonnegative_amount", "numeric", "numeric-like", "numeric_discrete"}
+
+
+def _default_measure_stat(column: Any) -> str:
+    name = str(getattr(column, "name", "") or "").lower()
+    semantic = str(getattr(column, "semantic_type", "") or "").lower()
+    if any(token in semantic for token in ["percentage", "proportion", "rate"]):
+        return "mean"
+    if any(token in name for token in ["price", "rate", "ratio", "percent", "score", "sqft", "square_foot", "bed", "bath"]):
+        return "mean"
+    if any(token in name for token in ["revenue", "volume", "total", "amount", "qty", "quantity", "count"]):
+        return "sum"
+    if semantic in {"amount", "nonnegative_amount"}:
+        return "sum"
+    return "mean"
 
 
 def _outlier_aware_histogram_options(data: pd.DataFrame, column: str) -> dict[str, Any]:
@@ -2470,6 +2753,37 @@ def _visual_code(spec: VisualSpec) -> str:
         + "data = sf.pull()\n"
         + "artifact, summary, code = sf.visual_artifact(data, spec)"
     )
+
+
+def _visual_recipe_summary(spec: VisualSpec) -> dict[str, Any]:
+    options = _resolved_options(spec)
+    fields = dict(spec.fields or {})
+    field_options = {
+        str(slot): dict(values)
+        for slot, values in (spec.field_options or {}).items()
+        if isinstance(values, dict)
+    }
+    measure_slot = next((slot for slot in ["y", "values", "r", "z", "size"] if fields.get(slot)), "")
+    stat = (
+        _normalize_aggregation(field_options.get(measure_slot, {}).get("stat"))
+        or _normalize_aggregation(options.get("aggregation"))
+        or "none"
+    )
+    group_slots = [
+        slot
+        for slot in ["x", "names", "locations", "path", "color", "facet", "facet_row", "theta"]
+        if fields.get(slot)
+    ]
+    return {
+        "kind": spec.kind,
+        "measure_slot": measure_slot,
+        "measure": fields.get(measure_slot) if measure_slot else "",
+        "stat": stat,
+        "stat_label": _measure_label(str(fields.get(measure_slot) or "value"), stat) if measure_slot else "",
+        "group_slots": group_slots,
+        "groups": {slot: fields.get(slot) for slot in group_slots},
+        "field_options": _json_safe(field_options),
+    }
 
 
 def _plotly_color_sequence(px: Any, name: Any) -> list[str] | None:

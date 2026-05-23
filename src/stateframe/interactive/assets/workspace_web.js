@@ -3559,6 +3559,7 @@ function renderVisualLibrary(payload, visualState, setVisualizerState) {
           fields,
           fieldOptions: defaultFieldOptionsForVisual(payload, definition, fields),
           options: {},
+          title: "",
         });
       });
       const name = document.createElement("div");
@@ -3892,7 +3893,12 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     blank.value = "";
     blank.textContent = field.multiple ? "Comma-select below or choose first" : "None";
     select.appendChild(blank);
-    for (const column of visualCandidateColumns(payload, definition, field)) {
+    const singleCandidates = visualCandidateColumns(payload, definition, field).filter((column) => {
+      if (definition.id === "target_profile" && field.slot === "feature") return column.id !== visualState.fields?.target;
+      if (definition.id === "target_profile" && field.slot === "color") return column.id !== visualState.fields?.target && column.id !== visualState.fields?.feature;
+      return true;
+    });
+    for (const column of singleCandidates) {
       const option = document.createElement("option");
       option.value = column.id;
       option.textContent = column.display_name || column.source_name || column.id;
@@ -3904,6 +3910,16 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
       const nextFieldOptions = { ...(visualState.fieldOptions || {}) };
       if (select.value) {
         next[field.slot] = select.value;
+        if (definition.id === "target_association" && field.slot === "target" && Array.isArray(next.features)) {
+          next.features = next.features.filter((value) => value !== select.value);
+        }
+        if (definition.id === "target_profile" && field.slot === "target") {
+          if (next.feature === select.value) delete next.feature;
+          if (next.color === select.value) delete next.color;
+        }
+        if (definition.id === "target_profile" && field.slot === "feature" && next.color === select.value) {
+          delete next.color;
+        }
         const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, select.value);
         if (Object.keys(defaults).length) nextFieldOptions[field.slot] = { ...defaults, ...(nextFieldOptions[field.slot] || {}) };
         else delete nextFieldOptions[field.slot];
@@ -3924,15 +3940,16 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
 }
 
 function renderVisualMultiField(payload, definition, field, visualState, setVisualizerState) {
-  const current = Array.isArray(visualState.fields?.[field.slot]) ? visualState.fields[field.slot] : [];
+  const targetId = definition.id === "target_association" && field.slot === "features" ? visualState.fields?.target : null;
+  const current = (Array.isArray(visualState.fields?.[field.slot]) ? visualState.fields[field.slot] : []).filter((value) => value !== targetId);
   const currentSet = new Set(current);
-  const candidates = visualCandidateColumns(payload, definition, field);
+  const candidates = visualCandidateColumns(payload, definition, field).filter((column) => column.id !== targetId);
   const panel = document.createElement("div");
   panel.className = "stateframe-web-visual-multi";
   const toolbar = document.createElement("div");
   toolbar.className = "stateframe-web-visual-multi-toolbar";
   const suggested = tinyButton("Suggested", () => {
-    const values = defaultMultipleColumnsForVisual(payload, definition, field);
+    const values = defaultMultipleColumnsForVisual(payload, definition, field).filter((value) => value !== targetId);
     setVisualizerState({ fields: { ...(visualState.fields || {}), [field.slot]: values } });
   }, false, `Use suggested ${field.label.toLowerCase()}`);
   const clear = tinyButton("Clear", () => {
@@ -4943,12 +4960,14 @@ function defaultMultipleColumnsForVisual(payload, definition, field, used = new 
   }
   const limits = {
     correlation_heatmap: 8,
+    association_heatmap: 12,
     scatter_matrix: 4,
     pca_scatter: 6,
     parallel_coordinates: 6,
     parallel_categories: 5,
     treemap: 3,
     sunburst: 3,
+    missingness_matrix: 12,
   };
   const limit = limits[kind] || (field.slot === "path" ? 3 : 6);
   return candidates.slice(0, limit).map((column) => column.id);
@@ -4973,6 +4992,27 @@ function visualCandidateColumns(payload, definition, field) {
   if (!columns.length) return [];
   if (field?.slot === "dimensions" && ["correlation_heatmap", "scatter_matrix", "pca_scatter", "parallel_coordinates"].includes(kind)) {
     return columns.filter(visualColumnLooksNumeric).filter((column) => !visualColumnLooksIdentifier(column));
+  }
+  if ((field?.slot === "dimensions" && kind === "association_heatmap") || (field?.slot === "features" && kind === "target_association")) {
+    return columns
+      .filter((column) => !visualColumnLooksIdentifier(column))
+      .filter((column) => visualColumnLooksNumeric(column) || visualColumnLooksCategorical(column));
+  }
+  if (kind === "target_profile" && field?.slot === "target") {
+    return columns
+      .filter((column) => !visualColumnLooksIdentifier(column))
+      .filter((column) => visualColumnLooksNumeric(column) || visualColumnLooksCategorical(column));
+  }
+  if (kind === "target_profile" && field?.slot === "feature") {
+    return columns
+      .filter((column) => !visualColumnLooksIdentifier(column))
+      .filter((column) => visualColumnLooksNumeric(column) || visualColumnLooksCategorical(column) || visualColumnLooksDate(column));
+  }
+  if (kind === "target_profile" && field?.slot === "color") {
+    return columns.filter(visualColumnLooksCategorical).filter((column) => !visualColumnLooksIdentifier(column));
+  }
+  if (field?.slot === "dimensions" && kind === "missingness_matrix") {
+    return columns.filter((column) => Number(column?.missing_count || 0) > 0 || Number(column?.missing_ratio || 0) > 0);
   }
   if (field?.slot === "dimensions" && kind === "parallel_categories") {
     return columns.filter(visualColumnLooksCategorical);
@@ -5012,6 +5052,9 @@ function defaultVisualColumn(payload, definition, field = null, used = new Set()
   if (field?.slot === "lat" && latitude) return latitude.id;
   if (field?.slot === "lon" && longitude) return longitude.id;
   if (field?.slot === "locations" && location) return location.id;
+  if (field?.slot === "target" && numeric) return numeric.id;
+  if (field?.slot === "feature" && definition?.id === "target_profile") return categorical?.id || numeric?.id || datetime?.id || pool[0].id;
+  if (field?.slot === "color" && definition?.id === "target_profile" && categorical) return categorical.id;
   if (field?.slot === "path" && categorical) return categorical.id;
   if (field?.slot === "values" && numeric) return numeric.id;
   if (field?.slot === "y" && numeric) return numeric.id;
@@ -5068,7 +5111,7 @@ function defaultFieldOptionForSlot(payload, definition, slot, columnId) {
 }
 
 function visualSlotSupportsStat(kind, slot) {
-  if (["scatter", "box", "violin", "strip", "ecdf", "histogram", "scatter_matrix", "parallel_coordinates", "parallel_categories", "pca_scatter", "qq_plot", "autocorrelation"].includes(kind)) {
+  if (["scatter", "box", "violin", "strip", "ecdf", "histogram", "scatter_matrix", "parallel_coordinates", "parallel_categories", "pca_scatter", "qq_plot", "autocorrelation", "association_heatmap", "target_association", "target_profile"].includes(kind)) {
     return false;
   }
   if (slot === "z") return kind === "heatmap";

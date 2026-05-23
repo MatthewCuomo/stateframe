@@ -311,6 +311,8 @@ class _VisualRecommendationBuilder:
         self._single_column()
         self._category_numeric()
         self._numeric_pairs()
+        self._associations()
+        self._target_profiles()
         self._hierarchies()
         self._multivariate()
         ranked = sorted(self.recommendations, key=lambda item: item.score, reverse=True)
@@ -377,6 +379,22 @@ class _VisualRecommendationBuilder:
             family="Quality",
             columns=[],
         )
+        missing_columns = [
+            column.name
+            for column in self.columns
+            if column.missing_count > 0
+        ][:24]
+        if len(missing_columns) >= 2:
+            self._add(
+                kind="missingness_matrix",
+                title="Missingness pattern matrix",
+                reason="Multiple columns have missing values; row-level patterns can reveal co-missing fields and workflow gaps.",
+                score=0.88,
+                fields={"dimensions": missing_columns},
+                options={"missingness_matrix_rows": 250, "missingness_sort_rows": True},
+                family="Quality",
+                columns=missing_columns,
+            )
 
     def _single_column(self) -> None:
         for column in self.numeric[:6]:
@@ -568,6 +586,85 @@ class _VisualRecommendationBuilder:
                         family="Relationship",
                         columns=[left.name, right.name],
                     )
+
+    def _associations(self) -> None:
+        mixed = [*self.numeric[:8], *self._low_cardinality_categories(max_unique=40)[:8]]
+        dimensions = []
+        for column in mixed:
+            if column.name not in dimensions and not _is_identifier_like_name(column.name):
+                dimensions.append(column.name)
+        if len(dimensions) >= 3:
+            self._add(
+                kind="association_heatmap",
+                title="Mixed association heatmap",
+                reason="Numeric and categorical fields can be scanned together for linear, categorical, and mixed associations.",
+                score=0.77,
+                fields={"dimensions": dimensions[:12]},
+                options={"assoc_numeric_method": "pearson", "assoc_text": True, "assoc_max_categories": 40},
+                family="Matrix",
+                columns=dimensions[:12],
+            )
+        target = self.profile.target
+        if not target:
+            measures = self._preferred_measures()
+            target = measures[0].name if measures else None
+        if target:
+            features = [column for column in dimensions if column != target][:20]
+            if features:
+                self._add(
+                    kind="target_association",
+                    title=f"Associations with {target}",
+                    reason="A target association ranking helps prioritize candidate drivers before modeling or deeper slicing.",
+                    score=0.86 if self.profile.target == target else 0.82,
+                    fields={"target": target, "features": features},
+                    options={"target_assoc_max_features": 20, "assoc_numeric_method": "pearson", "assoc_text": True},
+                    family="Diagnostics",
+                    columns=[target, *features],
+                )
+
+    def _target_profiles(self) -> None:
+        target = self.profile.target
+        if not target:
+            measures = self._preferred_measures()
+            target = measures[0].name if measures else None
+        if not target:
+            return
+        numeric_features = [
+            column
+            for column in self.numeric
+            if column.name != target and not _is_identifier_like_name(column.name)
+        ]
+        category_features = [
+            column
+            for column in self._low_cardinality_categories(max_unique=40)
+            if column.name != target and not _is_identifier_like_name(column.name)
+        ]
+        if numeric_features:
+            feature = numeric_features[0]
+            stat = "mean" if target in [column.name for column in self.numeric] else "count"
+            self._add(
+                kind="target_profile",
+                title=f"{target} profile by {feature.name}",
+                reason="A binned target profile shows how the target changes across a feature while preserving record counts for each segment.",
+                score=0.85,
+                fields={"target": target, "feature": feature.name},
+                options={"profile_target_stat": stat, "profile_feature_treatment": "auto", "profile_bin_method": "quantile", "profile_bin_count": 10},
+                family="Diagnostics",
+                columns=[target, feature.name],
+            )
+        if category_features:
+            feature = category_features[0]
+            stat = "mean" if target in [column.name for column in self.numeric] else "count"
+            self._add(
+                kind="target_profile",
+                title=f"{target} profile by {feature.name}",
+                reason="A category target profile surfaces segment-level target behavior and sample size before modeling or slicing further.",
+                score=0.845,
+                fields={"target": target, "feature": feature.name},
+                options={"profile_target_stat": stat, "profile_feature_treatment": "category", "top_n": 20, "top_n_mode": "other", "profile_sort": "value_descending"},
+                family="Diagnostics",
+                columns=[target, feature.name],
+            )
 
     def _hierarchies(self) -> None:
         categories = self._low_cardinality_categories(max_unique=30)
@@ -943,6 +1040,35 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
         layout_data = plot_data
         layout_x = "column"
         layout_y = "row"
+    elif kind == "association_heatmap":
+        dimensions = _field_values(fields.get("dimensions")) or _association_columns(data, options=options)
+        fig, plot_data = _association_heatmap_figure(data, dimensions=dimensions, options=options, title=title, common=common)
+        layout_data = plot_data
+        layout_x = "column"
+        layout_y = "row"
+    elif kind == "target_association":
+        target = _field_value(fields.get("target")) or y or x
+        features = _field_values(fields.get("features"))
+        fig, plot_data = _target_association_figure(data, target=target, features=features, options=options, title=title, common=common)
+        layout_data = plot_data
+        layout_x = "association"
+        layout_y = "feature"
+    elif kind == "target_profile":
+        target = _field_value(fields.get("target")) or y
+        feature = _field_value(fields.get("feature")) or x
+        profile_color = _field_value(fields.get("color")) or color
+        fig, plot_data, feature_column, target_column = _target_profile_figure(
+            data,
+            target=target,
+            feature=feature,
+            color=profile_color,
+            options=options,
+            title=title,
+            common=common_without_color,
+        )
+        layout_data = plot_data
+        layout_x = feature_column
+        layout_y = target_column
     elif kind == "pca_scatter":
         dimensions = _field_values(fields.get("dimensions")) or _numeric_columns(data)
         fig, plot_data = _pca_scatter_figure(data, dimensions=dimensions, color=color, options=options, title=title, common=common)
@@ -1047,6 +1173,12 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
         layout_data = missing
         layout_x = "missing_ratio"
         layout_y = "column"
+    elif kind == "missingness_matrix":
+        dimensions = _field_values(fields.get("dimensions")) or [str(column) for column in data.columns]
+        fig, plot_data = _missingness_matrix_figure(data, dimensions=dimensions, options=options, title=title, common=common)
+        layout_data = plot_data
+        layout_x = "column"
+        layout_y = "row"
     else:  # pragma: no cover - registry keeps this closed.
         raise ValueError(f"Unknown visual kind: {kind}")
 
@@ -1554,6 +1686,492 @@ def _correlation_heatmap_figure(
         text_auto=".2f" if options.get("corr_text") else False,
     )
     return fig, plot_data
+
+
+def _association_heatmap_figure(
+    data: pd.DataFrame,
+    *,
+    dimensions: list[str],
+    options: dict[str, Any],
+    title: str,
+    common: dict[str, Any],
+) -> tuple[Any, pd.DataFrame]:
+    import plotly.express as px
+
+    columns = [column for column in dimensions if column in data.columns]
+    if not columns:
+        columns = _association_columns(data, options=options)
+    columns = columns[: max(2, _int_option(options.get("assoc_max_columns"), 16))]
+    matrix, methods = _association_matrix(data, columns, options=options)
+    if options.get("assoc_triangle"):
+        mask = np.triu(np.ones(matrix.shape, dtype=bool), k=1)
+        matrix = matrix.mask(mask)
+    plot_data = (
+        matrix.reset_index().rename(columns={"index": "row"}).melt(id_vars="row", var_name="column", value_name="association")
+        if not matrix.empty
+        else pd.DataFrame(columns=["row", "column", "association"])
+    )
+    if not plot_data.empty:
+        plot_data["method"] = plot_data.apply(lambda row: methods.get((row["row"], row["column"]), ""), axis=1)
+    fig = px.imshow(
+        matrix,
+        aspect="auto",
+        color_continuous_scale=options.get("continuous_color_scale") or "Viridis",
+        zmin=0,
+        zmax=1,
+        title=title,
+        height=common.get("height"),
+        template=common.get("template"),
+        text_auto=".2f" if options.get("assoc_text") else False,
+    )
+    fig.update_layout(coloraxis_colorbar_title="Association")
+    return fig, plot_data
+
+
+def _target_association_figure(
+    data: pd.DataFrame,
+    *,
+    target: str | None,
+    features: list[str],
+    options: dict[str, Any],
+    title: str,
+    common: dict[str, Any],
+) -> tuple[Any, pd.DataFrame]:
+    import plotly.express as px
+
+    if not target or target not in data.columns:
+        return px.bar(pd.DataFrame(), title=title), pd.DataFrame()
+    candidate_features = [feature for feature in features if feature in data.columns and feature != target]
+    if not candidate_features:
+        candidate_features = [column for column in _association_columns(data, options=options) if column != target]
+    rows = []
+    for feature in candidate_features:
+        score, method = _association_score(data[target], data[feature], options=options)
+        rows.append(
+            {
+                "feature": str(feature),
+                "association": _clean_float(score),
+                "method": method,
+                "missing_ratio": _clean_float(data[feature].isna().mean()),
+                "distinct_count": int(data[feature].nunique(dropna=True)),
+            }
+        )
+    plot_data = pd.DataFrame(rows)
+    if not plot_data.empty:
+        plot_data = plot_data.sort_values("association", ascending=False).head(_int_option(options.get("target_assoc_max_features"), 30) or 30)
+    fig = px.bar(
+        plot_data,
+        x="association",
+        y="feature",
+        color="method" if not plot_data.empty else None,
+        orientation="h",
+        text="association" if options.get("assoc_text") else None,
+        title=title,
+        template=common.get("template"),
+        height=common.get("height"),
+        color_discrete_sequence=common.get("color_discrete_sequence"),
+    )
+    fig.update_xaxes(range=[0, 1], title="Association strength")
+    fig.update_yaxes(autorange="reversed", title="")
+    if options.get("assoc_text"):
+        fig.update_traces(texttemplate="%{text:.2f}", textposition="outside", cliponaxis=False)
+    return fig, plot_data
+
+
+def _target_profile_figure(
+    data: pd.DataFrame,
+    *,
+    target: str | None,
+    feature: str | None,
+    color: str | None,
+    options: dict[str, Any],
+    title: str,
+    common: dict[str, Any],
+) -> tuple[Any, pd.DataFrame, str | None, str | None]:
+    import plotly.express as px
+
+    if not target or not feature or target not in data.columns or feature not in data.columns or target == feature:
+        return px.bar(pd.DataFrame(), title=title), pd.DataFrame(), feature, target
+    color = color if color in data.columns and color not in {target, feature} else None
+    columns = [target, feature, *([color] if color else [])]
+    working = data[columns].copy()
+    working, feature_column, feature_order, feature_kind = _profile_feature_groups(working, feature=feature, options=options)
+    if feature_column not in working.columns:
+        return px.bar(pd.DataFrame(), title=title), pd.DataFrame(), feature, target
+    group_cols = [feature_column, *([color] if color else [])]
+    plot_data, y_column, y_label = _profile_target_summary(working, target=target, group_cols=group_cols, options=options)
+    if plot_data.empty:
+        return px.bar(pd.DataFrame(), title=title), plot_data, feature_column, y_column
+    plot_data = _sort_target_profile_data(
+        plot_data,
+        feature_column=feature_column,
+        y_column=y_column,
+        color=color,
+        feature_order=feature_order,
+        options=options,
+    )
+    hover_cols = [column for column in ["record_count", "target_mean", "target_median", "target_missing_ratio"] if column in plot_data.columns]
+    mark = str(options.get("profile_mark") or "auto")
+    if mark == "auto":
+        mark = "line" if feature_kind in {"datetime", "numeric_bin"} else "bar"
+    plot_kwargs = {
+        "x": feature_column,
+        "y": y_column,
+        "color": color,
+        "title": title,
+        "template": common.get("template"),
+        "height": common.get("height"),
+        "color_discrete_sequence": common.get("color_discrete_sequence"),
+        "hover_data": hover_cols or None,
+    }
+    if mark == "line":
+        fig = px.line(plot_data, markers=True, **plot_kwargs)
+    else:
+        fig = px.bar(plot_data, barmode=options.get("barmode") or "group", **plot_kwargs)
+    if feature_order:
+        fig.update_xaxes(categoryorder="array", categoryarray=feature_order)
+    fig.update_xaxes(title=str(feature))
+    fig.update_yaxes(title=y_label)
+    if options.get("show_value_labels") and mark == "bar":
+        fig.update_traces(texttemplate="%{y:.3g}", textposition=options.get("label_position") or "auto")
+    return fig, plot_data, feature_column, y_column
+
+
+def _profile_feature_groups(
+    data: pd.DataFrame,
+    *,
+    feature: str,
+    options: dict[str, Any],
+) -> tuple[pd.DataFrame, str, list[str], str]:
+    result = data.copy()
+    target = _unique_column(result, f"{feature}_profile")
+    treatment = str(options.get("profile_feature_treatment") or "auto")
+    date_values = _profile_datetime_values(result[feature])
+    if treatment == "date" or (treatment == "auto" and date_values is not None):
+        bucket = str(options.get("profile_date_bucket") or _date_bucket_for_profile(result.assign(**{feature: date_values}), feature) or "none")
+        if bucket == "none":
+            bucket = "month"
+        result[target] = _bucket_datetime_values(date_values, bucket)
+        result = result[result[target].notna()].copy()
+        order = [str(value) for value in sorted(result[target].dropna().unique())]
+        result[target] = result[target].astype("string")
+        return result, target, order, "datetime"
+
+    numeric_values = pd.to_numeric(result[feature], errors="coerce")
+    numeric_like = numeric_values.notna().sum() >= max(2, int(result[feature].notna().sum() * 0.7))
+    distinct_count = int(numeric_values.nunique(dropna=True)) if numeric_like else int(result[feature].nunique(dropna=True))
+    if treatment == "bin" or (treatment == "auto" and numeric_like and distinct_count > _int_option(options.get("profile_category_max"), 20)):
+        labels = _profile_numeric_bins(numeric_values, options=options)
+        if labels is not None:
+            result[target] = labels.astype("string").fillna("Missing")
+            order = [str(value) for value in getattr(labels, "cat", pd.Series(dtype="object")).categories] if hasattr(labels, "cat") else []
+            if result[target].eq("Missing").any():
+                order.append("Missing")
+            return result, target, order, "numeric_bin"
+
+    missing_label = str(options.get("missing_category_label") or "Missing")
+    text = result[feature].astype("string")
+    if options.get("include_missing_category"):
+        text = text.fillna(missing_label).mask(text.str.strip().fillna("").eq(""), missing_label)
+    else:
+        text = text.mask(text.str.strip().fillna("").eq(""))
+        result = result[text.notna()].copy()
+        text = text.loc[result.index]
+    target_text = text.astype("string")
+    top_n = _int_option(options.get("top_n"), 20)
+    if top_n > 0 and target_text.nunique(dropna=True) > top_n:
+        counts = target_text.value_counts(dropna=False)
+        if str(options.get("top_n_direction") or "top") == "bottom":
+            keep = set(counts.tail(top_n).index.astype(str))
+        else:
+            keep = set(counts.head(top_n).index.astype(str))
+        target_text = target_text.where(target_text.astype(str).isin(keep), str(options.get("other_label") or "Other"))
+    result[target] = target_text
+    order = [str(value) for value in result[target].value_counts(dropna=False).index]
+    return result, target, order, "category"
+
+
+def _profile_datetime_values(series: pd.Series) -> pd.Series | None:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+    try:
+        converted = pd.to_datetime(series, errors="coerce", format="mixed")
+    except TypeError:
+        converted = pd.to_datetime(series, errors="coerce")
+    if converted.notna().sum() >= max(2, int(series.notna().sum() * 0.7)):
+        return converted
+    return None
+
+
+def _bucket_datetime_values(values: pd.Series, bucket: str) -> pd.Series:
+    if bucket == "day":
+        return values.dt.floor("D")
+    if bucket == "week":
+        return values.dt.to_period("W").dt.start_time
+    if bucket == "quarter":
+        return values.dt.to_period("Q").dt.start_time
+    if bucket == "year":
+        return values.dt.to_period("Y").dt.start_time
+    return values.dt.to_period("M").dt.start_time
+
+
+def _profile_numeric_bins(values: pd.Series, *, options: dict[str, Any]) -> pd.Series | None:
+    finite = values[np.isfinite(values)].dropna()
+    if finite.empty:
+        return None
+    method = str(options.get("profile_bin_method") or "quantile")
+    bins = max(2, _int_option(options.get("profile_bin_count"), 10))
+    if method == "width":
+        width = _float_option(options.get("profile_bin_width"), 0.0)
+        if width <= 0:
+            width = float((finite.max() - finite.min()) / bins) if finite.max() != finite.min() else 0.0
+        if width <= 0:
+            return None
+        lower = np.floor(float(finite.min()) / width) * width
+        upper = np.ceil(float(finite.max()) / width) * width
+        edges = np.arange(lower, upper + width * 1.5, width)
+        if len(edges) < 2:
+            return None
+        return pd.cut(values, bins=edges, include_lowest=True)
+    try:
+        return pd.qcut(values, q=bins, duplicates="drop")
+    except ValueError:
+        return None
+
+
+def _profile_target_summary(
+    data: pd.DataFrame,
+    *,
+    target: str,
+    group_cols: list[str],
+    options: dict[str, Any],
+) -> tuple[pd.DataFrame, str, str]:
+    grouped = data.groupby(group_cols, dropna=False)
+    counts = grouped.size().reset_index(name="record_count")
+    target_values = data[target]
+    target_numeric = pd.api.types.is_numeric_dtype(target_values) or pd.to_numeric(target_values, errors="coerce").notna().sum() >= max(2, int(target_values.notna().sum() * 0.7))
+    min_count = max(1, _int_option(options.get("profile_min_count"), 1))
+    if target_numeric:
+        stat = _normalize_aggregation(options.get("profile_target_stat")) or _normalize_aggregation(options.get("aggregation")) or "mean"
+        if stat in {"none", "weighted_mean"}:
+            stat = "mean"
+        if stat == "count":
+            plot_data = counts
+            y_column = "record_count"
+            y_label = "Record count"
+        else:
+            numeric_data = data.assign(**{target: pd.to_numeric(data[target], errors="coerce")})
+            summary = _aggregate_grouped_values(numeric_data, group_cols=group_cols, value=target, aggregation=stat)
+            diagnostics = (
+                numeric_data.groupby(group_cols, dropna=False)[target]
+                .agg(target_mean="mean", target_median="median", target_missing_ratio=lambda series: float(series.isna().mean()))
+                .reset_index()
+            )
+            plot_data = counts.merge(summary, on=group_cols, how="left").merge(diagnostics, on=group_cols, how="left")
+            y_column = target
+            y_label = _measure_label(target, stat)
+    else:
+        positive_value = _infer_positive_value(target_values, options.get("profile_positive_value"))
+        target_text = target_values.astype("string")
+        rate_data = data.assign(_stateframe_target_positive=target_text.eq(str(positive_value)).astype(float))
+        rates = rate_data.groupby(group_cols, dropna=False)["_stateframe_target_positive"].mean().reset_index(name="target_rate")
+        plot_data = counts.merge(rates, on=group_cols, how="left")
+        y_column = "target_rate"
+        y_label = f"Share {target} = {positive_value}"
+    plot_data = plot_data[plot_data["record_count"] >= min_count].copy()
+    return plot_data, y_column, y_label
+
+
+def _infer_positive_value(series: pd.Series, configured: Any) -> str:
+    if configured not in {None, ""}:
+        return str(configured)
+    text = series.astype("string").dropna()
+    if text.empty:
+        return "True"
+    counts = text.value_counts(dropna=True)
+    positive_tokens = {"true", "yes", "y", "1", "sold", "success", "win", "positive"}
+    for value in counts.index:
+        if str(value).strip().lower() in positive_tokens:
+            return str(value)
+    if len(counts) == 2:
+        return str(counts.index[-1])
+    return str(counts.index[0])
+
+
+def _sort_target_profile_data(
+    plot_data: pd.DataFrame,
+    *,
+    feature_column: str,
+    y_column: str,
+    color: str | None,
+    feature_order: list[str],
+    options: dict[str, Any],
+) -> pd.DataFrame:
+    if plot_data.empty:
+        return plot_data
+    result = plot_data.copy()
+    sort = str(options.get("profile_sort") or "auto")
+    if sort == "value_descending" and y_column in result.columns:
+        return result.sort_values(y_column, ascending=False, na_position="last")
+    if sort == "count_descending" and "record_count" in result.columns:
+        return result.sort_values("record_count", ascending=False, na_position="last")
+    if feature_order:
+        result["_stateframe_feature_order"] = pd.Categorical(result[feature_column].astype(str), categories=feature_order, ordered=True)
+        sort_cols = ["_stateframe_feature_order", *([color] if color and color in result.columns else [])]
+        return result.sort_values(sort_cols, na_position="last").drop(columns=["_stateframe_feature_order"])
+    return result.sort_values(feature_column, na_position="last")
+
+
+def _missingness_matrix_figure(
+    data: pd.DataFrame,
+    *,
+    dimensions: list[str],
+    options: dict[str, Any],
+    title: str,
+    common: dict[str, Any],
+) -> tuple[Any, pd.DataFrame]:
+    import plotly.graph_objects as go
+
+    columns = [column for column in dimensions if column in data.columns] or [str(column) for column in data.columns]
+    max_rows = _int_option(options.get("missingness_matrix_rows") or options.get("sample_rows"), 250) or 250
+    frame = data[columns]
+    if len(frame) > max_rows:
+        method = str(options.get("sample_method") or "first")
+        if method == "random":
+            frame = frame.sample(n=max_rows, random_state=_int_option(options.get("sample_seed"), 42))
+        else:
+            frame = frame.head(max_rows)
+    if options.get("missingness_sort_rows"):
+        row_order = frame.isna().sum(axis=1).sort_values(ascending=False).index
+        frame = frame.loc[row_order]
+    matrix = frame.isna().astype(int)
+    row_labels = [str(index) for index in matrix.index]
+    fig = go.Figure(
+        data=[
+            go.Heatmap(
+                z=matrix.to_numpy(),
+                x=[str(column) for column in matrix.columns],
+                y=row_labels,
+                colorscale=[[0, "#f8fafc"], [1, "#dc2626"]],
+                zmin=0,
+                zmax=1,
+                showscale=True,
+                colorbar={"title": "Missing"},
+                hovertemplate="row %{y}<br>%{x}<br>%{customdata}<extra></extra>",
+                customdata=np.where(matrix.to_numpy() == 1, "missing", "present"),
+            )
+        ]
+    )
+    fig.update_layout(title=title, template=common.get("template"), height=common.get("height"), xaxis_title="Column", yaxis_title="Row")
+    plot_data = (
+        matrix.reset_index()
+        .rename(columns={"index": "row"})
+        .melt(id_vars="row", var_name="column", value_name="missing")
+    )
+    return fig, plot_data
+
+
+def _association_columns(data: pd.DataFrame, *, options: dict[str, Any]) -> list[str]:
+    max_categories = _int_option(options.get("assoc_max_categories"), 40) or 40
+    numeric = _numeric_columns(data)
+    categorical = [
+        column
+        for column in _categorical_columns(data)
+        if data[column].nunique(dropna=True) <= max_categories
+    ]
+    columns = [*numeric, *categorical]
+    return [column for column in columns if not _is_identifier_like_name(str(column))]
+
+
+def _association_matrix(
+    data: pd.DataFrame,
+    columns: list[str],
+    *,
+    options: dict[str, Any],
+) -> tuple[pd.DataFrame, dict[tuple[str, str], str]]:
+    columns = [column for column in columns if column in data.columns]
+    matrix = pd.DataFrame(np.eye(len(columns)), index=columns, columns=columns, dtype=float)
+    methods: dict[tuple[str, str], str] = {}
+    for left in columns:
+        methods[(left, left)] = "identity"
+    for left_index, left in enumerate(columns):
+        for right in columns[left_index + 1 :]:
+            score, method = _association_score(data[left], data[right], options=options)
+            matrix.loc[left, right] = score
+            matrix.loc[right, left] = score
+            methods[(left, right)] = method
+            methods[(right, left)] = method
+    return matrix, methods
+
+
+def _association_score(left: pd.Series, right: pd.Series, *, options: dict[str, Any]) -> tuple[float, str]:
+    left_numeric = pd.api.types.is_numeric_dtype(left)
+    right_numeric = pd.api.types.is_numeric_dtype(right)
+    if left_numeric and right_numeric:
+        method = str(options.get("assoc_numeric_method") or options.get("corr_method") or "pearson")
+        score = pd.to_numeric(left, errors="coerce").corr(pd.to_numeric(right, errors="coerce"), method=method)
+        return _finite_association(abs(score)), f"{method} |r|"
+    if left_numeric or right_numeric:
+        numeric = left if left_numeric else right
+        categories = right if left_numeric else left
+        return _correlation_ratio(categories, numeric, options=options), "eta"
+    return _cramers_v(left, right, options=options), "cramer_v"
+
+
+def _finite_association(value: Any) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return 0.0
+    if not np.isfinite(number):
+        return 0.0
+    return float(max(0.0, min(1.0, number)))
+
+
+def _correlation_ratio(categories: pd.Series, values: pd.Series, *, options: dict[str, Any]) -> float:
+    frame = pd.DataFrame({
+        "category": _bounded_category_series(categories, options=options),
+        "value": pd.to_numeric(values, errors="coerce"),
+    }).dropna()
+    if frame.empty or frame["category"].nunique(dropna=True) < 2:
+        return 0.0
+    overall = frame["value"].mean()
+    total = ((frame["value"] - overall) ** 2).sum()
+    if not total:
+        return 0.0
+    grouped = frame.groupby("category", dropna=False)["value"]
+    between = sum(len(group) * float((group.mean() - overall) ** 2) for _, group in grouped)
+    return _finite_association(np.sqrt(between / total))
+
+
+def _cramers_v(left: pd.Series, right: pd.Series, *, options: dict[str, Any]) -> float:
+    frame = pd.DataFrame({
+        "left": _bounded_category_series(left, options=options),
+        "right": _bounded_category_series(right, options=options),
+    }).dropna()
+    if frame.empty or frame["left"].nunique(dropna=True) < 2 or frame["right"].nunique(dropna=True) < 2:
+        return 0.0
+    observed = pd.crosstab(frame["left"], frame["right"]).to_numpy(dtype=float)
+    total = observed.sum()
+    if total <= 0:
+        return 0.0
+    row_sum = observed.sum(axis=1, keepdims=True)
+    col_sum = observed.sum(axis=0, keepdims=True)
+    expected = row_sum @ col_sum / total
+    with np.errstate(divide="ignore", invalid="ignore"):
+        chi2 = np.nansum(((observed - expected) ** 2) / expected)
+    denominator = total * max(1, min(observed.shape[0] - 1, observed.shape[1] - 1))
+    return _finite_association(np.sqrt(chi2 / denominator) if denominator else 0.0)
+
+
+def _bounded_category_series(series: pd.Series, *, options: dict[str, Any]) -> pd.Series:
+    max_categories = _int_option(options.get("assoc_max_categories"), 40) or 40
+    text = series.astype("string").fillna("Missing")
+    counts = text.value_counts(dropna=False)
+    if max_categories > 0 and len(counts) > max_categories:
+        keep = set(counts.head(max_categories - 1).index.astype(str))
+        text = text.where(text.astype(str).isin(keep), "Other")
+    return text
 
 
 def _pca_scatter_figure(
@@ -2880,6 +3498,24 @@ def _control_level(control_id: str) -> str:
         "concentration_sort",
         "show_equality_line",
         "max_lag",
+        "assoc_numeric_method",
+        "assoc_text",
+        "assoc_triangle",
+        "assoc_max_columns",
+        "assoc_max_categories",
+        "target_assoc_max_features",
+        "profile_target_stat",
+        "profile_feature_treatment",
+        "profile_bin_method",
+        "profile_bin_count",
+        "profile_bin_width",
+        "profile_category_max",
+        "profile_min_count",
+        "profile_sort",
+        "profile_mark",
+        "profile_date_bucket",
+        "missingness_matrix_rows",
+        "missingness_sort_rows",
         "x_data_min",
         "x_data_max",
         "y_data_min",
@@ -3387,6 +4023,79 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         ]), *_COMMON_GROUPS],
     },
     {
+        "id": "association_heatmap",
+        "title": "Association Heatmap",
+        "family": "Matrix",
+        "description": "Mixed-type association matrix for numeric and categorical columns using correlation, eta, and Cramer's V.",
+        "fields": [_field("dimensions", "Dimensions", multiple=True)],
+        "option_groups": [_group("association", "Association", [
+            _control("assoc_numeric_method", "Numeric method", "select", default="pearson", choices=[("pearson", "Pearson"), ("spearman", "Spearman"), ("kendall", "Kendall")]),
+            _control("assoc_max_columns", "Max columns", "number", default=16),
+            _control("assoc_max_categories", "Max categories", "number", default=40),
+            _control("assoc_triangle", "Lower triangle only", "checkbox", default=False),
+            _control("assoc_text", "Show values", "checkbox", default=True),
+        ]), *_COMMON_GROUPS],
+    },
+    {
+        "id": "target_association",
+        "title": "Target Associations",
+        "family": "Diagnostics",
+        "description": "Rank numeric and categorical features by association strength with a selected target column.",
+        "fields": [_field("target", "Target", required=True), _field("features", "Features", multiple=True)],
+        "option_groups": [_group("association", "Association", [
+            _control("assoc_numeric_method", "Numeric method", "select", default="pearson", choices=[("pearson", "Pearson"), ("spearman", "Spearman"), ("kendall", "Kendall")]),
+            _control("target_assoc_max_features", "Max features", "number", default=30),
+            _control("assoc_max_categories", "Max categories", "number", default=40),
+            _control("assoc_text", "Show values", "checkbox", default=True),
+        ]), *_COMMON_GROUPS],
+    },
+    {
+        "id": "target_profile",
+        "title": "Target Profile",
+        "family": "Diagnostics",
+        "description": "Profile a target across binned numeric, date, or categorical feature segments with record counts in hover data.",
+        "fields": [_field("target", "Target", required=True), _field("feature", "Feature", required=True), _ENCODING_FIELDS["color"]],
+        "option_groups": [_group("profile", "Profile", [
+            _control("profile_target_stat", "Target statistic", "select", default="mean", choices=[
+                ("count", "Record count"),
+                ("mean", "Mean"),
+                ("median", "Median"),
+                ("sum", "Sum"),
+                ("min", "Min"),
+                ("max", "Max"),
+                ("p25", "P25"),
+                ("p75", "P75"),
+                ("p90", "P90"),
+                ("p95", "P95"),
+            ]),
+            _control("profile_feature_treatment", "Feature treatment", "select", default="auto", choices=[
+                ("auto", "Auto"),
+                ("bin", "Bin numeric"),
+                ("category", "Category"),
+                ("date", "Date bucket"),
+            ]),
+            _control("profile_bin_method", "Numeric bins", "select", default="quantile", choices=[("quantile", "Quantiles"), ("width", "Fixed width")]),
+            _control("profile_bin_count", "Bin count", "number", default=10),
+            _control("profile_bin_width", "Bin width", "number", default=0),
+            _control("profile_category_max", "Auto category max", "number", default=20),
+            _control("profile_date_bucket", "Date bucket", "select", default="month", choices=[
+                ("day", "Day"),
+                ("week", "Week"),
+                ("month", "Month"),
+                ("quarter", "Quarter"),
+                ("year", "Year"),
+            ]),
+            _control("profile_min_count", "Minimum rows", "number", default=1),
+            _control("profile_sort", "Sort", "select", default="auto", choices=[
+                ("auto", "Feature order"),
+                ("value_descending", "Value descending"),
+                ("count_descending", "Count descending"),
+            ]),
+            _control("profile_mark", "Mark", "select", default="auto", choices=[("auto", "Auto"), ("bar", "Bar"), ("line", "Line")]),
+            _control("profile_positive_value", "Positive class", "text", default=""),
+        ]), *_COMMON_GROUPS],
+    },
+    {
         "id": "pca_scatter",
         "title": "PCA Scatter",
         "family": "Multivariate",
@@ -3487,6 +4196,17 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Missing-value rate by column.",
         "fields": [],
         "option_groups": _COMMON_GROUPS,
+    },
+    {
+        "id": "missingness_matrix",
+        "title": "Missingness Matrix",
+        "family": "Quality",
+        "description": "Row-by-column missingness pattern for spotting co-missing fields and sparse records.",
+        "fields": [_field("dimensions", "Columns", multiple=True)],
+        "option_groups": [_group("missingness", "Missingness", [
+            _control("missingness_matrix_rows", "Rows shown", "number", default=250),
+            _control("missingness_sort_rows", "Sort rows by missing count", "checkbox", default=True),
+        ]), *_COMMON_GROUPS],
     },
 ]
 

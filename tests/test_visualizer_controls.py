@@ -526,6 +526,10 @@ def test_visual_catalog_surfaces_new_visual_families_and_bindings():
         "autocorrelation",
         "calendar_heatmap",
         "correlation_heatmap",
+        "association_heatmap",
+        "target_association",
+        "target_profile",
+        "missingness_matrix",
         "pca_scatter",
     } <= kinds
     geo = next(item for item in catalog["plot_types"] if item["id"] == "geo_scatter")
@@ -640,12 +644,99 @@ def test_visualizer_supports_correlation_heatmap_and_pca_scatter():
     assert pca.data[0].type == "scatter"
 
 
+def test_visualizer_supports_mixed_association_and_target_association():
+    df = pd.DataFrame(
+        {
+            "price": [200, 220, 260, 310, 330, 380, 410, 460],
+            "sqft": [900, 980, 1100, 1300, 1400, 1550, 1700, 1900],
+            "condition": ["ok", "ok", "good", "good", "good", "great", "great", "great"],
+            "county": ["A", "A", "A", "B", "B", "B", "C", "C"],
+        }
+    )
+
+    association = sf.visualize(
+        df,
+        {
+            "kind": "association_heatmap",
+            "fields": {"dimensions": ["price", "sqft", "condition", "county"]},
+            "options": {"assoc_text": True},
+        },
+    )
+    assert association.data[0].type == "heatmap"
+    assert max(float(value) for row in association.data[0].z for value in row if value is not None) <= 1
+
+    target = sf.visualize(
+        df,
+        {
+            "kind": "target_association",
+            "fields": {"target": "price", "features": ["sqft", "condition", "county"]},
+            "options": {"target_assoc_max_features": 3, "assoc_text": True},
+        },
+    )
+    assert target.data[0].type == "bar"
+    assert "sqft" in set(target.data[0].y)
+
+
+def test_visualizer_supports_target_profile_segments():
+    df = pd.DataFrame(
+        {
+            "price": [200, 220, 260, 310, 330, 380, 410, 460],
+            "sqft": [900, 980, 1100, 1300, 1400, 1550, 1700, 1900],
+            "county": ["A", "A", "A", "B", "B", "B", "C", "C"],
+        }
+    )
+
+    numeric_profile = sf.visualize(
+        df,
+        {
+            "kind": "target_profile",
+            "fields": {"target": "price", "feature": "sqft"},
+            "options": {"profile_target_stat": "mean", "profile_bin_count": 4},
+        },
+    )
+    assert numeric_profile.data[0].type == "scatter"
+    assert "Mean of price" == numeric_profile.layout.yaxis.title.text
+
+    category_profile = sf.visualize(
+        df,
+        {
+            "kind": "target_profile",
+            "fields": {"target": "price", "feature": "county"},
+            "options": {"profile_target_stat": "median", "profile_feature_treatment": "category", "profile_sort": "value_descending"},
+        },
+    )
+    assert category_profile.data[0].type == "bar"
+    assert set(category_profile.data[0].x) <= {"A", "B", "C"}
+
+
+def test_visualizer_supports_missingness_matrix():
+    df = pd.DataFrame(
+        {
+            "a": [1, None, 3, None],
+            "b": [None, "x", None, "y"],
+            "c": [10, 11, 12, 13],
+        }
+    )
+
+    matrix = sf.visualize(
+        df,
+        {
+            "kind": "missingness_matrix",
+            "fields": {"dimensions": ["a", "b", "c"]},
+            "options": {"missingness_matrix_rows": 4, "missingness_sort_rows": True},
+        },
+    )
+
+    assert matrix.data[0].type == "heatmap"
+    assert set(matrix.data[0].x) == {"a", "b", "c"}
+
+
 def test_visualizer_suggests_replayable_specs_from_profile():
     df = pd.DataFrame(
         {
             "sold_date": pd.date_range("2025-01-01", periods=120, freq="D"),
             "price": [200_000 + value * 1_000 for value in range(120)],
-            "sqft": [900 + value * 5 for value in range(120)],
+            "sqft": [None if value % 15 == 0 else 900 + value * 5 for value in range(120)],
             "county": ["A", "B", "C", "A"] * 30,
             "latitude": [40.0, 41.0, 42.0, 43.0] * 30,
             "longitude": [-74.0, -75.0, -76.0, -77.0] * 30,
@@ -658,7 +749,7 @@ def test_visualizer_suggests_replayable_specs_from_profile():
     kinds = {item.spec.kind for item in suggestions}
     specs = [item.to_dict()["spec"] for item in suggestions]
 
-    assert {"missingness", "line", "bar", "scatter", "geo_scatter"} <= kinds
+    assert {"missingness", "missingness_matrix", "line", "bar", "scatter", "geo_scatter", "association_heatmap", "target_association", "target_profile"} <= kinds
     assert all(spec["kind"] and isinstance(spec["fields"], dict) for spec in specs)
     assert suggestions == sorted(suggestions, key=lambda item: item.score, reverse=True)
 

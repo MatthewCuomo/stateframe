@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -287,6 +289,7 @@ class ModelingExperimentResult:
     feature_count: int
     target: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
+    assessment: dict[str, Any] = field(default_factory=dict)
     holdout: dict[str, Any] = field(default_factory=dict)
     cross_validation: dict[str, Any] = field(default_factory=dict)
     search: dict[str, Any] = field(default_factory=dict)
@@ -295,6 +298,7 @@ class ModelingExperimentResult:
     predictions: list[dict[str, Any]] = field(default_factory=list)
     preprocessing: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    fitted_pipeline: Any | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -305,6 +309,7 @@ class ModelingExperimentResult:
             "row_count": int(self.row_count),
             "feature_count": int(self.feature_count),
             "metrics": _json_ready(self.metrics),
+            "assessment": _json_ready(self.assessment),
             "holdout": _json_ready(self.holdout),
             "cross_validation": _json_ready(self.cross_validation),
             "search": _json_ready(self.search),
@@ -323,6 +328,7 @@ class ModelingExperimentResult:
             "row_count": self.row_count,
             "feature_count": self.feature_count,
             "metrics": self.metrics,
+            "assessment": self.assessment,
             "best_params": self.search.get("best_params"),
             "explanation_method": self.explanation.get("method"),
         }
@@ -475,6 +481,41 @@ def run_modeling_experiment(
     if base.target not in profile.data.columns:
         raise ValueError(f"Unknown target column: {base.target}")
     return _run_supervised_experiment(profile, base, task=task)
+
+
+def build_modeling_artifact(
+    result: ModelingExperimentResult,
+    *,
+    profile: Profile | None = None,
+    entry_label: str | None = None,
+    base_path: str | Path | None = None,
+    persist_model: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Build a durable ledger-ready artifact for a modeling experiment."""
+
+    artifact = _modeling_artifact_payload(result)
+    if persist_model:
+        artifact = _persist_modeling_artifact_files(
+            artifact,
+            result,
+            profile=profile,
+            entry_label=entry_label or artifact["title"],
+            base_path=base_path,
+        )
+    summary = {
+        "artifact_kind": "model",
+        "task": result.task,
+        "estimator": result.estimator,
+        "target": result.target,
+        "row_count": int(result.row_count),
+        "feature_count": int(result.feature_count),
+        "metrics": _json_ready(result.metrics),
+        "primary_metric": _json_ready((result.assessment or {}).get("primary_metric")),
+        "rating": (result.assessment or {}).get("rating"),
+        "warning_count": len(result.warnings),
+        "saved": bool(artifact.get("saved")),
+    }
+    return artifact, summary, _modeling_replay_code(result.spec)
 
 
 def build_modeling_plan(
@@ -769,9 +810,11 @@ def _run_supervised_experiment(
         X_raw = X_raw.loc[keep_y]
         y = y.loc[keep_y]
         class_labels = []
+    warnings.extend(_preflight_supervised_experiment(profile, spec, task=task, X=X_raw, y=y))
 
-    estimator = _build_estimator(spec.estimator, task=task, random_state=spec.random_state, params=spec.estimator_params)
-    preprocessor, preprocessing_summary = _build_preprocessor(X_raw, feature_roles, spec, estimator_id=spec.estimator)
+    estimator_id = _supervised_estimator_id(spec.estimator, warnings=warnings)
+    estimator = _build_estimator(estimator_id, task=task, random_state=spec.random_state, params=spec.estimator_params)
+    preprocessor, preprocessing_summary = _build_preprocessor(X_raw, feature_roles, spec, estimator_id=estimator_id)
     pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
 
     split = dict(spec.split or {})
@@ -797,7 +840,7 @@ def _run_supervised_experiment(
     search_summary: dict[str, Any] = {"enabled": False}
     fitted = pipeline
     if _bool_setting((spec.search or {}).get("enabled"), False):
-        grid = _normalize_param_grid((spec.search or {}).get("param_grid") or _default_param_grid(spec.estimator, task))
+        grid = _normalize_param_grid((spec.search or {}).get("param_grid") or _default_param_grid(estimator_id, task))
         if grid:
             scoring = _resolve_scoring((spec.search or {}).get("scoring"), task)
             cv = _cv_splitter(task, y_train, int((spec.search or {}).get("cv_folds") or 3), random_state)
@@ -845,6 +888,17 @@ def _run_supervised_experiment(
         mean_squared_error=mean_squared_error,
         r2_score=r2_score,
     )
+    holdout = {
+        **holdout,
+        "prediction_audit": _prediction_audit_records(
+            frame,
+            y_test,
+            predictions,
+            class_labels=class_labels,
+            task=task,
+            limit=12,
+        ),
+    }
 
     cv_summary: dict[str, Any] = {"enabled": False}
     validation = dict(spec.validation or {})
@@ -865,6 +919,7 @@ def _run_supervised_experiment(
     feature_names = _feature_names(fitted, X_raw)
     model = fitted.named_steps["model"]
     transformed_test = _transformed_frame(fitted, X_test, feature_names)
+    feature_lineage = _feature_lineage(feature_names, feature_roles)
     feature_importance = _model_importance(model, feature_names)
     explanation = _explain_model(
         fitted,
@@ -877,6 +932,12 @@ def _run_supervised_experiment(
         fallback_importance=feature_importance,
         warnings=warnings,
     )
+    source_importance = _source_feature_importance(
+        explanation.get("top_features") or feature_importance,
+        feature_lineage,
+    )
+    if source_importance:
+        explanation = {**explanation, "source_features": source_importance}
 
     prediction_rows = _prediction_sample(
         X_test,
@@ -887,22 +948,38 @@ def _run_supervised_experiment(
         limit=25,
     )
     metrics = dict(holdout.get("metrics") or {})
+    assessment = _model_assessment(
+        task=task,
+        metrics=metrics,
+        warnings=warnings,
+        row_count=int(X_raw.shape[0]),
+        feature_count=int(len(feature_names)),
+        cross_validation=cv_summary,
+        search=search_summary,
+    )
     return ModelingExperimentResult(
         spec=spec,
         task=task,
-        estimator=spec.estimator,
+        estimator=estimator_id,
         target=target,
         row_count=int(X_raw.shape[0]),
         feature_count=int(len(feature_names)),
         metrics=metrics,
+        assessment=assessment,
         holdout=holdout,
         cross_validation=cv_summary,
         search=search_summary,
         feature_importance=feature_importance,
         explanation=explanation,
         predictions=prediction_rows,
-        preprocessing={**preprocessing_summary, "feature_roles": feature_roles},
+        preprocessing={
+            **preprocessing_summary,
+            "feature_roles": feature_roles,
+            "feature_lineage": feature_lineage,
+            "source_feature_count": len({row["source_column"] for row in feature_lineage}),
+        },
         warnings=warnings,
+        fitted_pipeline=fitted,
     )
 
 
@@ -937,6 +1014,7 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
     labels = pipeline.fit_predict(X_raw)
     feature_names = _feature_names(pipeline, X_raw)
     transformed = _transformed_frame(pipeline, X_raw, feature_names)
+    feature_lineage = _feature_lineage(feature_names, feature_roles)
     label_series = pd.Series(labels, index=X_raw.index, name="cluster")
     cluster_sizes = label_series.value_counts(dropna=False).sort_index().to_dict()
     metrics: dict[str, Any] = {
@@ -952,6 +1030,15 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
         metrics["inertia"] = _clean_metric(pipeline.named_steps["model"].inertia_)
     importance = _cluster_profile_importance(transformed, label_series)
     predictions = [{"index": _json_ready(index), "cluster": int(label)} for index, label in label_series.head(50).items()]
+    assessment = _model_assessment(
+        task="clustering",
+        metrics=metrics,
+        warnings=warnings,
+        row_count=int(X_raw.shape[0]),
+        feature_count=int(len(feature_names)),
+        cross_validation={"enabled": False},
+        search={"enabled": False},
+    )
     return ModelingExperimentResult(
         spec=spec,
         task="clustering",
@@ -960,6 +1047,7 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
         row_count=int(X_raw.shape[0]),
         feature_count=int(len(feature_names)),
         metrics=metrics,
+        assessment=assessment,
         holdout={},
         cross_validation={"enabled": False},
         search={"enabled": False},
@@ -968,11 +1056,18 @@ def _run_clustering_experiment(profile: Profile, spec: ModelingExperimentSpec) -
             "enabled": True,
             "method": "cluster_profile",
             "top_features": importance[:20],
+            "source_features": _source_feature_importance(importance, feature_lineage),
             "notes": ["Cluster observability is based on between-cluster mean separation per transformed feature."],
         },
         predictions=predictions,
-        preprocessing={**preprocessing_summary, "feature_roles": feature_roles},
+        preprocessing={
+            **preprocessing_summary,
+            "feature_roles": feature_roles,
+            "feature_lineage": feature_lineage,
+            "source_feature_count": len({row["source_column"] for row in feature_lineage}),
+        },
         warnings=warnings,
+        fitted_pipeline=pipeline,
     )
 
 
@@ -995,8 +1090,26 @@ def _select_feature_frame(
     warnings: list[str],
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     data = profile.data
-    requested = [column for column in (spec.features or []) if column in data.columns and column != exclude_target]
-    if requested:
+    manual_features = spec.features is not None
+    requested = []
+    missing_requested = []
+    for column in spec.features or []:
+        if column in {None, ""}:
+            continue
+        name = str(column)
+        if name not in data.columns:
+            missing_requested.append(name)
+            continue
+        if name == exclude_target:
+            warnings.append(f"Skipped selected feature because it is the target column: {name}")
+            continue
+        if _looks_like_target_leakage(name, exclude_target) and not _bool_setting((spec.preprocessing or {}).get("allow_target_derived_features"), False):
+            warnings.append(f"Skipped likely target-derived selected feature column: {name}")
+            continue
+        requested.append(name)
+    if missing_requested:
+        warnings.append("Skipped missing selected feature columns: " + ", ".join(missing_requested[:8]))
+    if manual_features:
         columns = requested
     else:
         columns = []
@@ -1034,6 +1147,56 @@ def _feature_role(column: Any, series: pd.Series) -> str:
     if semantic in _CATEGORICAL_FEATURE_TYPES or pd.api.types.is_bool_dtype(series) or pd.api.types.is_object_dtype(series) or isinstance(series.dtype, pd.CategoricalDtype):
         return "categorical"
     return "drop"
+
+
+def _preflight_supervised_experiment(
+    profile: Profile,
+    spec: ModelingExperimentSpec,
+    *,
+    task: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+) -> list[str]:
+    warnings: list[str] = []
+    if X.empty:
+        warnings.append("No usable features were available after feature filtering.")
+        return warnings
+    split = dict(spec.split or {})
+    test_size = _float_setting(split.get("test_size"), 0.25)
+    if test_size <= 0 or test_size >= 1:
+        warnings.append(f"Test size {test_size} is outside (0, 1); sklearn may reject this split.")
+    if X.shape[0] < 20:
+        warnings.append(f"Only {X.shape[0]:,} labeled rows are available for this experiment.")
+    if len(X.columns) > max(1, X.shape[0] * 2):
+        warnings.append("Feature count is very high relative to row count; validation metrics may be unstable.")
+    if spec.features:
+        selected = [str(item) for item in spec.features if item not in {None, ""}]
+        skipped = [item for item in selected if item not in X.columns]
+        if skipped:
+            warnings.append(f"{len(skipped)} selected feature(s) were not modeled after validation/filtering.")
+    validation = dict(spec.validation or {})
+    cv_folds = _int_setting(validation.get("cv_folds"), 5)
+    if str(validation.get("strategy") or "holdout") in {"cross_validation", "holdout_and_cv"} and cv_folds > X.shape[0]:
+        warnings.append(f"CV folds were requested as {cv_folds}, more than the available labeled rows.")
+    if task in {"binary_classification", "multiclass_classification"}:
+        counts = y.value_counts(dropna=False)
+        if counts.shape[0] < 2:
+            warnings.append("The target has fewer than two classes after dropping missing target rows.")
+        elif int(counts.min()) < 2:
+            warnings.append("At least one target class has fewer than two rows; stratified validation may be skipped.")
+        imbalance = float(counts.max() / max(1, counts.sum())) if counts.sum() else 0.0
+        if imbalance >= 0.9:
+            warnings.append(f"The largest target class is {imbalance:.1%} of labeled rows; accuracy can be misleading.")
+    target = spec.target
+    if target and target in profile.data.columns:
+        suspicious = [
+            column
+            for column in X.columns
+            if _looks_like_target_leakage(str(column), str(target))
+        ]
+        if suspicious:
+            warnings.append("Modeled features still include likely target-derived columns: " + ", ".join(suspicious[:8]))
+    return warnings
 
 
 def _looks_like_target_leakage(name: str, target: str | None) -> bool:
@@ -1109,9 +1272,17 @@ def _build_preprocessor(
     }
 
 
+def _supervised_estimator_id(estimator_id: str, *, warnings: list[str]) -> str:
+    estimator_id = str(estimator_id or "random_forest")
+    if estimator_id in {"random_forest", "xgboost", "knn", "linear"}:
+        return estimator_id
+    warnings.append(f"Estimator {estimator_id} is not available for supervised modeling; using random_forest.")
+    return "random_forest"
+
+
 def _build_estimator(estimator_id: str, *, task: str, random_state: int, params: dict[str, Any]):
     is_classification = task in {"binary_classification", "multiclass_classification"}
-    params = dict(params or {})
+    params = _clean_estimator_params(params)
     if estimator_id == "xgboost":
         try:
             from xgboost import XGBClassifier, XGBRegressor
@@ -1138,6 +1309,37 @@ def _build_estimator(estimator_id: str, *, task: str, random_state: int, params:
 
     defaults = {"n_estimators": 160, "min_samples_leaf": 2, "random_state": random_state, "n_jobs": -1}
     return (RandomForestClassifier if is_classification else RandomForestRegressor)(**{**defaults, **params})
+
+
+def _clean_estimator_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in dict(params or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                continue
+            coerced = _coerce_estimator_param(text)
+            if coerced is None:
+                continue
+            cleaned[str(key)] = coerced
+        else:
+            cleaned[str(key)] = value
+    return cleaned
+
+
+def _coerce_estimator_param(value: str) -> Any:
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    if lowered in {"none", "null"}:
+        return None
+    try:
+        number = float(value)
+    except Exception:
+        return value
+    return int(number) if number.is_integer() else number
 
 
 def _supervised_metrics(y_true: pd.Series, predictions: Any, proba: Any, *, task: str, class_labels: list[str], **metric_funcs: Any) -> dict[str, Any]:
@@ -1265,6 +1467,203 @@ def _residual_bins(values: pd.Series, *, bin_count: int) -> list[dict[str, Any]]
         }
         for index, count in enumerate(counts)
     ]
+
+
+def _prediction_audit_records(
+    source_frame: pd.DataFrame,
+    y_test: pd.Series,
+    predictions: Any,
+    *,
+    class_labels: list[str],
+    task: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    prediction_series = pd.Series(predictions, index=y_test.index, name="prediction")
+    rows = []
+    if task == "regression":
+        actual = pd.to_numeric(y_test, errors="coerce")
+        predicted = pd.to_numeric(prediction_series, errors="coerce")
+        audit = pd.DataFrame({"actual": actual, "prediction": predicted}).dropna()
+        if audit.empty:
+            return []
+        audit["residual"] = audit["prediction"] - audit["actual"]
+        audit["absolute_error"] = audit["residual"].abs()
+        selected = audit.sort_values("absolute_error", ascending=False).head(limit)
+        for index, row in selected.iterrows():
+            rows.append(
+                {
+                    "index": _json_ready(index),
+                    "actual": _clean_metric(row["actual"]),
+                    "prediction": _clean_metric(row["prediction"]),
+                    "residual": _clean_metric(row["residual"]),
+                    "absolute_error": _clean_metric(row["absolute_error"]),
+                    "record": _source_record(source_frame, index),
+                }
+            )
+        return rows
+
+    errors = prediction_series[prediction_series != y_test].head(limit)
+    selected = errors if not errors.empty else prediction_series.head(limit)
+    for index, prediction in selected.items():
+        actual = y_test.loc[index]
+        rows.append(
+            {
+                "index": _json_ready(index),
+                "actual": _label_value(actual, class_labels),
+                "prediction": _label_value(prediction, class_labels),
+                "correct": bool(prediction == actual),
+                "record": _source_record(source_frame, index),
+            }
+        )
+    return rows
+
+
+def _source_record(frame: pd.DataFrame, index: Any, *, limit: int = 40) -> dict[str, Any]:
+    try:
+        row = frame.loc[index]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+    except Exception:
+        return {}
+    values = row.to_dict() if hasattr(row, "to_dict") else {}
+    return {str(key): _json_ready(value) for key, value in list(values.items())[:limit]}
+
+
+def _model_assessment(
+    *,
+    task: str,
+    metrics: dict[str, Any],
+    warnings: list[str],
+    row_count: int,
+    feature_count: int,
+    cross_validation: dict[str, Any],
+    search: dict[str, Any],
+) -> dict[str, Any]:
+    primary_key = _primary_metric_key(task, metrics)
+    primary_value = metrics.get(primary_key) if primary_key else None
+    direction = "lower_is_better" if primary_key in {"mae", "rmse", "median_absolute_error", "bias_mean", "inertia", "davies_bouldin"} else "higher_is_better"
+    rating = _model_rating(task, primary_key, primary_value)
+    suggestions = _model_suggestions(
+        task=task,
+        metrics=metrics,
+        warnings=warnings,
+        row_count=row_count,
+        feature_count=feature_count,
+        cross_validation=cross_validation,
+        search=search,
+        rating=rating,
+    )
+    return {
+        "rating": rating,
+        "primary_metric": {
+            "key": primary_key,
+            "value": _clean_metric(primary_value),
+            "direction": direction,
+        },
+        "summary": _model_assessment_summary(task, rating, primary_key, primary_value),
+        "suggestions": suggestions,
+        "warning_count": len(warnings or []),
+    }
+
+
+def _primary_metric_key(task: str, metrics: dict[str, Any]) -> str:
+    preferred = {
+        "regression": ["r2", "mae", "rmse"],
+        "binary_classification": ["roc_auc", "f1", "accuracy"],
+        "multiclass_classification": ["roc_auc_ovr", "f1", "accuracy"],
+        "clustering": ["silhouette", "calinski_harabasz", "cluster_count"],
+    }.get(task, [])
+    for key in preferred:
+        if metrics.get(key) is not None:
+            return key
+    return next((key for key, value in metrics.items() if not isinstance(value, (dict, list)) and value is not None), "")
+
+
+def _model_rating(task: str, key: str, value: Any) -> str:
+    try:
+        score = float(value)
+    except Exception:
+        return "needs_review" if task != "clustering" else "exploratory"
+    if task == "regression" and key == "r2":
+        if score >= 0.75:
+            return "strong"
+        if score >= 0.4:
+            return "promising"
+        if score >= 0:
+            return "weak"
+        return "poor"
+    if task in {"binary_classification", "multiclass_classification"}:
+        if score >= 0.85:
+            return "strong"
+        if score >= 0.7:
+            return "promising"
+        if score >= 0.55:
+            return "weak"
+        return "poor"
+    if task == "clustering" and key == "silhouette":
+        if score >= 0.5:
+            return "strong"
+        if score >= 0.25:
+            return "promising"
+        return "exploratory"
+    return "needs_review"
+
+
+def _model_assessment_summary(task: str, rating: str, key: str, value: Any) -> str:
+    metric = f"{key}={_clean_metric(value)}" if key else "no primary metric"
+    if task == "clustering":
+        return f"Cluster run is {rating}; review segment sizes and source-column separation ({metric})."
+    return f"Model run is {rating}; use holdout diagnostics and feature lineage before trusting it ({metric})."
+
+
+def _model_suggestions(
+    *,
+    task: str,
+    metrics: dict[str, Any],
+    warnings: list[str],
+    row_count: int,
+    feature_count: int,
+    cross_validation: dict[str, Any],
+    search: dict[str, Any],
+    rating: str,
+) -> list[str]:
+    suggestions: list[str] = []
+    if warnings:
+        suggestions.append("Resolve or consciously accept the run warnings before treating the model as reliable.")
+    if row_count < 200:
+        suggestions.append("Use more labeled rows when possible; small holdouts can swing metrics heavily.")
+    if feature_count > max(10, row_count):
+        suggestions.append("Reduce or group sparse features; the transformed feature count is high for the available rows.")
+    if task == "regression":
+        r2 = _metric_number(metrics.get("r2"))
+        if r2 is not None and r2 < 0.4:
+            suggestions.append("Inspect residual records and try nonlinear/tree estimators, target transforms, or better location/time features.")
+        bias = _metric_number(metrics.get("bias_mean"))
+        if bias is not None and abs(bias) > 0:
+            suggestions.append("Check the mean residual for systematic over- or under-prediction.")
+    elif task in {"binary_classification", "multiclass_classification"}:
+        f1 = _metric_number(metrics.get("f1"))
+        if f1 is not None and f1 < 0.7:
+            suggestions.append("Review confusion-matrix misses and consider class balance, thresholding, or stronger features.")
+    elif task == "clustering":
+        if metrics.get("silhouette") is None:
+            suggestions.append("Try different cluster counts or DBSCAN settings; this run did not produce a stable separation metric.")
+        suggestions.append("Profile each cluster against source columns before using labels downstream.")
+    if not search.get("enabled") and rating in {"weak", "poor", "needs_review", "exploratory"}:
+        suggestions.append("Run grid search or compare another estimator before saving this as the preferred model.")
+    cv_scores = (cross_validation or {}).get("scores") or {}
+    if cv_scores:
+        suggestions.append("Compare holdout metrics with cross-validation means; large gaps are a sign of split sensitivity.")
+    return suggestions[:6]
+
+
+def _metric_number(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except Exception:
+        return None
 
 
 def _predict_proba_safe(model: Any, X: pd.DataFrame) -> Any:
@@ -1412,6 +1811,74 @@ def _transformed_frame(pipeline: Any, X: pd.DataFrame, feature_names: list[str])
     if hasattr(transformed, "toarray"):
         transformed = transformed.toarray()
     return pd.DataFrame(transformed, columns=feature_names, index=X.index)
+
+
+def _feature_lineage(feature_names: list[str], feature_roles: dict[str, str]) -> list[dict[str, Any]]:
+    rows = []
+    sources = sorted(feature_roles, key=len, reverse=True)
+    for feature in feature_names:
+        source = _source_for_transformed_feature(str(feature), sources)
+        role = feature_roles.get(source, "derived")
+        rows.append(
+            {
+                "feature": str(feature),
+                "source_column": source,
+                "role": role,
+                "transform": _feature_transform_label(str(feature), source, role),
+            }
+        )
+    return rows
+
+
+def _source_for_transformed_feature(feature: str, sources: list[str]) -> str:
+    if feature in sources:
+        return feature
+    for source in sources:
+        if feature.startswith(f"{source}_") or feature.startswith(f"{source}="):
+            return source
+    compact_feature = "".join(char for char in feature.lower() if char.isalnum())
+    for source in sources:
+        compact_source = "".join(char for char in source.lower() if char.isalnum())
+        if compact_source and compact_feature.startswith(compact_source):
+            return source
+    return feature
+
+
+def _feature_transform_label(feature: str, source: str, role: str) -> str:
+    if role == "datetime" and feature != source:
+        return "date_features"
+    if role == "categorical" and feature != source:
+        return "encoded_category"
+    if role == "numeric":
+        return "numeric_pipeline"
+    return role or "derived"
+
+
+def _source_feature_importance(rows: list[dict[str, Any]], lineage: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lineage_by_feature = {row["feature"]: row for row in lineage}
+    totals: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        feature = str(row.get("feature") or "")
+        if not feature:
+            continue
+        value = row.get("mean_abs_shap", row.get("permutation_importance", row.get("importance", row.get("cluster_separation", 0))))
+        try:
+            score = abs(float(value or 0))
+        except Exception:
+            score = 0.0
+        source = lineage_by_feature.get(feature, {}).get("source_column") or feature
+        item = totals.setdefault(str(source), {"source_column": str(source), "importance": 0.0, "feature_count": 0})
+        item["importance"] += score
+        item["feature_count"] += 1
+    result = [
+        {
+            "source_column": source,
+            "importance": _clean_metric(item["importance"]),
+            "feature_count": int(item["feature_count"]),
+        }
+        for source, item in totals.items()
+    ]
+    return sorted(result, key=lambda item: float(item.get("importance") or 0), reverse=True)[:50]
 
 
 def _model_importance(model: Any, feature_names: list[str]) -> list[dict[str, Any]]:
@@ -1568,18 +2035,138 @@ def _shap_payload(values: Any, sample: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _modeling_artifact_payload(result: ModelingExperimentResult) -> dict[str, Any]:
+    title = f"{result.estimator} {result.task}".strip()
+    if result.target:
+        title = f"{title} for {result.target}"
+    payload = result.to_dict()
+    return {
+        "kind": "model",
+        "artifact_kind": "modeling_experiment",
+        "title": title,
+        "task": result.task,
+        "estimator": result.estimator,
+        "target": result.target,
+        "metrics": _json_ready(result.metrics),
+        "assessment": _json_ready(result.assessment),
+        "spec": payload.get("spec"),
+        "result": payload,
+        "warnings": list(result.warnings),
+        "feature_lineage": _json_ready((result.preprocessing or {}).get("feature_lineage") or []),
+    }
+
+
+def _persist_modeling_artifact_files(
+    artifact: dict[str, Any],
+    result: ModelingExperimentResult,
+    *,
+    profile: Profile | None,
+    entry_label: str,
+    base_path: str | Path | None,
+) -> dict[str, Any]:
+    from stateframe import workspace
+
+    current_workspace = workspace.current()
+    root = Path(base_path) if base_path is not None else current_workspace.root / "stateframe_saves"
+    tree_id = current_workspace.tree_id_for_profile(profile) if profile is not None else "floating"
+    output_dir = root / _artifact_slug(tree_id) / _artifact_slug(entry_label)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_files: list[dict[str, Any]] = []
+    payload = result.to_dict()
+    result_path = output_dir / "model_result.json"
+    result_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    saved_files.append(_artifact_file_record(current_workspace.root, result_path, kind="model_result", format="json"))
+
+    predictions = pd.DataFrame(result.predictions or [])
+    if not predictions.empty:
+        predictions_path = output_dir / "prediction_sample.csv"
+        predictions.to_csv(predictions_path, index=False)
+        saved_files.append(_artifact_file_record(current_workspace.root, predictions_path, kind="predictions", format="csv"))
+
+    lineage = pd.DataFrame((result.preprocessing or {}).get("feature_lineage") or [])
+    if not lineage.empty:
+        lineage_path = output_dir / "feature_lineage.csv"
+        lineage.to_csv(lineage_path, index=False)
+        saved_files.append(_artifact_file_record(current_workspace.root, lineage_path, kind="feature_lineage", format="csv"))
+
+    if result.fitted_pipeline is not None:
+        try:
+            import joblib
+
+            model_path = output_dir / "model.joblib"
+            joblib.dump(result.fitted_pipeline, model_path)
+            artifact["model_path"] = _display_artifact_path(current_workspace.root, model_path)
+            saved_files.append(_artifact_file_record(current_workspace.root, model_path, kind="model_pipeline", format="joblib"))
+        except Exception as exc:
+            artifact.setdefault("persist_warnings", []).append(f"Model pipeline persistence failed: {exc}")
+
+    manifest = {
+        "kind": "stateframe_artifact_manifest",
+        "artifact_kind": artifact.get("kind"),
+        "title": artifact.get("title"),
+        "files": saved_files,
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    saved_files.append(_artifact_file_record(current_workspace.root, manifest_path, kind="manifest", format="json"))
+
+    result_artifact = dict(artifact)
+    result_artifact["saved"] = True
+    result_artifact["save_dir"] = _display_artifact_path(current_workspace.root, output_dir)
+    result_artifact["result_path"] = _display_artifact_path(current_workspace.root, result_path)
+    result_artifact["saved_files"] = saved_files
+    return result_artifact
+
+
+def _modeling_replay_code(spec: ModelingExperimentSpec) -> str:
+    return (
+        "spec = "
+        + repr(spec.to_dict())
+        + "\n"
+        + "result = sf.modeling_experiment(sf.pull(), spec)"
+    )
+
+
+def _artifact_slug(value: Any) -> str:
+    text = "".join(char if char.isalnum() or char in "._-" else "_" for char in str(value or "").strip())
+    text = "_".join(part for part in text.split("_") if part)
+    return text[:80] or "artifact"
+
+
+def _display_artifact_path(root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except Exception:
+        return str(path)
+
+
+def _artifact_file_record(root: Path, path: Path, *, kind: str, format: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "format": format,
+        "path": _display_artifact_path(root, path),
+        "bytes": int(path.stat().st_size) if path.exists() else 0,
+    }
+
+
 def _prediction_sample(X_test: pd.DataFrame, y_test: pd.Series, predictions: Any, proba: Any, *, class_labels: list[str], limit: int) -> list[dict[str, Any]]:
     rows = []
     for offset, (index, actual) in enumerate(y_test.head(limit).items()):
         prediction = predictions[offset]
-        row = {"index": _json_ready(index), "actual": _json_ready(actual), "prediction": _json_ready(prediction)}
-        try:
-            residual = float(prediction) - float(actual)
-            if np.isfinite(residual):
-                row["residual"] = _clean_metric(residual)
-                row["absolute_error"] = _clean_metric(abs(residual))
-        except Exception:
-            pass
+        row = {
+            "index": _json_ready(index),
+            "actual": _label_value(actual, class_labels),
+            "prediction": _label_value(prediction, class_labels),
+        }
+        if not class_labels:
+            try:
+                residual = float(prediction) - float(actual)
+                if np.isfinite(residual):
+                    row["residual"] = _clean_metric(residual)
+                    row["absolute_error"] = _clean_metric(abs(residual))
+            except Exception:
+                pass
         if proba is not None:
             probabilities = proba[offset]
             row["probabilities"] = {
@@ -1588,6 +2175,18 @@ def _prediction_sample(X_test: pd.DataFrame, y_test: pd.Series, predictions: Any
             }
         rows.append(row)
     return rows
+
+
+def _label_value(value: Any, class_labels: list[str]) -> Any:
+    if not class_labels:
+        return _json_ready(value)
+    try:
+        index = int(value)
+        if 0 <= index < len(class_labels):
+            return class_labels[index]
+    except Exception:
+        pass
+    return _json_ready(value)
 
 
 def _datetime_features(frame: Any) -> np.ndarray:
@@ -1740,6 +2339,7 @@ __all__ = [
     "ModelingExperimentSpec",
     "ModelingPlan",
     "build_modeling_plan",
+    "build_modeling_artifact",
     "default_modeling_experiment_spec",
     "modeling_experiment_catalog",
     "normalize_modeling_experiment_spec",

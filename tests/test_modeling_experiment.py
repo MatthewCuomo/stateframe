@@ -35,6 +35,7 @@ def test_modeling_experiment_runs_random_forest_with_shap_observability():
     assert payload["holdout"]["curves"]["precision_recall"]
     assert payload["holdout"]["curves"]["roc"]
     assert payload["cross_validation"]["enabled"] is True
+    assert payload["assessment"]["primary_metric"]["key"] in {"roc_auc", "f1", "accuracy"}
     assert payload["explanation"]["method"] == "shap"
     assert payload["explanation"]["top_features"]
     assert payload["explanation"]["beeswarm"]
@@ -86,6 +87,7 @@ def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
         {
             "task": "regression",
             "estimator": "linear",
+            "estimator_params": {"alpha": None},
             "sample": {"enabled": True, "max_rows": 30, "random_state": 7},
             "explanation": {"enabled": False},
         }
@@ -99,6 +101,8 @@ def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
     assert result.holdout["residual_summary"]["p90_absolute_error"] is not None
     assert result.holdout["worst_predictions"]
     assert result.holdout["residual_bins"]
+    assert result.holdout["prediction_audit"][0]["record"]["price"] is not None
+    assert result.assessment["primary_metric"]["key"] == "r2"
 
 
 def test_modeling_experiment_names_datetime_features_after_preprocessing():
@@ -123,6 +127,64 @@ def test_modeling_experiment_names_datetime_features_after_preprocessing():
     feature_names = [row["feature"] for row in result.feature_importance]
     assert any(name.startswith("sold_date_") for name in feature_names)
     assert not any(name.startswith("datetime_") for name in feature_names)
+
+
+def test_modeling_experiment_filters_manual_leakage_and_records_lineage():
+    rows = 60
+    df = pd.DataFrame(
+        {
+            "sold_price": [200_000 + value * 7_500 for value in range(rows)],
+            "sold_price_per_sqft": [220 + value for value in range(rows)],
+            "sqft": [900 + value * 20 for value in range(rows)],
+            "county": ["A", "B", "C"] * 20,
+            "sold_date": pd.date_range("2025-01-01", periods=rows, freq="D"),
+        }
+    )
+    scan = sf.scan(df, target="sold_price", goal="modeling")
+
+    result = scan.modeling_experiment(
+        {
+            "task": "regression",
+            "estimator": "random_forest",
+            "features": ["sqft", "county", "sold_date", "sold_price_per_sqft"],
+            "explanation": {"enabled": True, "method": "model_importance"},
+        }
+    )
+
+    assert any("target-derived selected feature" in warning for warning in result.warnings)
+    assert "sold_price_per_sqft" not in result.preprocessing["feature_roles"]
+    lineage = result.preprocessing["feature_lineage"]
+    assert any(row["source_column"] == "sold_date" and row["transform"] == "date_features" for row in lineage)
+    assert any(row["source_column"] == "county" and row["transform"] == "encoded_category" for row in lineage)
+    assert result.explanation["source_features"]
+
+
+def test_modeling_artifact_persists_result_model_and_lineage(tmp_path):
+    sf.workspace.configure(root=tmp_path, name="model artifact")
+    df = pd.DataFrame(
+        {
+            "sqft": [800 + value * 30 for value in range(40)],
+            "city": ["A", "B"] * 20,
+            "price": [150_000 + value * 9_000 for value in range(40)],
+        }
+    )
+    scan = sf.scan(df, target="price", goal="modeling")
+
+    artifact, summary, code = sf.modeling_artifact(
+        scan,
+        {
+            "task": "regression",
+            "estimator": "linear",
+            "explanation": {"enabled": True, "method": "model_importance"},
+        },
+    )
+
+    saved_kinds = {item["kind"] for item in artifact["saved_files"]}
+    assert artifact["kind"] == "model"
+    assert artifact["saved"] is True
+    assert {"model_result", "model_pipeline", "feature_lineage", "manifest"} <= saved_kinds
+    assert summary["artifact_kind"] == "model"
+    assert "sf.modeling_experiment" in code
 
 
 def test_modeling_experiment_supports_xgboost_when_available():
@@ -164,6 +226,7 @@ def test_modeling_experiment_supports_clustering():
     assert result.task == "clustering"
     assert result.metrics["cluster_count"] == 2
     assert result.explanation["method"] == "cluster_profile"
+    assert result.assessment["rating"] in {"strong", "promising", "exploratory", "needs_review"}
 
 
 def test_modeling_catalog_and_lens_are_registered():

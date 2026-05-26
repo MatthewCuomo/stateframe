@@ -209,6 +209,7 @@ function render({ model, el, signal }) {
       open_modeling: "Loading modeling workbench",
       apply_modeling: "Applying modeling branch",
       run_modeling_experiment: "Running modeling experiment",
+      save_modeling_experiment: "Saving modeling experiment",
       refresh: "Refreshing workspace web",
       browse_files: "Loading workspace files",
       scan_file: "Scanning selected file",
@@ -621,6 +622,7 @@ function normalizeModelingState(raw, payload) {
     scaleMethod: scaleMethods.has(raw?.scaleMethod) ? raw.scaleMethod : "none",
     experiment,
     search: raw?.search || "",
+    runHistory: Array.isArray(raw?.runHistory) ? raw.runHistory.filter((item) => item && typeof item === "object").slice(0, 8) : [],
   };
 }
 
@@ -710,6 +712,21 @@ function defaultEstimatorForTask(task, current) {
   if (task === "clustering") return "kmeans";
   if (!current || ["kmeans", "agglomerative", "dbscan"].includes(current)) return "random_forest";
   return current;
+}
+
+function modelingEstimatorChoices(catalog, task) {
+  const choices = (catalog?.estimators || [])
+    .filter((item) => !Array.isArray(item.tasks) || item.tasks.includes(task))
+    .map((item) => [item.id, item.label || item.id]);
+  return choices.length ? choices : [["random_forest", "Random forest"]];
+}
+
+function compatibleModelingEstimator(catalog, task, estimator) {
+  const choices = modelingEstimatorChoices(catalog, task);
+  if (choices.some(([value]) => value === estimator)) return estimator;
+  const fallback = defaultEstimatorForTask(task, estimator);
+  if (choices.some(([value]) => value === fallback)) return fallback;
+  return choices[0][0];
 }
 
 function modelingFeatureCandidates(payload, targetValue, options = {}) {
@@ -1834,6 +1851,8 @@ function renderArtifacts(artifacts, { full = false } = {}) {
   for (const artifact of artifacts) {
     if (artifact?.kind === "code_leaf") {
       list.appendChild(renderCodeLeafArtifact(artifact, { full: false }));
+    } else if (artifact?.kind === "model") {
+      list.appendChild(renderModelArtifact(artifact, { full }));
     } else if (artifact?.kind === "plot" && (artifact.preview_data_url || artifact.html || artifact.plotly_json)) {
       const item = document.createElement("div");
       item.className = "stateframe-web-plot-artifact";
@@ -1870,6 +1889,36 @@ function renderArtifacts(artifacts, { full = false } = {}) {
     }
   }
   return list;
+}
+
+function renderModelArtifact(artifact, { full = false } = {}) {
+  const item = document.createElement("div");
+  item.className = "stateframe-web-plot-artifact";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-plot-artifact-title";
+  title.textContent = artifact.title || "Modeling experiment";
+  item.appendChild(title);
+  item.appendChild(keyValueList({
+    Target: artifact.target || "None",
+    Task: artifact.task || "",
+    Estimator: artifact.estimator || "",
+    Saved: artifact.saved ? "yes" : "metadata only",
+    "Model file": artifact.model_path || "",
+    "Result file": artifact.result_path || "",
+  }));
+  if (artifact.metrics) item.appendChild(section("Metrics", renderModelingMetricTiles(artifact.metrics)));
+  if (artifact.assessment) item.appendChild(section("Model Review", renderModelingAssessment(artifact.assessment)));
+  const sourceRows = artifact.result?.explanation?.source_features || [];
+  if (Array.isArray(sourceRows) && sourceRows.length) {
+    item.appendChild(section("Source Importance", renderModelingSourceFeatureBars(sourceRows)));
+  }
+  if (full && Array.isArray(artifact.saved_files) && artifact.saved_files.length) {
+    item.appendChild(section("Saved Files", renderSavedFiles(artifact.saved_files)));
+  }
+  if (full && artifact.result) {
+    item.appendChild(section("Result", jsonBlock({ spec: artifact.spec, warnings: artifact.warnings || [] })));
+  }
+  return item;
 }
 
 function renderLeafOutput(tree, entry, setState, sendCommand, commandStatus, ui) {
@@ -2198,12 +2247,14 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   const runLabel = !payload.modeling?.target && experimentTask === "clustering" ? "Run Clustering" : "Run Experiment";
   const run = button(runLabel, () => sendCommand("run_modeling_experiment", { modelingState: visibleModelingState }));
   run.disabled = commandStatus?.status === "loading" && commandStatus.action === "run_modeling_experiment";
+  const saveModel = button("Save Model Leaf", () => sendCommand("save_modeling_experiment", { modelingState: visibleModelingState }));
+  saveModel.disabled = commandStatus?.status === "loading" && ["run_modeling_experiment", "save_modeling_experiment"].includes(commandStatus.action);
   const defaults = button("Select Defaults", () => setModelingState({
     selectedActionIds: actions.filter((action) => action.applies_by_default !== false).map((action) => action.id).filter(Boolean),
   }));
   const all = button("All", () => setModelingState({ selectedActionIds: actions.map((action) => action.id).filter(Boolean) }));
   const none = button("None", () => setModelingState({ selectedActionIds: [] }));
-  top.append(title, meta, defaults, all, none, run, apply);
+  top.append(title, meta, defaults, all, none, run, saveModel, apply);
   shell.appendChild(top);
 
   if (commandStatus?.status === "saved" && commandStatus.action === "apply_modeling") {
@@ -2212,6 +2263,16 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
     saved.appendChild(textSpan(`Saved: ${commandStatus.title || commandStatus.entry_id || "modeling branch"}`, ""));
     if (commandStatus.entry_id) {
       const view = button("View Branch", () => setState({ viewMode: "web", selectedEntryId: commandStatus.entry_id }));
+      view.classList.add("is-tiny");
+      saved.appendChild(view);
+    }
+    shell.appendChild(saved);
+  } else if (commandStatus?.status === "saved" && commandStatus.action === "save_modeling_experiment") {
+    const saved = document.createElement("div");
+    saved.className = "stateframe-web-status is-saved";
+    saved.appendChild(textSpan(`Saved model: ${commandStatus.title || commandStatus.entry_id || "model leaf"}`, ""));
+    if (commandStatus.entry_id) {
+      const view = button("Open Leaf", () => setState({ viewMode: "leaf", selectedEntryId: commandStatus.entry_id }));
       view.classList.add("is-tiny");
       saved.appendChild(view);
     }
@@ -2581,7 +2642,14 @@ function renderModelingControls(payload, modelingState, setModelingState) {
   panel.dataset.scrollKey = "modeling-controls";
   const summary = payload.modeling || {};
   const experiment = modelingState.experiment || payload.default_experiment || {};
+  const updateExperiment = (patch) => setModelingState({ experiment: mergeDeep(experiment, patch) });
   const targetColumn = modelingColumnForValue(payload, experiment.target || summary.target);
+  const effectiveTask = (experiment.task && experiment.task !== "auto") ? experiment.task : inferModelingTaskForColumn(targetColumn);
+  const estimatorExperiment = {
+    ...experiment,
+    task: effectiveTask,
+    estimator: compatibleModelingEstimator(payload.experiment_catalog || {}, effectiveTask, experiment.estimator),
+  };
   const sample = experiment.sample || {};
   const featureCount = Array.isArray(experiment.features) && experiment.features.length ? formatInt(experiment.features.length) : "Auto";
   panel.appendChild(section("Plan Summary", keyValueList({
@@ -2621,9 +2689,38 @@ function renderModelingControls(payload, modelingState, setModelingState) {
   );
   panel.appendChild(section("Scaling", scaling));
   panel.appendChild(section("Experiment", renderModelingExperimentControls(payload, modelingState, setModelingState)));
+  panel.appendChild(section("Estimator Settings", renderModelingEstimatorParamControls(estimatorExperiment, updateExperiment)));
   panel.appendChild(section("Feature Scope", renderModelingFeaturePicker(payload, modelingState, setModelingState)));
+  if (Array.isArray(modelingState.runHistory) && modelingState.runHistory.length) {
+    panel.appendChild(section("Run Comparison", renderModelingRunHistory(modelingState.runHistory)));
+  }
   panel.appendChild(section("Columns", renderCleaningColumnSummary(payload.columns || [])));
   return panel;
+}
+
+function renderModelingRunHistory(rows) {
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["run", "estimator", "rows", "primary metric", "warnings"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const row of rows.slice(0, 8)) {
+    const metrics = row.metrics || {};
+    const primaryKey = ["r2", "roc_auc", "accuracy", "f1", "mae", "rmse", "silhouette"].find((key) => metrics[key] !== undefined && metrics[key] !== null) || Object.keys(metrics)[0] || "";
+    const tr = document.createElement("tr");
+    tr.append(
+      td(row.entry_id || row.id || ""),
+      td(`${row.estimator || ""} / ${row.task || ""}`),
+      td(formatInt(row.row_count || 0)),
+      td(primaryKey ? `${primaryKey}: ${formatModelingMetricValue(primaryKey, metrics[primaryKey])}` : ""),
+      td(formatInt(row.warning_count || 0)),
+    );
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return table;
 }
 
 function renderModelingExperimentControls(payload, modelingState, setModelingState) {
@@ -2635,6 +2732,10 @@ function renderModelingExperimentControls(payload, modelingState, setModelingSta
   const columns = payload.columns || [];
   const targetChoices = [["", "No target (clustering)"], ...columns.map((column) => [modelingColumnValue(column), modelingColumnLabel(column)])];
   const explanationChoices = (catalog.explanation?.methods || []).map((item) => [item.id, item.label || item.id]);
+  const targetColumn = modelingColumnForValue(payload, experiment.target);
+  const effectiveTask = (experiment.task && experiment.task !== "auto") ? experiment.task : inferModelingTaskForColumn(targetColumn);
+  const estimatorChoices = modelingEstimatorChoices(catalog, effectiveTask);
+  const estimatorValue = compatibleModelingEstimator(catalog, effectiveTask, experiment.estimator);
   const onTargetChange = (value) => {
     const targetColumn = modelingColumnForValue(payload, value);
     const task = value ? inferModelingTaskForColumn(targetColumn) : "clustering";
@@ -2648,8 +2749,11 @@ function renderModelingExperimentControls(payload, modelingState, setModelingSta
   };
   stack.append(
     selectSetting("Target", experiment.target || "", targetChoices, onTargetChange, "modeling-exp-target"),
-    selectSetting("Task", experiment.task || "auto", (catalog.tasks || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ task: value }), "modeling-exp-task"),
-    selectSetting("Estimator", experiment.estimator || "random_forest", (catalog.estimators || []).map((item) => [item.id, item.label || item.id]), (value) => updateExperiment({ estimator: value }), "modeling-exp-estimator"),
+    selectSetting("Task", experiment.task || "auto", (catalog.tasks || []).map((item) => [item.id, item.label || item.id]), (value) => {
+      const nextTask = value === "auto" ? inferModelingTaskForColumn(targetColumn) : value;
+      updateExperiment({ task: value, estimator: defaultEstimatorForTask(nextTask, experiment.estimator) });
+    }, "modeling-exp-task"),
+    selectSetting("Estimator", estimatorValue, estimatorChoices, (value) => updateExperiment({ estimator: value }), "modeling-exp-estimator"),
     checkboxSetting("Limit rows", Boolean(experiment.sample?.enabled), (value) => updateExperiment({ sample: { enabled: value } }), "modeling-exp-sample-enabled"),
     numberSetting("Max training rows", experiment.sample?.max_rows ?? "", (value) => updateExperiment({ sample: { max_rows: value === "" ? null : Number(value), enabled: value !== "" ? true : Boolean(experiment.sample?.enabled) } }), "modeling-exp-sample-rows", "100", null, "500"),
     numberSetting("Test size", experiment.split?.test_size ?? 0.25, (value) => updateExperiment({ split: { test_size: Number(value) } }), "modeling-exp-test-size", "0.05", "0.6", "0.05"),
@@ -2660,9 +2764,59 @@ function renderModelingExperimentControls(payload, modelingState, setModelingSta
     selectSetting("Explanation", experiment.explanation?.method || "auto", explanationChoices.length ? explanationChoices : [["auto", "Auto"], ["permutation", "Permutation"], ["model_importance", "Model native"]], (value) => updateExperiment({ explanation: { method: value } }), "modeling-exp-explanation-method"),
     checkboxSetting("Grid search", Boolean(experiment.search?.enabled), (value) => updateExperiment({ search: { enabled: value } }), "modeling-exp-grid"),
     checkboxSetting("Explain model", experiment.explanation?.enabled !== false, (value) => updateExperiment({ explanation: { enabled: value } }), "modeling-exp-shap"),
-    numberSetting("Clusters", experiment.clustering?.n_clusters ?? 3, (value) => updateExperiment({ clustering: { n_clusters: Number(value) } }), "modeling-exp-clusters", "2", "30", "1"),
   );
   return stack;
+}
+
+function renderModelingEstimatorParamControls(experiment, updateExperiment) {
+  const stack = document.createElement("div");
+  stack.className = "stateframe-web-cleaning-control-stack";
+  const estimator = experiment.estimator || "random_forest";
+  const task = experiment.task || "auto";
+  const params = experiment.estimator_params || {};
+  const clustering = experiment.clustering || {};
+  const setParam = (key, value) => updateExperiment({ estimator_params: { [key]: nullableNumber(value) } });
+  const setRawParam = (key, value) => updateExperiment({ estimator_params: { [key]: value } });
+  const setClustering = (key, value) => updateExperiment({ clustering: { [key]: nullableNumber(value) } });
+
+  if (estimator === "random_forest") {
+    stack.append(
+      numberSetting("Trees", params.n_estimators ?? 160, (value) => setParam("n_estimators", value), "modeling-param-rf-trees", "10", "1000", "10"),
+      numberSetting("Max depth", params.max_depth ?? "", (value) => setParam("max_depth", value), "modeling-param-rf-depth", "1", "100", "1"),
+      numberSetting("Min leaf", params.min_samples_leaf ?? 2, (value) => setParam("min_samples_leaf", value), "modeling-param-rf-leaf", "1", "100", "1"),
+    );
+  } else if (estimator === "knn") {
+    stack.append(
+      numberSetting("Neighbors", params.n_neighbors ?? 5, (value) => setParam("n_neighbors", value), "modeling-param-knn-neighbors", "1", "100", "1"),
+      selectSetting("Weights", params.weights || "uniform", [["uniform", "Uniform"], ["distance", "Distance"]], (value) => setRawParam("weights", value), "modeling-param-knn-weights"),
+    );
+  } else if (estimator === "linear") {
+    if (["binary_classification", "multiclass_classification"].includes(task)) {
+      stack.appendChild(numberSetting("Regularization C", params.C ?? 1, (value) => setParam("C", value), "modeling-param-linear-c", "0.001", "1000", "0.1"));
+    } else {
+      stack.appendChild(numberSetting("Ridge alpha", params.alpha ?? 1, (value) => setParam("alpha", value), "modeling-param-linear-alpha", "0", "1000", "0.1"));
+    }
+  } else if (estimator === "xgboost") {
+    stack.append(
+      numberSetting("Trees", params.n_estimators ?? 80, (value) => setParam("n_estimators", value), "modeling-param-xgb-trees", "10", "1000", "10"),
+      numberSetting("Max depth", params.max_depth ?? 4, (value) => setParam("max_depth", value), "modeling-param-xgb-depth", "1", "20", "1"),
+      numberSetting("Learning rate", params.learning_rate ?? 0.08, (value) => setParam("learning_rate", value), "modeling-param-xgb-rate", "0.001", "1", "0.01"),
+    );
+  } else if (["kmeans", "agglomerative"].includes(estimator)) {
+    stack.appendChild(numberSetting("Clusters", clustering.n_clusters ?? 3, (value) => setClustering("n_clusters", value), "modeling-param-clusters", "2", "30", "1"));
+  } else if (estimator === "dbscan") {
+    stack.append(
+      numberSetting("Epsilon", clustering.eps ?? 0.5, (value) => setClustering("eps", value), "modeling-param-dbscan-eps", "0.01", "100", "0.1"),
+      numberSetting("Min samples", clustering.min_samples ?? 5, (value) => setClustering("min_samples", value), "modeling-param-dbscan-min", "1", "100", "1"),
+    );
+  }
+  return stack.children.length ? stack : empty("No additional settings for this estimator.");
+}
+
+function nullableNumber(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function renderModelingFeaturePicker(payload, modelingState, setModelingState) {
@@ -2720,7 +2874,13 @@ function renderModelingExperimentResult(result) {
   title.textContent = `Experiment: ${result.estimator || "model"} / ${result.task || ""}`;
   panel.appendChild(title);
   panel.appendChild(section("Training Setup", renderModelingTrainingSetup(result)));
+  if (result.assessment && Object.keys(result.assessment).length) {
+    panel.appendChild(section("Model Review", renderModelingAssessment(result.assessment)));
+  }
   panel.appendChild(section("Metrics", renderModelingMetricTiles(result.metrics || {})));
+  if (result.cross_validation?.enabled) {
+    panel.appendChild(section("Cross-validation", renderModelingCrossValidation(result.cross_validation)));
+  }
   if (result.task === "regression" && (Array.isArray(result.predictions) && result.predictions.length || result.holdout?.residual_summary)) {
     panel.appendChild(section("Prediction Check", renderModelingRegressionDiagnostics(result)));
   }
@@ -2732,6 +2892,9 @@ function renderModelingExperimentResult(result) {
   }
   if (result.holdout?.curves?.precision_recall?.length || result.holdout?.curves?.roc?.length) {
     panel.appendChild(section("Curves", renderModelingCurvePanel(result.holdout.curves || {})));
+  }
+  if (Array.isArray(result.holdout?.prediction_audit) && result.holdout.prediction_audit.length) {
+    panel.appendChild(section("Prediction Records", renderModelingPredictionAudit(result.holdout.prediction_audit)));
   }
   const search = result.search || {};
   if (search.enabled) {
@@ -2746,6 +2909,12 @@ function renderModelingExperimentResult(result) {
   const features = explanation.top_features || result.feature_importance || [];
   if (features.length) {
     panel.appendChild(section("Top Features", renderModelingFeatureBars(features)));
+  }
+  if (Array.isArray(explanation.source_features) && explanation.source_features.length) {
+    panel.appendChild(section("Top Source Columns", renderModelingSourceFeatureBars(explanation.source_features)));
+  }
+  if (Array.isArray(result.preprocessing?.feature_lineage) && result.preprocessing.feature_lineage.length) {
+    panel.appendChild(section("Feature Lineage", renderModelingFeatureLineage(result.preprocessing.feature_lineage)));
   }
   if (Array.isArray(explanation.beeswarm) && explanation.beeswarm.length) {
     panel.appendChild(section("SHAP Beeswarm", renderModelingBeeswarmPlot(explanation.beeswarm)));
@@ -2776,6 +2945,54 @@ function renderModelingTrainingSetup(result) {
     "Test size": split.test_size ?? "",
   };
   return keyValueList(values);
+}
+
+function renderModelingAssessment(assessment) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-control-stack";
+  const metric = assessment.primary_metric || {};
+  wrap.appendChild(keyValueList({
+    Rating: assessment.rating || "",
+    "Primary metric": metric.key ? `${metric.key}: ${formatModelingMetricValue(metric.key, metric.value)}` : "",
+    Direction: metric.direction ? metric.direction.replaceAll("_", " ") : "",
+    Summary: assessment.summary || "",
+    Warnings: formatInt(assessment.warning_count || 0),
+  }));
+  if (Array.isArray(assessment.suggestions) && assessment.suggestions.length) {
+    const list = document.createElement("div");
+    list.className = "stateframe-web-cleaning-column-list";
+    for (const item of assessment.suggestions.slice(0, 6)) {
+      const row = document.createElement("div");
+      row.className = "stateframe-web-cleaning-column";
+      row.appendChild(textSpan(item, "stateframe-web-visual-column-name"));
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+  }
+  return wrap;
+}
+
+function renderModelingCrossValidation(crossValidation) {
+  const scores = crossValidation.scores || {};
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["metric", "mean", "std", "folds"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const [metric, row] of Object.entries(scores)) {
+    const tr = document.createElement("tr");
+    tr.append(
+      td(metric),
+      td(formatNumber(row?.mean)),
+      td(formatNumber(row?.std)),
+      td(Array.isArray(row?.folds) ? row.folds.map((value) => formatNumber(value)).join(", ") : ""),
+    );
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return tbody.children.length ? table : empty("No cross-validation scores available.");
 }
 
 function renderModelingMetricTiles(metrics) {
@@ -3033,6 +3250,61 @@ function renderModelingClassificationReport(report) {
   return table;
 }
 
+function renderModelingPredictionAudit(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-records";
+  for (const row of (rows || []).slice(0, 10)) {
+    const details = document.createElement("details");
+    details.className = "stateframe-web-model-record";
+    const summary = document.createElement("summary");
+    const status = row.correct === false ? "miss" : row.correct === true ? "match" : "check";
+    summary.textContent = `Row ${row.index}: ${status} / actual ${cleaningPreviewText(row.actual)} / predicted ${cleaningPreviewText(row.prediction)}`;
+    details.appendChild(summary);
+    details.appendChild(keyValueList({
+      Actual: cleaningPreviewText(row.actual),
+      Prediction: cleaningPreviewText(row.prediction),
+      Residual: row.residual === undefined ? "" : formatNumber(row.residual),
+      "Absolute error": row.absolute_error === undefined ? "" : formatNumber(row.absolute_error),
+    }));
+    const record = row.record || {};
+    if (Object.keys(record).length) {
+      details.appendChild(keyValueList(Object.fromEntries(Object.entries(record).slice(0, 24))));
+    }
+    wrap.appendChild(details);
+  }
+  return wrap.children.length ? wrap : empty("No prediction audit records available.");
+}
+
+function renderModelingFeatureLineage(rows) {
+  const grouped = {};
+  for (const row of rows || []) {
+    const source = row.source_column || row.feature || "";
+    if (!source) continue;
+    if (!grouped[source]) grouped[source] = { source, role: row.role || "", transforms: new Set(), count: 0 };
+    grouped[source].transforms.add(row.transform || row.role || "feature");
+    grouped[source].count += 1;
+  }
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["source column", "role", "transforms", "features"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  Object.values(grouped).slice(0, 24).forEach((row) => {
+    const tr = document.createElement("tr");
+    tr.append(
+      td(row.source),
+      td(row.role),
+      td([...row.transforms].join(", ")),
+      td(formatInt(row.count)),
+    );
+    tbody.appendChild(tr);
+  });
+  table.append(thead, tbody);
+  return tbody.children.length ? table : empty("No feature lineage available.");
+}
+
 function renderModelingBeeswarmSummary(rows) {
   const grouped = {};
   for (const row of rows) {
@@ -3068,6 +3340,14 @@ function renderModelingFeatureBars(rows) {
     wrap.appendChild(item);
   }
   return wrap.children.length ? wrap : empty("No feature importance available.");
+}
+
+function renderModelingSourceFeatureBars(rows) {
+  const normalized = (rows || []).map((row) => ({
+    feature: row.source_column || row.feature || "",
+    importance: row.importance ?? row.mean_abs_shap ?? row.permutation_importance ?? row.cluster_separation ?? 0,
+  }));
+  return renderModelingFeatureBars(normalized);
 }
 
 function renderModelingBeeswarmPlot(rows) {

@@ -543,6 +543,25 @@ def test_web_modeling_workbench_opens_and_saves_branch(tmp_path):
     assert experiment["spec"]["features"] == ["city", "sqft", "sold_date"]
     assert experiment["metrics"]
     assert web.modeling["preview"]["kind"] == "modeling_experiment"
+    assert web.modeling_state["runHistory"]
+
+    model_leaf = web.save_modeling_experiment_workbench(
+        {
+            **opened["state"],
+            "experiment": {
+                **opened["state"]["experiment"],
+                "target": column_ids["sold"],
+                "features": [column_ids["city"], column_ids["sqft"], column_ids["sold_date"]],
+                "estimator": "random_forest",
+                "explanation": {"enabled": True, "method": "model_importance"},
+            },
+        }
+    )
+    model_artifact = model_leaf["artifacts"][0]
+    assert model_leaf["kind"] == "model"
+    assert model_artifact["kind"] == "model"
+    assert model_artifact["saved"] is True
+    assert any(item["kind"] == "model_pipeline" for item in model_artifact["saved_files"])
 
     city_impute = next(action for action in actions if action["column"] == "city" and action["action"] == "modeling.impute_missing")
 

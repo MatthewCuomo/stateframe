@@ -94,6 +94,7 @@ if anywidget is not None and traitlets is not None:
             self._modeling_record_profile = record_profile or profile
             self._modeling_parent_id: str | None = ledger_parent_id
             self._modeling_plan = None
+            self._last_modeling_experiment_result = None
             self._selected_profile_cache: tuple[tuple[Any, ...], Any] | None = None
             self._last_command_nonce: Any = None
             self._last_branch_request_nonce: Any = None
@@ -1237,6 +1238,8 @@ if anywidget is not None and traitlets is not None:
             state = {**dict(state), "experiment": experiment}
             result = run_modeling_experiment(self._modeling_view_profile, experiment)
             result_payload = result.to_dict()
+            self._last_modeling_experiment_result = result
+            state = _append_modeling_run_history(state, result)
             self.modeling = {
                 **current,
                 "status": "ready",
@@ -1255,6 +1258,80 @@ if anywidget is not None and traitlets is not None:
                 "title": f"{result.estimator} / {result.task}",
             }
             return result_payload
+
+        def save_modeling_experiment_workbench(
+            self,
+            modeling_state: dict[str, Any] | None = None,
+            *,
+            note: str | None = None,
+            save_path: str | Path | None = None,
+        ) -> dict[str, Any]:
+            """Run the current modeling experiment and save it as a durable model leaf."""
+
+            if self._modeling_view_profile is None or self._modeling_record_profile is None:
+                self.open_modeling()
+            if self._modeling_view_profile is None or self._modeling_record_profile is None:
+                raise ValueError("No modeling state is available.")
+
+            from stateframe.modeling import build_modeling_artifact, run_modeling_experiment
+
+            current = dict(self.modeling or {})
+            payload = current.get("payload") or {}
+            state = modeling_state or dict(self.modeling_state or {}) or current.get("state") or _initial_modeling_state(payload)
+            experiment = dict(state.get("experiment") or payload.get("default_experiment") or {})
+            experiment = _resolve_modeling_experiment_columns(experiment, payload)
+            state = {**dict(state), "experiment": experiment}
+            result = run_modeling_experiment(self._modeling_view_profile, experiment)
+            self._last_modeling_experiment_result = result
+            artifact, summary, code = build_modeling_artifact(
+                result,
+                profile=self._modeling_record_profile,
+                entry_label=f"{result.estimator}_{result.task}_{result.target or 'clustering'}",
+                base_path=save_path,
+                persist_model=True,
+            )
+            entry = self._modeling_record_profile.record_artifact(
+                title=artifact.get("title") or "Modeling experiment",
+                kind="model",
+                operation=f"modeling.{result.estimator}",
+                parent_id=self._modeling_parent_id,
+                artifact=artifact,
+                summary=summary,
+                metrics=result.metrics,
+                code=code,
+                note=note or "",
+                modeling_spec=result.spec.to_dict(),
+            )
+            state = _append_modeling_run_history(state, result, entry_id=entry.id)
+            self._modeling_record_profile.save_tree()
+            self._refresh_after_embedded_save(entry.id)
+            result_payload = result.to_dict()
+            self.modeling = {
+                **current,
+                "status": "ready",
+                "state": state,
+                "preview": {
+                    "kind": "modeling_experiment",
+                    "result": result_payload,
+                    "artifact": artifact,
+                    "entry_id": entry.id,
+                },
+                "message": "Modeling experiment saved",
+            }
+            self.modeling_state = state
+            self.state = {
+                **dict(self.state),
+                "viewMode": "modeling",
+                "selectedEntryId": entry.id,
+            }
+            self.command_status = {
+                "status": "saved",
+                "action": "save_modeling_experiment",
+                "message": "Modeling experiment saved",
+                "entry_id": entry.id,
+                "title": entry.title,
+            }
+            return entry.to_dict()
 
         def viewer_dataframe(self, viewer_state: dict[str, Any] | None = None) -> pd.DataFrame:
             """Return the current embedded viewer dataframe without recording it."""
@@ -1935,6 +2012,19 @@ if anywidget is not None and traitlets is not None:
                         "message": "Modeling experiment complete",
                         "title": f"{result.get('estimator')} / {result.get('task')}",
                     }
+                elif action == "save_modeling_experiment":
+                    saved = self.save_modeling_experiment_workbench(
+                        request.get("modelingState") if isinstance(request.get("modelingState"), dict) else None,
+                        note=request.get("note") or None,
+                        save_path=request.get("savePath") or None,
+                    )
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": "Modeling experiment saved",
+                        "entry_id": saved.get("id"),
+                        "title": saved.get("title"),
+                    }
                 elif action == "render_visualizer":
                     if isinstance(request.get("visualState"), dict):
                         self.visualizer_state = dict(request["visualState"])
@@ -2089,7 +2179,7 @@ if anywidget is not None and traitlets is not None:
                         "status": "error",
                         "message": str(exc),
                     }
-                elif action in {"apply_modeling", "run_modeling_experiment"}:
+                elif action in {"apply_modeling", "run_modeling_experiment", "save_modeling_experiment"}:
                     current_modeling = dict(self.modeling or {})
                     self.modeling = {
                         **current_modeling,
@@ -2653,7 +2743,34 @@ def _initial_modeling_state(payload: dict[str, Any]) -> dict[str, Any]:
         "experiment": dict(payload.get("default_experiment") or {}),
         "actionControlValues": {},
         "search": "",
+        "runHistory": [],
     }
+
+
+def _append_modeling_run_history(
+    state: dict[str, Any],
+    result: Any,
+    *,
+    entry_id: str | None = None,
+) -> dict[str, Any]:
+    history = [
+        item
+        for item in list(state.get("runHistory") or [])
+        if isinstance(item, dict)
+    ]
+    summary = {
+        "id": entry_id or f"run_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+        "entry_id": entry_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "target": getattr(result, "target", None),
+        "task": getattr(result, "task", ""),
+        "estimator": getattr(result, "estimator", ""),
+        "row_count": int(getattr(result, "row_count", 0) or 0),
+        "feature_count": int(getattr(result, "feature_count", 0) or 0),
+        "metrics": _json_safe(getattr(result, "metrics", {}) or {}),
+        "warning_count": len(getattr(result, "warnings", []) or []),
+    }
+    return {**dict(state), "runHistory": [summary, *history][:8]}
 
 
 def _resolve_modeling_experiment_columns(

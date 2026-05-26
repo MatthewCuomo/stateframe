@@ -545,6 +545,24 @@ def test_web_modeling_workbench_opens_and_saves_branch(tmp_path):
     assert web.modeling["preview"]["kind"] == "modeling_experiment"
     assert web.modeling_state["runHistory"]
 
+    comparison = web.run_modeling_comparison_workbench(
+        {
+            **opened["state"],
+            "comparisonCandidateIds": ["logistic", "random_forest_balanced"],
+            "experiment": {
+                **opened["state"]["experiment"],
+                "target": column_ids["sold"],
+                "features": [column_ids["city"], column_ids["sqft"], column_ids["sold_date"]],
+                "task": "binary_classification",
+                "explanation": {"enabled": False},
+            },
+        }
+    )
+    assert web.modeling["preview"]["kind"] == "modeling_comparison"
+    assert comparison["comparison"]["run_count"] == 2
+    assert comparison["comparison"]["champion_id"]
+    assert len(web.modeling_state["runHistory"]) >= 2
+
     model_leaf = web.save_modeling_experiment_workbench(
         {
             **opened["state"],

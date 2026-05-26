@@ -21,6 +21,8 @@ from stateframe.api import (
     map_values,
     modeling_catalog,
     modeling_artifact,
+    modeling_candidates,
+    modeling_comparison,
     modeling_experiment,
     modeling_plan,
     one_hot_encode,
@@ -56,7 +58,7 @@ from stateframe.help import help_getdata
 from stateframe.help import help_tree
 from stateframe.ledger import LedgerEntry, LedgerState, LensLedger
 from stateframe.lens_registry import LensSpec, all_lenses, get_lens_spec
-from stateframe.modeling import ModelingAction, ModelingExperimentResult, ModelingExperimentSpec, ModelingPlan
+from stateframe.modeling import ModelingAction, ModelingExperimentResult, ModelingExperimentSpec, ModelingExperimentSuiteResult, ModelingPlan
 from stateframe.operations import OperationControl, OperationSpec, all_operation_specs, get_operation_spec
 from stateframe.visualizer import VisualRecommendation
 from stateframe.models import (
@@ -116,6 +118,7 @@ __all__ = [
     "ModelingAction",
     "ModelingExperimentResult",
     "ModelingExperimentSpec",
+    "ModelingExperimentSuiteResult",
     "ModelingPlan",
     "ScanConfig",
     "ShapeHypothesis",
@@ -150,6 +153,8 @@ __all__ = [
     "map_values",
     "modeling_catalog",
     "modeling_artifact",
+    "modeling_candidates",
+    "modeling_comparison",
     "modeling_experiment",
     "modeling_plan",
     "one_hot_encode",

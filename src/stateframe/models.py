@@ -1003,6 +1003,17 @@ class Profile:
 
         return run_modeling_experiment(self, spec, **kwargs)
 
+    def modeling_comparison(
+        self,
+        spec: dict[str, Any] | None = None,
+        *,
+        candidates: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ):
+        from stateframe.modeling import run_modeling_experiment_suite
+
+        return run_modeling_experiment_suite(self, spec, candidates=candidates, **kwargs)
+
     def apply_modeling_plan(
         self,
         *,

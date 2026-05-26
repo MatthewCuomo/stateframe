@@ -105,6 +105,42 @@ def test_modeling_experiment_supports_row_sampling_and_regression_residuals():
     assert result.assessment["primary_metric"]["key"] == "r2"
 
 
+def test_modeling_comparison_ranks_named_regression_candidates():
+    rows = 72
+    df = pd.DataFrame(
+        {
+            "sqft": [850 + value * 18 for value in range(rows)],
+            "beds": [1 + value % 4 for value in range(rows)],
+            "city": ["A", "B", "C"] * 24,
+            "price": [180_000 + value * 5_500 + (value % 4) * 2_000 for value in range(rows)],
+        }
+    )
+    scan = sf.scan(df, target="price", goal="modeling")
+
+    suite = sf.modeling_comparison(
+        scan,
+        {
+            "task": "regression",
+            "features": ["sqft", "beds", "city"],
+            "sample": {"enabled": True, "max_rows": 60, "random_state": 11},
+            "explanation": {"enabled": False},
+        },
+        candidates=[
+            {"id": "linear_base", "label": "Linear base", "estimator": "linear", "estimator_params": {"alpha": 1.0}},
+            {"id": "poly2", "label": "Polynomial degree 2", "estimator": "polynomial", "estimator_params": {"degree": 2, "alpha": 1.0}},
+            {"id": "forest_small", "label": "Forest small", "estimator": "random_forest", "estimator_params": {"n_estimators": 20, "min_samples_leaf": 2}},
+        ],
+    )
+    payload = suite.to_dict()
+
+    assert len(suite.runs) == 3
+    assert payload["comparison"]["champion_id"]
+    assert [row["rank"] for row in payload["comparison"]["rows"] if row["status"] == "ok"] == [1, 2, 3]
+    assert any(run["estimator"] == "polynomial" for run in payload["runs"])
+    polynomial_run = next(run for run in suite.runs if run.estimator == "polynomial")
+    assert any(row["transform"] == "polynomial_feature" for row in polynomial_run.preprocessing["feature_lineage"])
+
+
 def test_modeling_experiment_names_datetime_features_after_preprocessing():
     rows = 48
     df = pd.DataFrame(

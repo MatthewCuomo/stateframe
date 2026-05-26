@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -334,6 +334,26 @@ class ModelingExperimentResult:
         }
 
 
+@dataclass
+class ModelingExperimentSuiteResult:
+    """Serializable comparison of multiple named modeling experiment candidates."""
+
+    base_spec: ModelingExperimentSpec
+    runs: list[ModelingExperimentResult] = field(default_factory=list)
+    comparison: dict[str, Any] = field(default_factory=dict)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "base_spec": self.base_spec.to_dict(),
+            "runs": [run.to_dict() for run in self.runs],
+            "comparison": _json_ready(self.comparison),
+            "errors": _json_ready(self.errors),
+            "warnings": list(self.warnings),
+        }
+
+
 def modeling_experiment_catalog() -> dict[str, Any]:
     """Return UI-readable model families, split controls, tuning, and explainability options."""
 
@@ -347,14 +367,19 @@ def modeling_experiment_catalog() -> dict[str, Any]:
             {"id": "clustering", "label": "Clustering"},
         ],
         "estimators": [
+            {"id": "baseline", "label": "Baseline", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": False},
             {"id": "random_forest", "label": "Random forest", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": False},
+            {"id": "extra_trees", "label": "Extra trees", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": False},
+            {"id": "gradient_boosting", "label": "Gradient boosting", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": False},
             {"id": "xgboost", "label": "XGBoost", "tasks": ["regression", "binary_classification", "multiclass_classification"], "optional": True, "scaling": False},
             {"id": "knn", "label": "K-nearest neighbors", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": True},
             {"id": "linear", "label": "Linear / logistic", "tasks": ["regression", "binary_classification", "multiclass_classification"], "scaling": True},
+            {"id": "polynomial", "label": "Polynomial ridge", "tasks": ["regression"], "scaling": True},
             {"id": "kmeans", "label": "K-means", "tasks": ["clustering"], "scaling": True},
             {"id": "agglomerative", "label": "Agglomerative clustering", "tasks": ["clustering"], "scaling": True},
             {"id": "dbscan", "label": "DBSCAN", "tasks": ["clustering"], "scaling": True},
         ],
+        "comparison_candidates": _default_comparison_candidate_catalog(),
         "split": {
             "test_size": {"kind": "number", "default": 0.25, "min": 0.05, "max": 0.6},
             "random_state": {"kind": "number", "default": 42},
@@ -481,6 +506,67 @@ def run_modeling_experiment(
     if base.target not in profile.data.columns:
         raise ValueError(f"Unknown target column: {base.target}")
     return _run_supervised_experiment(profile, base, task=task)
+
+
+def run_modeling_experiment_suite(
+    profile: Profile,
+    spec: ModelingExperimentSpec | dict[str, Any] | None = None,
+    *,
+    candidates: list[dict[str, Any]] | None = None,
+    **overrides: Any,
+) -> ModelingExperimentSuiteResult:
+    """Run a set of named experiment candidates and rank their results."""
+
+    base = normalize_modeling_experiment_spec(spec, profile)
+    if overrides:
+        merged = base.to_dict()
+        for key, value in overrides.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = {**merged[key], **value}
+            elif key in merged:
+                merged[key] = value
+        base = normalize_modeling_experiment_spec(merged, profile)
+    task = _infer_experiment_task(profile, base.target) if base.task == "auto" else base.task
+    selected_candidates = candidates or default_modeling_comparison_candidates(task)
+    runs: list[ModelingExperimentResult] = []
+    errors: list[dict[str, Any]] = []
+    for position, candidate in enumerate(selected_candidates):
+        candidate_payload = _normalize_experiment_candidate(candidate, position=position, task=task)
+        candidate_spec = _candidate_experiment_spec(base, candidate_payload)
+        try:
+            result = run_modeling_experiment(profile, candidate_spec)
+            result = replace(
+                result,
+                search={
+                    **dict(result.search or {}),
+                    "candidate_id": candidate_payload["id"],
+                    "candidate_label": candidate_payload["label"],
+                    "candidate_notes": candidate_payload.get("notes") or "",
+                },
+            )
+            runs.append(result)
+        except Exception as exc:
+            errors.append(
+                {
+                    "candidate_id": candidate_payload["id"],
+                    "candidate_label": candidate_payload["label"],
+                    "estimator": candidate_payload.get("estimator"),
+                    "error": str(exc),
+                }
+            )
+    comparison = _modeling_comparison(runs, errors)
+    warnings = []
+    if not runs:
+        warnings.append("No comparison candidates completed successfully.")
+    if errors:
+        warnings.append(f"{len(errors)} comparison candidate(s) failed.")
+    return ModelingExperimentSuiteResult(
+        base_spec=base,
+        runs=runs,
+        comparison=comparison,
+        errors=errors,
+        warnings=warnings,
+    )
 
 
 def build_modeling_artifact(
@@ -813,9 +899,15 @@ def _run_supervised_experiment(
     warnings.extend(_preflight_supervised_experiment(profile, spec, task=task, X=X_raw, y=y))
 
     estimator_id = _supervised_estimator_id(spec.estimator, warnings=warnings)
-    estimator = _build_estimator(estimator_id, task=task, random_state=spec.random_state, params=spec.estimator_params)
+    estimator_params = _clean_estimator_params(spec.estimator_params)
+    estimator = _build_estimator(estimator_id, task=task, random_state=spec.random_state, params=estimator_params)
     preprocessor, preprocessing_summary = _build_preprocessor(X_raw, feature_roles, spec, estimator_id=estimator_id)
-    pipeline = Pipeline([("preprocess", preprocessor), ("model", estimator)])
+    pipeline = _build_supervised_pipeline(
+        preprocessor,
+        estimator,
+        estimator_id=estimator_id,
+        estimator_params=estimator_params,
+    )
 
     split = dict(spec.split or {})
     test_size = _float_setting(split.get("test_size"), 0.25)
@@ -840,7 +932,7 @@ def _run_supervised_experiment(
     search_summary: dict[str, Any] = {"enabled": False}
     fitted = pipeline
     if _bool_setting((spec.search or {}).get("enabled"), False):
-        grid = _normalize_param_grid((spec.search or {}).get("param_grid") or _default_param_grid(estimator_id, task))
+        grid = _normalize_param_grid((spec.search or {}).get("param_grid") or _default_param_grid(estimator_id, task), estimator_id=estimator_id)
         if grid:
             scoring = _resolve_scoring((spec.search or {}).get("scoring"), task)
             cv = _cv_splitter(task, y_train, int((spec.search or {}).get("cv_folds") or 3), random_state)
@@ -1272,9 +1364,37 @@ def _build_preprocessor(
     }
 
 
+def _build_supervised_pipeline(
+    preprocessor: Any,
+    estimator: Any,
+    *,
+    estimator_id: str,
+    estimator_params: dict[str, Any],
+):
+    from sklearn.pipeline import Pipeline
+
+    steps: list[tuple[str, Any]] = [("preprocess", preprocessor)]
+    if estimator_id == "polynomial":
+        from sklearn.preprocessing import PolynomialFeatures
+
+        degree = max(2, min(4, _int_setting(estimator_params.get("degree"), 2)))
+        steps.append(
+            (
+                "polynomial",
+                PolynomialFeatures(
+                    degree=degree,
+                    include_bias=_bool_setting(estimator_params.get("include_bias"), False),
+                    interaction_only=_bool_setting(estimator_params.get("interaction_only"), False),
+                ),
+            )
+        )
+    steps.append(("model", estimator))
+    return Pipeline(steps)
+
+
 def _supervised_estimator_id(estimator_id: str, *, warnings: list[str]) -> str:
     estimator_id = str(estimator_id or "random_forest")
-    if estimator_id in {"random_forest", "xgboost", "knn", "linear"}:
+    if estimator_id in {"baseline", "random_forest", "extra_trees", "gradient_boosting", "xgboost", "knn", "linear", "polynomial"}:
         return estimator_id
     warnings.append(f"Estimator {estimator_id} is not available for supervised modeling; using random_forest.")
     return "random_forest"
@@ -1283,6 +1403,14 @@ def _supervised_estimator_id(estimator_id: str, *, warnings: list[str]) -> str:
 def _build_estimator(estimator_id: str, *, task: str, random_state: int, params: dict[str, Any]):
     is_classification = task in {"binary_classification", "multiclass_classification"}
     params = _clean_estimator_params(params)
+    if estimator_id == "baseline":
+        if is_classification:
+            from sklearn.dummy import DummyClassifier
+
+            return DummyClassifier(strategy=str(params.get("strategy") or "most_frequent"), random_state=random_state)
+        from sklearn.dummy import DummyRegressor
+
+        return DummyRegressor(strategy=str(params.get("strategy") or "mean"))
     if estimator_id == "xgboost":
         try:
             from xgboost import XGBClassifier, XGBRegressor
@@ -1305,6 +1433,21 @@ def _build_estimator(estimator_id: str, *, task: str, random_state: int, params:
         from sklearn.linear_model import Ridge
 
         return Ridge(random_state=random_state, **params)
+    if estimator_id == "polynomial":
+        from sklearn.linear_model import Ridge
+
+        ridge_params = {key: value for key, value in params.items() if key not in {"degree", "interaction_only", "include_bias", "order"}}
+        return Ridge(random_state=random_state, **ridge_params)
+    if estimator_id == "gradient_boosting":
+        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+
+        defaults = {"n_estimators": 120, "learning_rate": 0.06, "max_depth": 3, "random_state": random_state}
+        return (GradientBoostingClassifier if is_classification else GradientBoostingRegressor)(**{**defaults, **params})
+    if estimator_id == "extra_trees":
+        from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
+
+        defaults = {"n_estimators": 180, "min_samples_leaf": 2, "random_state": random_state, "n_jobs": -1}
+        return (ExtraTreesClassifier if is_classification else ExtraTreesRegressor)(**{**defaults, **params})
     from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
     defaults = {"n_estimators": 160, "min_samples_leaf": 2, "random_state": random_state, "n_jobs": -1}
@@ -1722,6 +1865,19 @@ def _summarize_cv(cv_result: dict[str, Any]) -> dict[str, Any]:
 
 def _feature_names(pipeline: Any, X: pd.DataFrame) -> list[str]:
     preprocessor = pipeline.named_steps.get("preprocess")
+    names = _preprocessor_feature_names(preprocessor, X)
+    if "polynomial" in getattr(pipeline, "named_steps", {}):
+        try:
+            names = [str(name) for name in pipeline.named_steps["polynomial"].get_feature_names_out(names)]
+        except Exception:
+            pass
+    width = _estimator_input_width(pipeline, X)
+    if not width or len(names) == width:
+        return names
+    return [f"feature_{index}" for index in range(width)]
+
+
+def _preprocessor_feature_names(preprocessor: Any, X: pd.DataFrame) -> list[str]:
     width = 0
     try:
         transformed = preprocessor.transform(X.head(2))
@@ -1740,6 +1896,18 @@ def _feature_names(pipeline: Any, X: pd.DataFrame) -> list[str]:
     if not width or len(names) == width:
         return names
     return [f"feature_{index}" for index in range(width)]
+
+
+def _estimator_input_width(pipeline: Any, X: pd.DataFrame) -> int:
+    try:
+        transformed = pipeline[:-1].transform(X.head(2))
+        return int(transformed.shape[1])
+    except Exception:
+        try:
+            transformed = pipeline.named_steps["preprocess"].transform(X.head(2))
+            return int(transformed.shape[1])
+        except Exception:
+            return 0
 
 
 def _column_transformer_feature_names(preprocessor: Any, X: pd.DataFrame) -> list[str]:
@@ -1807,7 +1975,10 @@ def _transformer_width(transformer: Any, X: pd.DataFrame, input_names: list[str]
 
 
 def _transformed_frame(pipeline: Any, X: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
-    transformed = pipeline.named_steps["preprocess"].transform(X)
+    try:
+        transformed = pipeline[:-1].transform(X)
+    except Exception:
+        transformed = pipeline.named_steps["preprocess"].transform(X)
     if hasattr(transformed, "toarray"):
         transformed = transformed.toarray()
     return pd.DataFrame(transformed, columns=feature_names, index=X.index)
@@ -1845,6 +2016,8 @@ def _source_for_transformed_feature(feature: str, sources: list[str]) -> str:
 
 
 def _feature_transform_label(feature: str, source: str, role: str) -> str:
+    if "^" in feature or " " in feature:
+        return "polynomial_feature"
     if role == "datetime" and feature != source:
         return "date_features"
     if role == "categorical" and feature != source:
@@ -2232,10 +2405,14 @@ def _scaler(name: str) -> Any:
 
 def _default_param_grids() -> dict[str, dict[str, list[Any]]]:
     return {
+        "baseline": {},
         "random_forest": {"n_estimators": [80, 160], "max_depth": [None, 6], "min_samples_leaf": [1, 3]},
+        "extra_trees": {"n_estimators": [80, 160], "max_depth": [None, 8], "min_samples_leaf": [1, 3]},
+        "gradient_boosting": {"n_estimators": [80, 160], "learning_rate": [0.04, 0.08], "max_depth": [2, 3]},
         "xgboost": {"n_estimators": [60, 120], "max_depth": [3, 5], "learning_rate": [0.05, 0.1]},
         "knn": {"n_neighbors": [3, 5, 9], "weights": ["uniform", "distance"]},
         "linear": {"alpha": [0.1, 1.0, 10.0], "C": [0.3, 1.0, 3.0]},
+        "polynomial": {"degree": [2, 3], "alpha": [0.1, 1.0, 10.0]},
     }
 
 
@@ -2244,19 +2421,176 @@ def _default_param_grid(estimator: str, task: str) -> dict[str, list[Any]]:
         return {"C": [0.3, 1.0, 3.0]}
     if estimator == "linear":
         return {"alpha": [0.1, 1.0, 10.0]}
+    if estimator == "polynomial":
+        return {"degree": [2, 3], "alpha": [0.1, 1.0, 10.0]}
     return _default_param_grids().get(estimator, {})
 
 
-def _normalize_param_grid(grid: dict[str, Any]) -> dict[str, Any]:
+def _normalize_param_grid(grid: dict[str, Any], *, estimator_id: str | None = None) -> dict[str, Any]:
     normalized = {}
     for key, value in dict(grid or {}).items():
-        prefixed = key if key.startswith("model__") else f"model__{key}"
+        if "__" in str(key):
+            prefixed = str(key)
+        elif estimator_id == "polynomial" and key in {"degree", "interaction_only", "include_bias", "order"}:
+            prefixed = f"polynomial__{key}"
+        else:
+            prefixed = f"model__{key}"
         normalized[prefixed] = value if isinstance(value, list) else [value]
     return normalized
 
 
 def _unprefix_params(params: dict[str, Any]) -> dict[str, Any]:
-    return {str(key).removeprefix("model__"): _json_ready(value) for key, value in dict(params or {}).items()}
+    return {str(key).removeprefix("model__").removeprefix("polynomial__"): _json_ready(value) for key, value in dict(params or {}).items()}
+
+
+def _default_comparison_candidate_catalog() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "regression": [
+            {"id": "baseline_mean", "label": "Baseline mean", "estimator": "baseline", "estimator_params": {"strategy": "mean"}, "enabled_by_default": False},
+            {"id": "linear_ridge", "label": "Linear ridge", "estimator": "linear", "estimator_params": {"alpha": 1.0}, "preprocessing": {"scaler": "standard"}},
+            {"id": "polynomial_degree2", "label": "Polynomial ridge degree 2", "estimator": "polynomial", "estimator_params": {"degree": 2, "alpha": 1.0}, "preprocessing": {"scaler": "standard", "max_categories": 20}},
+            {"id": "knn_7_distance", "label": "KNN distance k=7", "estimator": "knn", "estimator_params": {"n_neighbors": 7, "weights": "distance"}, "preprocessing": {"scaler": "standard"}},
+            {"id": "random_forest_balanced", "label": "Random forest balanced", "estimator": "random_forest", "estimator_params": {"n_estimators": 160, "max_depth": 14, "min_samples_leaf": 3}},
+            {"id": "random_forest_deep", "label": "Random forest deep", "estimator": "random_forest", "estimator_params": {"n_estimators": 220, "min_samples_leaf": 1}, "enabled_by_default": False},
+            {"id": "extra_trees", "label": "Extra trees", "estimator": "extra_trees", "estimator_params": {"n_estimators": 180, "min_samples_leaf": 2}},
+            {"id": "gradient_boosting", "label": "Gradient boosting", "estimator": "gradient_boosting", "estimator_params": {"n_estimators": 160, "learning_rate": 0.06, "max_depth": 3}},
+            {"id": "xgboost_compact", "label": "XGBoost compact", "estimator": "xgboost", "estimator_params": {"n_estimators": 140, "max_depth": 4, "learning_rate": 0.06}, "enabled_by_default": False, "optional": True},
+        ],
+        "binary_classification": [
+            {"id": "baseline_mode", "label": "Baseline mode", "estimator": "baseline", "estimator_params": {"strategy": "most_frequent"}, "enabled_by_default": False},
+            {"id": "logistic", "label": "Logistic regression", "estimator": "linear", "estimator_params": {"C": 1.0}, "preprocessing": {"scaler": "standard"}},
+            {"id": "knn_7_distance", "label": "KNN distance k=7", "estimator": "knn", "estimator_params": {"n_neighbors": 7, "weights": "distance"}, "preprocessing": {"scaler": "standard"}},
+            {"id": "random_forest_balanced", "label": "Random forest balanced", "estimator": "random_forest", "estimator_params": {"n_estimators": 160, "max_depth": 12, "min_samples_leaf": 3}},
+            {"id": "extra_trees", "label": "Extra trees", "estimator": "extra_trees", "estimator_params": {"n_estimators": 180, "min_samples_leaf": 2}},
+            {"id": "gradient_boosting", "label": "Gradient boosting", "estimator": "gradient_boosting", "estimator_params": {"n_estimators": 120, "learning_rate": 0.06, "max_depth": 3}},
+            {"id": "xgboost_compact", "label": "XGBoost compact", "estimator": "xgboost", "estimator_params": {"n_estimators": 120, "max_depth": 4, "learning_rate": 0.06}, "enabled_by_default": False, "optional": True},
+        ],
+        "multiclass_classification": [
+            {"id": "baseline_mode", "label": "Baseline mode", "estimator": "baseline", "estimator_params": {"strategy": "most_frequent"}, "enabled_by_default": False},
+            {"id": "logistic", "label": "Logistic regression", "estimator": "linear", "estimator_params": {"C": 1.0}, "preprocessing": {"scaler": "standard"}},
+            {"id": "knn_7_distance", "label": "KNN distance k=7", "estimator": "knn", "estimator_params": {"n_neighbors": 7, "weights": "distance"}, "preprocessing": {"scaler": "standard"}},
+            {"id": "random_forest_balanced", "label": "Random forest balanced", "estimator": "random_forest", "estimator_params": {"n_estimators": 160, "max_depth": 12, "min_samples_leaf": 3}},
+            {"id": "extra_trees", "label": "Extra trees", "estimator": "extra_trees", "estimator_params": {"n_estimators": 180, "min_samples_leaf": 2}},
+            {"id": "gradient_boosting", "label": "Gradient boosting", "estimator": "gradient_boosting", "estimator_params": {"n_estimators": 120, "learning_rate": 0.06, "max_depth": 3}},
+            {"id": "xgboost_compact", "label": "XGBoost compact", "estimator": "xgboost", "estimator_params": {"n_estimators": 120, "max_depth": 4, "learning_rate": 0.06}, "enabled_by_default": False, "optional": True},
+        ],
+        "clustering": [
+            {"id": "kmeans_3", "label": "K-means 3 clusters", "estimator": "kmeans", "clustering": {"n_clusters": 3}},
+            {"id": "kmeans_5", "label": "K-means 5 clusters", "estimator": "kmeans", "clustering": {"n_clusters": 5}},
+            {"id": "agglomerative_3", "label": "Agglomerative 3 clusters", "estimator": "agglomerative", "clustering": {"n_clusters": 3}, "enabled_by_default": False},
+            {"id": "dbscan_default", "label": "DBSCAN default", "estimator": "dbscan", "clustering": {"eps": 0.5, "min_samples": 5}, "enabled_by_default": False},
+        ],
+    }
+
+
+def default_modeling_comparison_candidates(task: str) -> list[dict[str, Any]]:
+    """Return reusable named candidates for model comparison workflows."""
+
+    catalog = _default_comparison_candidate_catalog()
+    return [dict(item) for item in catalog.get(task) or catalog.get("regression") or []]
+
+
+def _normalize_experiment_candidate(candidate: dict[str, Any], *, position: int, task: str) -> dict[str, Any]:
+    raw = dict(candidate or {})
+    estimator = str(raw.get("estimator") or (raw.get("spec") or {}).get("estimator") or ("kmeans" if task == "clustering" else "random_forest"))
+    candidate_id = str(raw.get("id") or raw.get("candidate_id") or f"{estimator}_{position + 1}")
+    label = str(raw.get("label") or raw.get("name") or candidate_id.replace("_", " ").title())
+    return {
+        **raw,
+        "id": candidate_id,
+        "label": label,
+        "estimator": estimator,
+        "position": position,
+    }
+
+
+def _candidate_experiment_spec(base: ModelingExperimentSpec, candidate: dict[str, Any]) -> ModelingExperimentSpec:
+    data = base.to_dict()
+    patch = dict(candidate.get("spec") or {})
+    for key in ["estimator", "task", "target", "features", "random_state"]:
+        if key in candidate:
+            patch[key] = candidate[key]
+    for key in ["estimator_params", "preprocessing", "search", "split", "validation", "sample", "clustering", "explanation"]:
+        if key in candidate:
+            patch[key] = {**dict(patch.get(key) or {}), **dict(candidate.get(key) or {})}
+    for key, value in patch.items():
+        if key in data and isinstance(data[key], dict) and isinstance(value, dict):
+            data[key] = {**data[key], **value}
+        elif key in data:
+            data[key] = value
+    return normalize_modeling_experiment_spec(data)
+
+
+def _modeling_comparison(runs: list[ModelingExperimentResult], errors: list[dict[str, Any]]) -> dict[str, Any]:
+    rows = [_comparison_row(run) for run in runs]
+    for error in errors:
+        rows.append(
+            {
+                "candidate_id": error.get("candidate_id"),
+                "candidate_label": error.get("candidate_label"),
+                "estimator": error.get("estimator"),
+                "status": "error",
+                "error": error.get("error"),
+                "score": None,
+                "rank": None,
+            }
+        )
+    successful = [row for row in rows if row.get("status") == "ok"]
+    successful.sort(key=lambda row: float(row.get("_score") if row.get("_score") is not None else -np.inf), reverse=True)
+    champion_id = successful[0]["candidate_id"] if successful else None
+    champion_metric = successful[0].get("primary_metric") if successful else {}
+    champion_value = _metric_number((champion_metric or {}).get("value"))
+    for rank, row in enumerate(successful, start=1):
+        row["rank"] = rank
+        metric_value = _metric_number((row.get("primary_metric") or {}).get("value"))
+        if champion_value is not None and metric_value is not None:
+            row["delta_from_champion"] = _clean_metric(metric_value - champion_value)
+    for row in rows:
+        row.pop("_score", None)
+    error_rows = [row for row in rows if row.get("status") == "error"]
+    rows = successful + error_rows
+    metric_keys = sorted({key for run in runs for key, value in (run.metrics or {}).items() if not isinstance(value, (dict, list))})
+    return {
+        "rows": rows,
+        "champion_id": champion_id,
+        "champion_label": successful[0].get("candidate_label") if successful else None,
+        "metric_keys": metric_keys,
+        "run_count": len(runs),
+        "error_count": len(errors),
+    }
+
+
+def _comparison_row(run: ModelingExperimentResult) -> dict[str, Any]:
+    candidate_id = run.search.get("candidate_id") or run.estimator
+    candidate_label = run.search.get("candidate_label") or str(candidate_id).replace("_", " ").title()
+    primary = dict((run.assessment or {}).get("primary_metric") or {})
+    score = _comparison_score(primary)
+    return {
+        "candidate_id": candidate_id,
+        "candidate_label": candidate_label,
+        "estimator": run.estimator,
+        "task": run.task,
+        "status": "ok",
+        "rank": None,
+        "row_count": int(run.row_count),
+        "feature_count": int(run.feature_count),
+        "metrics": _json_ready(run.metrics),
+        "primary_metric": _json_ready(primary),
+        "rating": (run.assessment or {}).get("rating"),
+        "warning_count": len(run.warnings or []),
+        "warnings": list(run.warnings or [])[:4],
+        "best_params": _json_ready((run.search or {}).get("best_params")),
+        "_score": score,
+    }
+
+
+def _comparison_score(primary: dict[str, Any]) -> float | None:
+    value = _metric_number(primary.get("value"))
+    if value is None:
+        return None
+    if primary.get("direction") == "lower_is_better":
+        return -value
+    return value
 
 
 def _infer_experiment_task(profile: Profile, target: str | None) -> str:
@@ -2337,11 +2671,14 @@ __all__ = [
     "ModelingAction",
     "ModelingExperimentResult",
     "ModelingExperimentSpec",
+    "ModelingExperimentSuiteResult",
     "ModelingPlan",
     "build_modeling_plan",
     "build_modeling_artifact",
+    "default_modeling_comparison_candidates",
     "default_modeling_experiment_spec",
     "modeling_experiment_catalog",
     "normalize_modeling_experiment_spec",
     "run_modeling_experiment",
+    "run_modeling_experiment_suite",
 ]

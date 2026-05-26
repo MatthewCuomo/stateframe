@@ -10,7 +10,15 @@ from stateframe.branch import branch
 from stateframe.profile import build_profile
 from stateframe.footprint import optimize_footprint
 from stateframe.leaf import is_save_mode, leaf, register_ipython_magics, save_mode
-from stateframe.modeling import build_modeling_artifact, build_modeling_plan, default_modeling_experiment_spec, modeling_experiment_catalog, run_modeling_experiment
+from stateframe.modeling import (
+    build_modeling_artifact,
+    build_modeling_plan,
+    default_modeling_comparison_candidates,
+    default_modeling_experiment_spec,
+    modeling_experiment_catalog,
+    run_modeling_experiment,
+    run_modeling_experiment_suite,
+)
 from stateframe.pull import pull
 from stateframe.transforms import (
     add_date_features,
@@ -437,10 +445,23 @@ def modeling_artifact(data_or_profile: Any, spec: dict[str, Any] | None = None, 
     return build_modeling_artifact(result, profile=profile_obj)
 
 
+def modeling_comparison(data_or_profile: Any, spec: dict[str, Any] | None = None, *, candidates: list[dict[str, Any]] | None = None, **kwargs: Any):
+    """Run multiple named modeling candidates and return a ranked comparison."""
+
+    profile_obj = data_or_profile if hasattr(data_or_profile, "column_profiles") and hasattr(data_or_profile, "data") else scan(data_or_profile)
+    return run_modeling_experiment_suite(profile_obj, spec, candidates=candidates, **kwargs)
+
+
 def modeling_catalog() -> dict[str, Any]:
     """Return UI-readable modeling experiment options."""
 
     return modeling_experiment_catalog()
+
+
+def modeling_candidates(task: str = "regression") -> list[dict[str, Any]]:
+    """Return default named model comparison candidates for a task."""
+
+    return default_modeling_comparison_candidates(task)
 
 
 def default_modeling_spec(data_or_profile: Any, **kwargs: Any):
@@ -489,6 +510,8 @@ __all__ = [
     "modeling_experiment",
     "modeling_catalog",
     "modeling_artifact",
+    "modeling_comparison",
+    "modeling_candidates",
     "default_modeling_spec",
     "one_hot_encode",
     "plot",

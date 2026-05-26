@@ -95,6 +95,7 @@ if anywidget is not None and traitlets is not None:
             self._modeling_parent_id: str | None = ledger_parent_id
             self._modeling_plan = None
             self._last_modeling_experiment_result = None
+            self._last_modeling_suite_result = None
             self._selected_profile_cache: tuple[tuple[Any, ...], Any] | None = None
             self._last_command_nonce: Any = None
             self._last_branch_request_nonce: Any = None
@@ -1259,6 +1260,56 @@ if anywidget is not None and traitlets is not None:
             }
             return result_payload
 
+        def run_modeling_comparison_workbench(
+            self,
+            modeling_state: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Run multiple named modeling candidates and expose a ranked comparison."""
+
+            if self._modeling_view_profile is None or self._modeling_record_profile is None:
+                self.open_modeling()
+            if self._modeling_view_profile is None:
+                raise ValueError("No modeling state is available.")
+
+            from stateframe.modeling import run_modeling_experiment_suite
+
+            current = dict(self.modeling or {})
+            payload = current.get("payload") or {}
+            state = modeling_state or dict(self.modeling_state or {}) or current.get("state") or _initial_modeling_state(payload)
+            experiment = dict(state.get("experiment") or payload.get("default_experiment") or {})
+            experiment = _resolve_modeling_experiment_columns(experiment, payload)
+            candidates = _selected_modeling_comparison_candidates(state, payload)
+            state = {**dict(state), "experiment": experiment}
+            suite = run_modeling_experiment_suite(self._modeling_view_profile, experiment, candidates=candidates)
+            self._last_modeling_suite_result = suite
+            suite_payload = suite.to_dict()
+            for result in suite.runs:
+                state = _append_modeling_run_history(
+                    state,
+                    result,
+                    candidate_id=(result.search or {}).get("candidate_id"),
+                    candidate_label=(result.search or {}).get("candidate_label"),
+                )
+            self.modeling = {
+                **current,
+                "status": "ready",
+                "state": state,
+                "preview": {
+                    "kind": "modeling_comparison",
+                    "suite": suite_payload,
+                },
+                "message": "Modeling comparison complete",
+            }
+            self.modeling_state = state
+            champion = (suite_payload.get("comparison") or {}).get("champion_label") or "comparison"
+            self.command_status = {
+                "status": "ready",
+                "action": "run_modeling_comparison",
+                "message": "Modeling comparison complete",
+                "title": champion,
+            }
+            return suite_payload
+
         def save_modeling_experiment_workbench(
             self,
             modeling_state: dict[str, Any] | None = None,
@@ -2012,6 +2063,17 @@ if anywidget is not None and traitlets is not None:
                         "message": "Modeling experiment complete",
                         "title": f"{result.get('estimator')} / {result.get('task')}",
                     }
+                elif action == "run_modeling_comparison":
+                    suite = self.run_modeling_comparison_workbench(
+                        request.get("modelingState") if isinstance(request.get("modelingState"), dict) else None,
+                    )
+                    comparison = suite.get("comparison") or {}
+                    self.command_status = {
+                        "status": "ready",
+                        "action": action,
+                        "message": "Modeling comparison complete",
+                        "title": comparison.get("champion_label") or f"{comparison.get('run_count', 0)} runs",
+                    }
                 elif action == "save_modeling_experiment":
                     saved = self.save_modeling_experiment_workbench(
                         request.get("modelingState") if isinstance(request.get("modelingState"), dict) else None,
@@ -2179,7 +2241,7 @@ if anywidget is not None and traitlets is not None:
                         "status": "error",
                         "message": str(exc),
                     }
-                elif action in {"apply_modeling", "run_modeling_experiment", "save_modeling_experiment"}:
+                elif action in {"apply_modeling", "run_modeling_experiment", "run_modeling_comparison", "save_modeling_experiment"}:
                     current_modeling = dict(self.modeling or {})
                     self.modeling = {
                         **current_modeling,
@@ -2742,6 +2804,7 @@ def _initial_modeling_state(payload: dict[str, Any]) -> dict[str, Any]:
         "scaleMethod": "none",
         "experiment": dict(payload.get("default_experiment") or {}),
         "actionControlValues": {},
+        "comparisonCandidateIds": _default_modeling_comparison_candidate_ids(payload),
         "search": "",
         "runHistory": [],
     }
@@ -2752,6 +2815,8 @@ def _append_modeling_run_history(
     result: Any,
     *,
     entry_id: str | None = None,
+    candidate_id: str | None = None,
+    candidate_label: str | None = None,
 ) -> dict[str, Any]:
     history = [
         item
@@ -2759,8 +2824,10 @@ def _append_modeling_run_history(
         if isinstance(item, dict)
     ]
     summary = {
-        "id": entry_id or f"run_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+        "id": entry_id or candidate_id or f"run_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
         "entry_id": entry_id,
+        "candidate_id": candidate_id,
+        "candidate_label": candidate_label,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "target": getattr(result, "target", None),
         "task": getattr(result, "task", ""),
@@ -2771,6 +2838,40 @@ def _append_modeling_run_history(
         "warning_count": len(getattr(result, "warnings", []) or []),
     }
     return {**dict(state), "runHistory": [summary, *history][:8]}
+
+
+def _default_modeling_comparison_candidate_ids(payload: dict[str, Any]) -> list[str]:
+    catalog = payload.get("experiment_catalog") or {}
+    experiment = payload.get("default_experiment") or {}
+    task = str(experiment.get("task") or "regression")
+    groups = catalog.get("comparison_candidates") or {}
+    candidates = (groups.get(task) or groups.get("regression") or [])
+    return [
+        str(item.get("id"))
+        for item in candidates
+        if item.get("id") and item.get("enabled_by_default") is not False
+    ]
+
+
+def _selected_modeling_comparison_candidates(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    catalog = payload.get("experiment_catalog") or {}
+    experiment = state.get("experiment") or payload.get("default_experiment") or {}
+    task = str(experiment.get("task") or payload.get("modeling", {}).get("task") or "regression")
+    groups = catalog.get("comparison_candidates") or {}
+    candidates = list(groups.get(task) or groups.get("regression") or [])
+    selected = state.get("comparisonCandidateIds")
+    if not isinstance(selected, list) or not selected:
+        selected = [
+            item.get("id")
+            for item in candidates
+            if item.get("enabled_by_default") is not False
+        ]
+    selected_ids = {str(item) for item in selected if item not in {None, ""}}
+    return [
+        dict(item)
+        for item in candidates
+        if str(item.get("id")) in selected_ids
+    ]
 
 
 def _resolve_modeling_experiment_columns(

@@ -209,6 +209,7 @@ function render({ model, el, signal }) {
       open_modeling: "Loading modeling workbench",
       apply_modeling: "Applying modeling branch",
       run_modeling_experiment: "Running modeling experiment",
+      run_modeling_comparison: "Running model comparison",
       save_modeling_experiment: "Saving modeling experiment",
       refresh: "Refreshing workspace web",
       browse_files: "Loading workspace files",
@@ -609,6 +610,15 @@ function normalizeModelingState(raw, payload) {
     : (selected[0] || actions[0]?.id || null);
   const scaleMethods = new Set(["none", "standard", "minmax", "robust", "maxabs"]);
   const experiment = normalizeModelingExperiment(raw?.experiment, payload?.default_experiment, payload?.experiment_catalog, payload);
+  const comparisonCandidates = modelingComparisonCandidates(payload?.experiment_catalog || {}, experiment.task || "regression");
+  const comparisonIds = new Set(comparisonCandidates.map((item) => item.id).filter(Boolean));
+  const defaultComparisonIds = comparisonCandidates
+    .filter((item) => item.enabled_by_default !== false)
+    .map((item) => item.id)
+    .filter(Boolean);
+  const selectedComparisonIds = Array.isArray(raw?.comparisonCandidateIds)
+    ? raw.comparisonCandidateIds.filter((id) => comparisonIds.has(id))
+    : defaultComparisonIds;
   return {
     selectedActionIds: selected,
     selectedActionId,
@@ -621,6 +631,7 @@ function normalizeModelingState(raw, payload) {
     dateFeatures: raw?.dateFeatures !== false,
     scaleMethod: scaleMethods.has(raw?.scaleMethod) ? raw.scaleMethod : "none",
     experiment,
+    comparisonCandidateIds: selectedComparisonIds,
     search: raw?.search || "",
     runHistory: Array.isArray(raw?.runHistory) ? raw.runHistory.filter((item) => item && typeof item === "object").slice(0, 8) : [],
   };
@@ -727,6 +738,12 @@ function compatibleModelingEstimator(catalog, task, estimator) {
   const fallback = defaultEstimatorForTask(task, estimator);
   if (choices.some(([value]) => value === fallback)) return fallback;
   return choices[0][0];
+}
+
+function modelingComparisonCandidates(catalog, task) {
+  const groups = catalog?.comparison_candidates || {};
+  const candidates = groups[task] || groups.regression || [];
+  return candidates.filter((item) => item && item.id);
 }
 
 function modelingFeatureCandidates(payload, targetValue, options = {}) {
@@ -2247,14 +2264,16 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   const runLabel = !payload.modeling?.target && experimentTask === "clustering" ? "Run Clustering" : "Run Experiment";
   const run = button(runLabel, () => sendCommand("run_modeling_experiment", { modelingState: visibleModelingState }));
   run.disabled = commandStatus?.status === "loading" && commandStatus.action === "run_modeling_experiment";
+  const runComparison = button("Run Comparison", () => sendCommand("run_modeling_comparison", { modelingState: visibleModelingState }));
+  runComparison.disabled = commandStatus?.status === "loading" && commandStatus.action === "run_modeling_comparison";
   const saveModel = button("Save Model Leaf", () => sendCommand("save_modeling_experiment", { modelingState: visibleModelingState }));
-  saveModel.disabled = commandStatus?.status === "loading" && ["run_modeling_experiment", "save_modeling_experiment"].includes(commandStatus.action);
+  saveModel.disabled = commandStatus?.status === "loading" && ["run_modeling_experiment", "run_modeling_comparison", "save_modeling_experiment"].includes(commandStatus.action);
   const defaults = button("Select Defaults", () => setModelingState({
     selectedActionIds: actions.filter((action) => action.applies_by_default !== false).map((action) => action.id).filter(Boolean),
   }));
   const all = button("All", () => setModelingState({ selectedActionIds: actions.map((action) => action.id).filter(Boolean) }));
   const none = button("None", () => setModelingState({ selectedActionIds: [] }));
-  top.append(title, meta, defaults, all, none, run, saveModel, apply);
+  top.append(title, meta, defaults, all, none, run, runComparison, saveModel, apply);
   shell.appendChild(top);
 
   if (commandStatus?.status === "saved" && commandStatus.action === "apply_modeling") {
@@ -2285,6 +2304,8 @@ function renderModeling(modeling, commandStatus, setModelingState, sendCommand, 
   }
   if (modeling.preview?.kind === "modeling_experiment") {
     shell.appendChild(renderModelingExperimentResult(modeling.preview.result || {}));
+  } else if (modeling.preview?.kind === "modeling_comparison") {
+    shell.appendChild(renderModelingComparisonResult(modeling.preview.suite || {}));
   }
 
   const body = document.createElement("div");
@@ -2690,6 +2711,7 @@ function renderModelingControls(payload, modelingState, setModelingState) {
   panel.appendChild(section("Scaling", scaling));
   panel.appendChild(section("Experiment", renderModelingExperimentControls(payload, modelingState, setModelingState)));
   panel.appendChild(section("Estimator Settings", renderModelingEstimatorParamControls(estimatorExperiment, updateExperiment)));
+  panel.appendChild(section("Model Candidates", renderModelingComparisonCandidateControls(payload, modelingState, setModelingState)));
   panel.appendChild(section("Feature Scope", renderModelingFeaturePicker(payload, modelingState, setModelingState)));
   if (Array.isArray(modelingState.runHistory) && modelingState.runHistory.length) {
     panel.appendChild(section("Run Comparison", renderModelingRunHistory(modelingState.runHistory)));
@@ -2711,7 +2733,7 @@ function renderModelingRunHistory(rows) {
     const primaryKey = ["r2", "roc_auc", "accuracy", "f1", "mae", "rmse", "silhouette"].find((key) => metrics[key] !== undefined && metrics[key] !== null) || Object.keys(metrics)[0] || "";
     const tr = document.createElement("tr");
     tr.append(
-      td(row.entry_id || row.id || ""),
+      td(row.candidate_label || row.entry_id || row.id || ""),
       td(`${row.estimator || ""} / ${row.task || ""}`),
       td(formatInt(row.row_count || 0)),
       td(primaryKey ? `${primaryKey}: ${formatModelingMetricValue(primaryKey, metrics[primaryKey])}` : ""),
@@ -2819,6 +2841,53 @@ function nullableNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function renderModelingComparisonCandidateControls(payload, modelingState, setModelingState) {
+  const experiment = modelingState.experiment || payload.default_experiment || {};
+  const targetColumn = modelingColumnForValue(payload, experiment.target || payload.modeling?.target);
+  const task = (experiment.task && experiment.task !== "auto") ? experiment.task : inferModelingTaskForColumn(targetColumn);
+  const candidates = modelingComparisonCandidates(payload.experiment_catalog || {}, task);
+  const selected = new Set(Array.isArray(modelingState.comparisonCandidateIds) ? modelingState.comparisonCandidateIds : []);
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-model-feature-scope";
+  const toolbar = document.createElement("div");
+  toolbar.className = "stateframe-web-model-feature-toolbar";
+  toolbar.appendChild(textSpan(`${formatInt(selected.size)} candidate${selected.size === 1 ? "" : "s"} selected`, "stateframe-web-visual-control-count"));
+  const defaults = button("Suggested", () => setModelingState({
+    comparisonCandidateIds: candidates.filter((item) => item.enabled_by_default !== false).map((item) => item.id),
+  }));
+  defaults.classList.add("is-tiny");
+  const all = button("All", () => setModelingState({ comparisonCandidateIds: candidates.map((item) => item.id) }));
+  all.classList.add("is-tiny");
+  toolbar.append(defaults, all);
+  wrap.appendChild(toolbar);
+
+  const list = document.createElement("div");
+  list.className = "stateframe-web-model-feature-list";
+  for (const candidate of candidates) {
+    const item = document.createElement("label");
+    item.className = "stateframe-web-model-feature-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = selected.has(candidate.id);
+    input.addEventListener("change", () => {
+      const next = new Set(selected);
+      if (input.checked) next.add(candidate.id);
+      else next.delete(candidate.id);
+      setModelingState({ comparisonCandidateIds: [...next] });
+    });
+    const text = document.createElement("span");
+    const params = candidate.estimator_params || candidate.clustering || {};
+    text.append(
+      textSpan(candidate.label || candidate.id, "stateframe-web-visual-column-name"),
+      textSpan(`${candidate.estimator || ""}${candidate.optional ? " / optional" : ""}${Object.keys(params).length ? ` / ${compactJson(params)}` : ""}`, "stateframe-web-visual-column-meta"),
+    );
+    item.append(input, text);
+    list.appendChild(item);
+  }
+  wrap.appendChild(list.children.length ? list : empty("No comparison candidates are available for this task."));
+  return wrap;
+}
+
 function renderModelingFeaturePicker(payload, modelingState, setModelingState) {
   const experiment = modelingState.experiment || payload.default_experiment || {};
   const updateExperiment = (patch) => setModelingState({ experiment: mergeDeep(experiment, patch) });
@@ -2864,6 +2933,77 @@ function renderModelingFeaturePicker(payload, modelingState, setModelingState) {
   }
   wrap.appendChild(list.children.length ? list : empty("Choose a target to inspect eligible features."));
   return wrap;
+}
+
+function renderModelingComparisonResult(suite) {
+  const panel = document.createElement("section");
+  panel.className = "stateframe-web-cleaning-detail";
+  const comparison = suite.comparison || {};
+  const title = document.createElement("div");
+  title.className = "stateframe-web-cleaning-detail-title";
+  title.textContent = `Model comparison: ${comparison.run_count || 0} run${comparison.run_count === 1 ? "" : "s"}`;
+  panel.appendChild(title);
+  panel.appendChild(section("Champion", keyValueList({
+    Candidate: comparison.champion_label || "None",
+    "Successful runs": formatInt(comparison.run_count || 0),
+    "Failed runs": formatInt(comparison.error_count || 0),
+  })));
+  panel.appendChild(section("Comparison", renderModelingComparisonTable(comparison.rows || [])));
+  const championRun = (suite.runs || []).find((run) => (run.search || {}).candidate_id === comparison.champion_id) || (suite.runs || [])[0];
+  if (championRun) {
+    panel.appendChild(section("Champion Details", renderModelingExperimentResult(championRun)));
+  }
+  if (Array.isArray(suite.errors) && suite.errors.length) {
+    panel.appendChild(section("Failed Candidates", renderModelingComparisonErrors(suite.errors)));
+  }
+  return panel;
+}
+
+function renderModelingComparisonTable(rows) {
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["rank", "candidate", "estimator", "primary", "r2", "mae", "rmse", "rating", "warnings"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const row of rows || []) {
+    const metric = row.primary_metric || {};
+    const metrics = row.metrics || {};
+    const tr = document.createElement("tr");
+    if (row.status === "error") tr.classList.add("is-error");
+    tr.append(
+      td(row.rank || ""),
+      td(row.candidate_label || row.candidate_id || ""),
+      td(row.estimator || ""),
+      td(metric.key ? `${metric.key}: ${formatModelingMetricValue(metric.key, metric.value)}` : (row.error || "")),
+      td(metrics.r2 === undefined ? "" : formatNumber(metrics.r2)),
+      td(metrics.mae === undefined ? "" : formatNumber(metrics.mae)),
+      td(metrics.rmse === undefined ? "" : formatNumber(metrics.rmse)),
+      td(row.rating || row.status || ""),
+      td(formatInt(row.warning_count || 0)),
+    );
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return tbody.children.length ? table : empty("No model comparison rows available.");
+}
+
+function renderModelingComparisonErrors(errors) {
+  const table = document.createElement("table");
+  table.className = "stateframe-web-table";
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  ["candidate", "estimator", "error"].forEach((key) => head.appendChild(th(key)));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const error of errors || []) {
+    const tr = document.createElement("tr");
+    tr.append(td(error.candidate_label || error.candidate_id || ""), td(error.estimator || ""), td(error.error || ""));
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  return table;
 }
 
 function renderModelingExperimentResult(result) {

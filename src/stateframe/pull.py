@@ -16,6 +16,7 @@ class PullReferenceError(KeyError):
 
 
 _ACTIVE_WEB_VIEWER: Any | None = None
+_RECENT_PULL_CONTEXTS: list[dict[str, Any]] = []
 
 
 def set_active_web_viewer(viewer: Any) -> None:
@@ -29,6 +30,21 @@ def active_web_viewer() -> Any | None:
     """Return the current active stateframe web widget, if one is known."""
 
     return _ACTIVE_WEB_VIEWER
+
+
+def recent_pull_contexts(*, clear: bool = False) -> list[dict[str, Any]]:
+    """Return dataframe contexts captured from recent ``sf.pull(...)`` calls."""
+
+    contexts = list(_RECENT_PULL_CONTEXTS)
+    if clear:
+        clear_pull_contexts()
+    return contexts
+
+
+def clear_pull_contexts() -> None:
+    """Forget recent pull contexts used by convenience helpers such as ``sf.push``."""
+
+    _RECENT_PULL_CONTEXTS.clear()
 
 
 def pull(
@@ -49,14 +65,20 @@ def pull(
     if reference is None:
         if viewer is None:
             raise PullReferenceError("No active stateframe web widget is available for sf.pull().")
-        return pull_from_web(viewer)
+        return _remember_pull_result(pull_from_web(viewer), reference="sf.pull()")
 
     if viewer is not None:
         try:
-            return pull_from_web(viewer, reference)
+            return _remember_pull_result(
+                pull_from_web(viewer, reference),
+                reference=str(reference),
+            )
         except PullReferenceError:
             pass
-    return pull_from_workspace(reference, tree=tree)
+    return _remember_pull_result(
+        pull_from_workspace(reference, tree=tree),
+        reference=str(reference),
+    )
 
 
 def pull_from_web(viewer: Any, reference: str | None = None) -> Any:
@@ -477,13 +499,30 @@ def _read_text_path(path: Any, *, workspace_root: Path | None) -> str:
     return ""
 
 
+def _remember_pull_result(value: Any, *, reference: str | None) -> Any:
+    if isinstance(value, pd.DataFrame):
+        context = value.attrs.get("_stateframe")
+        if isinstance(context, dict):
+            _RECENT_PULL_CONTEXTS.append(
+                {
+                    **dict(context),
+                    "reference": reference,
+                    "_frame": value,
+                }
+            )
+            del _RECENT_PULL_CONTEXTS[:-20]
+    return value
+
+
 __all__ = [
     "PullReferenceError",
     "PulledOutput",
     "active_web_viewer",
+    "clear_pull_contexts",
     "pull",
     "pull_code",
     "pull_from_web",
     "pull_from_workspace",
+    "recent_pull_contexts",
     "set_active_web_viewer",
 ]

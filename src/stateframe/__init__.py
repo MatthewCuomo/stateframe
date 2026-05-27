@@ -2,6 +2,7 @@
 
 from stateframe import save as save
 from stateframe import files as files
+from stateframe import flow as flow
 from stateframe import sources as sources
 from stateframe import workspace as workspace
 from stateframe.api import (
@@ -10,6 +11,7 @@ from stateframe.api import (
     add_ratio,
     apply_suggested_conversions,
     branch,
+    cell,
     clean_column_name,
     clean_column_names,
     clean_numeric_outliers,
@@ -30,15 +32,19 @@ from stateframe.api import (
     plot,
     profile,
     pull,
+    push,
     query,
     rename_columns,
     report,
     register_ipython_magics,
+    run_cell,
+    run_flow,
     scale_numeric,
     scan,
     scan_path,
     suggest_visuals,
     save_mode,
+    save_flow,
     tree_view,
     default_modeling_spec,
     unify_binary_flags,
@@ -53,6 +59,7 @@ from stateframe.cleaning import CleaningPlan, TransformAction
 from stateframe.branch import BranchRecorder
 from stateframe.config import ScanConfig, SuggestedConfig
 from stateframe.footprint import FootprintAction, FootprintPlan
+from stateframe.flow import FlowRunResult, FlowSpec
 from stateframe.help import help
 from stateframe.help import help_getdata
 from stateframe.help import help_tree
@@ -100,6 +107,8 @@ __all__ = [
     "EvidenceFact",
     "FootprintAction",
     "FootprintPlan",
+    "FlowRunResult",
+    "FlowSpec",
     "FunctionDataSource",
     "Insight",
     "Issue",
@@ -135,6 +144,7 @@ __all__ = [
     "add_ratio",
     "apply_suggested_conversions",
     "branch",
+    "cell",
     "clean_numeric_outliers",
     "clean_column_name",
     "clean_column_names",
@@ -162,17 +172,22 @@ __all__ = [
     "plot",
     "profile",
     "pull",
+    "push",
     "query",
     "rename_columns",
     "register_ipython_magics",
     "report",
+    "run_cell",
+    "run_flow",
     "scale_numeric",
     "scan",
     "scan_path",
     "suggest_visuals",
     "save",
+    "save_flow",
     "save_mode",
     "files",
+    "flow",
     "sources",
     "tree_view",
     "default_modeling_spec",

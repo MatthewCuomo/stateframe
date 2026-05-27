@@ -7,6 +7,7 @@ from typing import Any
 
 from stateframe.config import EvidenceSource, ExplanationLevel, GuidanceMode, ScanConfig, SemanticPolicy, VisualPolicy
 from stateframe.branch import branch
+from stateframe.cell import cell, push, run_cell
 from stateframe.profile import build_profile
 from stateframe.footprint import optimize_footprint
 from stateframe.leaf import is_save_mode, leaf, register_ipython_magics, save_mode
@@ -421,6 +422,22 @@ def suggest_visuals(data_or_profile: Any, *, limit: int = 18):
     """Suggest replayable visual specs for a DataFrame or profile."""
 
     return visual_recommendations(data_or_profile, limit=limit)
+
+
+def save_flow(*args: Any, **kwargs: Any):
+    """Save a reusable flow from a tree/path selection."""
+
+    from stateframe.flow import from_tree
+
+    return from_tree(*args, **kwargs)
+
+
+def run_flow(*args: Any, **kwargs: Any):
+    """Run a saved reusable flow on a new input."""
+
+    from stateframe.flow import run_flow as _run_flow
+
+    return _run_flow(*args, **kwargs)
 
 
 def modeling_plan(data_or_profile: Any, **kwargs: Any):

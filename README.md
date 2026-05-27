@@ -367,6 +367,82 @@ leaves capture terminal output, dataframe previews, matplotlib images, and
 Plotly payloads. With `--save` or `sf.save_mode(True)`, durable output files are
 stored under `stateframe_saves/` at the workspace root.
 
+For cells that start by pulling one or more saved states, use `%%sf_cell`.
+Stateframe infers the parent branch from the `sf.pull(...)` line, saves a
+dataframe named `output` as a new branch, and records every pulled input as a
+dependency edge. If more than one pull is used, the branch is placed under the
+first pulled state and the full dependency list is stored on the entry:
+
+```python
+%%sf_cell --name "Jupiter price model" --save
+df = sf.pull("state-entry_abc123")
+
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+fig = px.histogram(output, x="price_per_sqft")
+```
+
+The plain-Python equivalent works in editors, scripts, and notebook frontends
+without cell magic support:
+
+```python
+sf.cell(
+    """
+df = sf.pull("state-entry_abc123")
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+""",
+    name="Jupiter price model",
+    save=True,
+    namespace=globals(),
+)
+```
+
+For the shortest code path, pull a state, make a dataframe, then push it:
+
+```python
+df = sf.pull("state-entry_abc123")
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+
+sf.push(output, name="Jupiter price model", save=True)
+```
+
+`sf.push(...)` uses recent `sf.pull(...)` calls as dependencies. Pass
+`parents=[df1, df2]` when you want to be explicit about multi-input work.
+
+### Reusable flows
+
+Any saved path can be promoted into a reusable flow. A flow stores the replayable
+steps from the root to the selected entry, including viewer states and custom
+cell transforms:
+
+```python
+flow = sf.flow.from_tree(
+    "meter A",
+    name="meter inspection",
+    entry_id="state-entry_abc123",
+)
+```
+
+Run that flow on a new dataframe:
+
+```python
+result = flow.run(new_meter_df, name="meter B inspection")
+result.data
+```
+
+Or rerun the original query root with new parameters when the tree started from
+`sf.query(...)`:
+
+```python
+result = flow.run(params={"meter_number": "MTR-912"}, name="meter MTR-912")
+```
+
+Workspace web objects expose the same backend hooks:
+
+```python
+web.save_selected_path_as_flow("meter inspection")
+web.run_selected_flow("meter inspection", params={"meter_number": "MTR-912"})
+```
+
 ## Saving Trees And Data
 
 By default, stateframe creates a workspace under `.stateframe/` in the current working

@@ -462,7 +462,7 @@ function render({ model, el, signal }) {
       onPreview: (width) => body.style.setProperty("--stateframe-web-left-width", `${width}px`),
       onCommit: (width) => setState({ panelWidths: { ...state.panelWidths, webLeft: width } }),
     }));
-    body.appendChild(renderDetail(payload, selected, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling));
+    body.appendChild(renderDetail(payload, selected, selectedEntry, state, setState, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling));
     root.appendChild(body);
     queueRestoreUiState(root, ui);
   }
@@ -1591,7 +1591,7 @@ function renderConnectionConfig(payload, commandStatus, state, setState, sendCom
   return panel;
 }
 
-function renderDetail(payload, tree, selectedEntry, state, setState, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
+function renderDetail(payload, tree, selectedEntry, state, setState, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
   const panel = document.createElement("aside");
   panel.className = "stateframe-web-detail";
   panel.dataset.scrollKey = "web-detail";
@@ -1624,7 +1624,7 @@ function renderDetail(payload, tree, selectedEntry, state, setState, openSelecte
   }
   panel.appendChild(section("Tree Entries", renderEntries(tree, selectedEntry, state, setState)));
   if (selectedEntry) {
-    panel.appendChild(section("Selected State", renderEntryDetail(tree, selectedEntry, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState)));
+    panel.appendChild(section("Selected State", renderEntryDetail(payload, tree, selectedEntry, state, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState)));
   }
   panel.appendChild(section("Summary", keyValueList({
     Dataset: tree.dataset_name || "",
@@ -1796,7 +1796,7 @@ function entryThumbnailPreview(entry) {
   return null;
 }
 
-function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState) {
+function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling, setState) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-entry-detail";
   if (entry.path?.length) {
@@ -1828,6 +1828,7 @@ function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualiz
   if (outputArtifacts.length) {
     actions.append(button("Open Leaf", () => setState({ viewMode: "leaf" })));
   }
+  actions.append(renderFlowControls(payload, entry, state, sendCommand, commandStatus));
   actions.append(renderPullReference(entry));
   wrap.appendChild(actions);
 
@@ -1859,6 +1860,46 @@ function renderEntryDetail(tree, entry, openSelectedViewer, openSelectedVisualiz
   }
   if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", jsonBlock(entry.params)));
   if (entry.artifacts?.length) wrap.appendChild(section("Artifacts", renderArtifacts(entry.artifacts)));
+  return wrap;
+}
+
+function renderFlowControls(payload, entry, state, sendCommand, commandStatus) {
+  const wrap = document.createElement("span");
+  wrap.className = "stateframe-web-flow-controls";
+  const save = button("Save Flow", () => {
+    const suggested = `${entry.title || entry.operation || "Selected path"} flow`;
+    const name = window.prompt("Flow name", suggested);
+    if (!name || !name.trim()) return;
+    sendCommand("save_flow", {
+      name: name.trim(),
+      entryId: entry.id,
+    });
+  });
+  save.disabled = commandStatus?.status === "loading";
+  wrap.appendChild(save);
+
+  const flows = payload.flows || [];
+  if (flows.length) {
+    const select = document.createElement("select");
+    select.className = "stateframe-web-input";
+    select.title = "Saved flow";
+    for (const flow of flows) {
+      const option = document.createElement("option");
+      option.value = flow.id;
+      option.textContent = flow.name || flow.id;
+      select.appendChild(option);
+    }
+    const run = button("Run Flow", () => {
+      const chosen = flows.find((flow) => flow.id === select.value) || flows[0];
+      sendCommand("run_flow", {
+        flow: select.value,
+        name: `${chosen?.name || "flow"} on ${entry.title || entry.id}`,
+        saveMode: Boolean(state.saveMode),
+      });
+    });
+    run.disabled = commandStatus?.status === "loading";
+    wrap.append(select, run);
+  }
   return wrap;
 }
 

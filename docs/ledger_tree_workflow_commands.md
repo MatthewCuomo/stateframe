@@ -463,7 +463,95 @@ What happens internally:
 - Branch saves autosave the tree by default, so the workspace web can see them
   after refresh.
 
-## 11. Configure The Workspace
+## 11. Cell Capture And Push
+
+Use `%%sf_cell` when the cell itself starts from `sf.pull(...)`. Stateframe
+infers dependency edges from those pull statements. If the cell creates a
+DataFrame named `output`, it is recorded as a new branch; stdout, dataframe
+previews, matplotlib figures, and Plotly figures are recorded as a code leaf:
+
+```python
+%%sf_cell --name "Jupiter price model" --save
+df = sf.pull("state-entry_abc123")
+
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+fig = px.histogram(output, x="price_per_sqft")
+```
+
+Multiple pulls are supported:
+
+```python
+%%sf_cell --name "Compare sibling branches"
+left = sf.pull("state-entry_left")
+right = sf.pull("state-entry_right")
+
+output = left.merge(right, on="meter_number", suffixes=("_left", "_right"))
+```
+
+The branch is placed under the first pulled state and all pulled inputs are
+stored in `entry.params["dependencies"]`.
+
+For users without IPython magics:
+
+```python
+sf.cell(
+    """
+df = sf.pull("state-entry_abc123")
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+""",
+    name="Jupiter price model",
+    save=True,
+    namespace=globals(),
+)
+```
+
+For the shortest normal-code path:
+
+```python
+df = sf.pull("state-entry_abc123")
+output = df.assign(price_per_sqft=df["price"] / df["sqft"])
+entry = sf.push(output, name="Jupiter price model", save=True)
+```
+
+`sf.push(...)` uses recent `sf.pull(...)` calls as dependency edges. Pass
+`parents=[df1, df2]` to be explicit for multi-input outputs.
+
+## 12. Save And Run Reusable Flows
+
+A flow is a reusable path extracted from a concrete tree:
+
+```python
+flow = sf.flow.from_tree(
+    "meter A",
+    name="meter inspection",
+    entry_id="state-entry_abc123",
+)
+```
+
+Run it on a new dataframe:
+
+```python
+result = flow.run(new_meter_df, name="meter B inspection")
+```
+
+When the source tree started from `sf.query(...)`, rerun the same query with new
+parameters:
+
+```python
+result = flow.run(
+    params={"meter_number": "MTR-912"},
+    name="meter MTR-912 inspection",
+)
+```
+
+The workspace web object exposes backend hooks for UI commands:
+
+```python
+web.save_selected_path_as_flow("meter inspection")
+web.run_selected_flow("meter inspection", params={"meter_number": "MTR-912"})
+```
+
+## 13. Configure The Workspace
 
 Default behavior creates `.stateframe/` in the current working directory. This is
 the workspace memory for the project:
@@ -531,7 +619,7 @@ What happens internally:
 - `sf.save.configure(session_name=...)` remains as a compatibility alias for
   setting the active workspace name.
 
-## 12. Save Tree Metadata
+## 14. Save Tree Metadata
 
 Save all live scans/profiles in the current Python process:
 
@@ -680,7 +768,7 @@ What `save.tree` does not yet do:
 - In-memory DataFrame roots need `source_path=...` or `set_source_path(...)`
   before metadata-only restore can work.
 
-## 13. Save Data Checkpoints
+## 15. Save Data Checkpoints
 
 Save the selected tree state as Parquet:
 
@@ -721,7 +809,7 @@ What happens internally:
 - By default, the tree metadata is saved again so the artifact reference is
   persisted.
 
-## 14. Multi-Dataset Current State
+## 16. Multi-Dataset Current State
 
 Current supported pattern:
 
@@ -749,7 +837,7 @@ Needed next:
 - clickable widget actions for running transforms/analyses without a follow-up
   Python cell
 
-## 15. Current Persistence Reality
+## 17. Current Persistence Reality
 
 What is durable now:
 

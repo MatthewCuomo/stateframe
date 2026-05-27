@@ -18,6 +18,7 @@ def replay_tree_state(
     *,
     workspace: Any | None = None,
     entry_id: str | None = None,
+    source_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Replay a saved tree from its base source to a selected entry."""
 
@@ -31,7 +32,7 @@ def replay_tree_state(
     if not path:
         raise ReplayError(f"Unknown saved tree entry: {selected}")
 
-    frame = load_source_frame(tree_payload, workspace=workspace)
+    frame = load_source_frame(tree_payload, workspace=workspace, params=source_params)
     for entry in path[1:]:
         frame = replay_entry(frame, entry)
     return frame
@@ -41,10 +42,35 @@ def load_source_frame(
     tree_payload: dict[str, Any],
     *,
     workspace: Any | None = None,
+    params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Load the replayable root source for a saved tree."""
 
     source = saved_source_payload(tree_payload)
+    if source.get("kind") == "query":
+        if not source.get("replayable", True):
+            raise ReplayError("Saved query source is marked non-replayable.")
+        statement = source.get("query")
+        if not statement:
+            raise ReplayError("Saved query source did not store query text.")
+        source_id = source.get("source_id")
+        if not source_id:
+            raise ReplayError("Saved query source does not include a source id.")
+        from stateframe import sources
+
+        merged_params = dict(source.get("params") or {})
+        merged_params.update(dict(params or {}))
+        result = sources.query(
+            str(source_id),
+            str(statement),
+            params=merged_params,
+            store_query=bool(source.get("query_stored", True)),
+            store_params=bool(source.get("params_stored", True)),
+        )
+        from stateframe.io import coerce_dataframe
+
+        return coerce_dataframe(result.data)
+
     if source.get("kind") != "file":
         note = source.get("replay_note") or "Set a replayable source path for this tree."
         raise ReplayError(

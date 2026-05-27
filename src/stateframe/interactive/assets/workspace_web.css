@@ -900,6 +900,18 @@
   gap: 8px;
 }
 
+.stateframe-web-flow-controls {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.stateframe-web-flow-controls .stateframe-web-input {
+  min-width: 150px;
+  width: auto;
+}
+
 .stateframe-web-code-pill {
   border: 1px solid #e5e7eb;
   border-radius: 6px;

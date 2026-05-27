@@ -1699,6 +1699,59 @@ if anywidget is not None and traitlets is not None:
             }
             return dict(updated)
 
+        def save_selected_path_as_flow(
+            self,
+            name: str,
+            *,
+            entry_id: str | None = None,
+            parameters: dict[str, Any] | list[str] | tuple[str, ...] | None = None,
+            description: str = "",
+        ) -> dict[str, Any]:
+            """Save the selected tree path as a reusable flow."""
+
+            from stateframe import flow as flow_api
+
+            spec = flow_api.from_tree(
+                self,
+                name=name,
+                entry_id=entry_id or self.selected_entry_id(),
+                parameters=parameters,
+                description=description,
+            )
+            self.refresh()
+            return spec.to_dict()
+
+        def run_selected_flow(
+            self,
+            flow: str,
+            *,
+            params: dict[str, Any] | None = None,
+            name: str | None = None,
+            snapshot: bool = False,
+        ) -> dict[str, Any]:
+            """Run a saved flow on the selected dataframe state."""
+
+            from stateframe import flow as flow_api
+
+            profile = self.selected_profile()
+            result = flow_api.run_flow(
+                flow,
+                profile,
+                params=params,
+                name=name,
+                snapshot=snapshot,
+            )
+            self.refresh()
+            final_entry = result.final_entry
+            if final_entry is not None:
+                self.state = {
+                    **dict(self.state),
+                    "selectedTreeId": getattr(result.profile, "tree_id", None) or self.selected_tree_id(),
+                    "selectedEntryId": final_entry.id,
+                    "viewMode": "web",
+                }
+            return result.to_dict()
+
         def delete_selected_items(
             self,
             *,
@@ -1968,6 +2021,40 @@ if anywidget is not None and traitlets is not None:
                         "status": "ready",
                         "action": action,
                         "message": f"Deleted {total} item{'' if total == 1 else 's'}",
+                        **result,
+                    }
+                elif action == "save_flow":
+                    saved = self.save_selected_path_as_flow(
+                        str(request.get("name") or ""),
+                        entry_id=request.get("entryId") or None,
+                        parameters=(
+                            request.get("parameters")
+                            if isinstance(request.get("parameters"), (dict, list))
+                            else None
+                        ),
+                        description=str(request.get("description") or ""),
+                    )
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": f"Flow saved: {saved.get('name')}",
+                        "flow_id": saved.get("id"),
+                    }
+                elif action == "run_flow":
+                    result = self.run_selected_flow(
+                        str(request.get("flow") or request.get("flowId") or ""),
+                        params=(
+                            request.get("params")
+                            if isinstance(request.get("params"), dict)
+                            else None
+                        ),
+                        name=request.get("name") or None,
+                        snapshot=bool(request.get("saveMode")),
+                    )
+                    self.command_status = {
+                        "status": "saved",
+                        "action": action,
+                        "message": f"Flow run complete: {result.get('flow_name')}",
                         **result,
                     }
                 elif action == "refresh_sources":
@@ -2379,6 +2466,7 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
         for record in list(web.get("trees", []))
     ]
     from stateframe import sources
+    from stateframe import flow as flow_api
 
     source_imports = sources.auto_register_connections(raise_errors=False)
 
@@ -2396,6 +2484,7 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
         "sources": sources.list_sources(auto_register=False),
         "source_connections": sources.list_connections(auto_register=False),
         "source_imports": source_imports,
+        "flows": flow_api.list_flows(),
         "settings": workspace.settings(),
     }
 
@@ -2403,6 +2492,7 @@ def build_web_payload(workspace: Any, *, height: int, title: str | None) -> dict
 def build_profile_web_payload(profile: Any, *, height: int, title: str | None) -> dict[str, Any]:
     """Return a web payload focused on one in-memory profile."""
 
+    from stateframe import flow as flow_api
     from stateframe import sources, workspace
 
     current_workspace = workspace.current()
@@ -2423,6 +2513,7 @@ def build_profile_web_payload(profile: Any, *, height: int, title: str | None) -
         "sources": sources.list_sources(auto_register=False),
         "source_connections": sources.list_connections(auto_register=False),
         "source_imports": source_imports,
+        "flows": flow_api.list_flows(),
         "settings": current_workspace.settings(),
     }
 

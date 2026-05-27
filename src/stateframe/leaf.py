@@ -174,18 +174,25 @@ def record_leaf(
     standalone: bool = False,
     autosave_tree: bool = True,
     parent_label: str | None = None,
+    dependencies: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Record an already-executed code leaf under a profile ledger."""
 
     title = name or _auto_name(code, previews)
     save_outputs = _SAVE_MODE if save is None else bool(save)
+    dependency_edges = list(dependencies or [])
     artifact = {
         "kind": "code_leaf",
         "format": "stateframe.code_leaf.v1",
         "title": title,
         "code": code.strip(),
         "previews": previews,
-        "dependency": "standalone" if standalone else "branch",
+        "dependency": (
+            "standalone"
+            if standalone
+            else (f"{len(dependency_edges)} inputs" if len(dependency_edges) > 1 else "branch")
+        ),
+        "dependencies": dependency_edges,
         "parent_entry_id": parent_id,
         "parent_label": parent_label,
         "saved": False,
@@ -214,6 +221,7 @@ def record_leaf(
             "has_stderr": any(preview.get("stderr") for preview in previews),
             "saved": bool(artifact.get("saved")),
             "dependency": artifact["dependency"],
+            "dependency_count": len(dependency_edges),
         },
         code=code.strip(),
         note=note or message or "",
@@ -224,6 +232,7 @@ def record_leaf(
             "standalone": bool(standalone),
             "saved": bool(artifact.get("saved")),
         },
+        dependencies=dependency_edges,
     )
     if autosave_tree:
         profile.save_tree()
@@ -264,7 +273,7 @@ def run_leaf_cell(
 
 
 def register_ipython_magics(ipython: Any | None = None) -> None:
-    """Register ``%%sf_leaf`` in an IPython/Jupyter shell."""
+    """Register ``%%sf_leaf`` and ``%%sf_cell`` in an IPython/Jupyter shell."""
 
     if ipython is None:
         from IPython import get_ipython
@@ -288,7 +297,25 @@ def register_ipython_magics(ipython: Any | None = None) -> None:
             namespace=ipython.user_ns,
         )
 
+    def sf_cell(line: str, cell: str) -> Any:
+        args = _parse_cell_magic_args(line)
+        source = ipython.user_ns.get(args.source) if args.source else None
+        from stateframe.cell import run_cell
+
+        return run_cell(
+            cell,
+            source=source,
+            parent=args.parent,
+            name=args.name,
+            message=args.message,
+            save=args.save,
+            save_path=args.save_at,
+            namespace=ipython.user_ns,
+            output=args.output,
+        )
+
     ipython.register_magic_function(sf_leaf, magic_kind="cell", magic_name="sf_leaf")
+    ipython.register_magic_function(sf_cell, magic_kind="cell", magic_name="sf_cell")
 
 
 def _parse_magic_args(line: str) -> argparse.Namespace:
@@ -300,6 +327,18 @@ def _parse_magic_args(line: str) -> argparse.Namespace:
     parser.add_argument("--save", action="store_true")
     parser.add_argument("--save-at")
     parser.add_argument("--standalone", action="store_true")
+    return parser.parse_args(shlex.split(line or ""))
+
+
+def _parse_cell_magic_args(line: str) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="%%sf_cell", add_help=False)
+    parser.add_argument("--parent")
+    parser.add_argument("--name")
+    parser.add_argument("--message")
+    parser.add_argument("--source")
+    parser.add_argument("--save", action="store_true")
+    parser.add_argument("--save-at")
+    parser.add_argument("--output", default="output")
     return parser.parse_args(shlex.split(line or ""))
 
 

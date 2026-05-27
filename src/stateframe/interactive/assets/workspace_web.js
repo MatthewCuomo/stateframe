@@ -863,6 +863,7 @@ function normalizeVisualizerState(raw, payload) {
 function normalizeViewerState(raw, payload) {
   const allIds = (payload.columns || []).map((column) => column.id);
   const allIdSet = new Set(allIds);
+  const displayedRowCount = Number(payload.view?.displayed_row_count || (payload.rows || []).length || 0);
   const rawOrder = Array.isArray(raw?.columnOrder) ? raw.columnOrder : [];
   const rawOrderSet = new Set(rawOrder);
   const columnOrder = [
@@ -872,24 +873,58 @@ function normalizeViewerState(raw, payload) {
   const hiddenColumnIds = Array.isArray(raw?.hiddenColumnIds)
     ? raw.hiddenColumnIds.filter((id) => allIdSet.has(id))
     : [];
+  const hiddenSet = new Set(hiddenColumnIds);
+  const pinnedColumnIds = Array.isArray(raw?.pinnedColumnIds)
+    ? raw.pinnedColumnIds.filter((id) => allIdSet.has(id) && !hiddenSet.has(id))
+    : [];
+  const pinnedRowIndices = Array.isArray(raw?.pinnedRowIndices)
+    ? raw.pinnedRowIndices
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value < displayedRowCount)
+    : [];
   const sorts = Array.isArray(raw?.sorts)
     ? raw.sorts.filter((sort) => allIdSet.has(sort.id) && ["asc", "desc"].includes(sort.direction))
     : [];
+  const columnSort = [
+    "original",
+    "name_asc",
+    "name_desc",
+    "type_asc",
+    "type_desc",
+    "missing_desc",
+    "unique_desc",
+    "issues_desc",
+  ].includes(raw?.columnSort) ? raw.columnSort : "original";
+  const selectedCell = raw?.selectedCell && allIdSet.has(raw.selectedCell.columnId)
+    && Number.isInteger(Number(raw.selectedCell.rowIndex))
+    && Number(raw.selectedCell.rowIndex) >= 0
+    && Number(raw.selectedCell.rowIndex) < displayedRowCount
+    ? {
+      rowIndex: Number(raw.selectedCell.rowIndex),
+      columnId: raw.selectedCell.columnId,
+    }
+    : null;
   return {
     columnOrder,
     hiddenColumnIds,
+    pinnedColumnIds,
+    pinnedRowIndices,
     sorts,
     filters: raw?.filters || {},
     globalSearch: raw?.globalSearch || "",
+    columnSearch: raw?.columnSearch || "",
+    columnSort,
     selectedColumnId: allIdSet.has(raw?.selectedColumnId) ? raw.selectedColumnId : allIds[0] || null,
+    selectedCell,
     showIndex: raw?.showIndex !== false,
+    showFilterBar: raw?.showFilterBar !== false,
     widths: raw?.widths || {},
     collapsedPanels: {
       columns: Boolean(raw?.collapsedPanels?.columns),
       inspector: Boolean(raw?.collapsedPanels?.inspector),
     },
     panelWidths: {
-      columns: clampNumber(raw?.panelWidths?.columns, 240, 180, 440),
+      columns: clampNumber(raw?.panelWidths?.columns, 300, 220, 520),
       inspector: clampNumber(raw?.panelWidths?.inspector, 320, 240, 600),
     },
   };
@@ -4864,9 +4899,12 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
   });
   const clear = button("Clear", () => setViewerState({
     hiddenColumnIds: [],
+    pinnedColumnIds: [],
+    pinnedRowIndices: [],
     filters: {},
     globalSearch: "",
     sorts: [],
+    selectedCell: null,
   }));
   const loadFull = button("Load Full", () => {
     sendCommand("open_viewer", {
@@ -4903,6 +4941,18 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
   top.append(title, meta, search, matchCount, previousMatch, nextMatch, columnsToggle, inspectorToggle, clear, loadFull, cleanButton, modelButton, visualizerButton, save);
   shell.appendChild(renderViewerLineageBar(payload, viewerState, ui, setUi));
   shell.appendChild(top);
+  shell.appendChild(renderViewerDatasetStrip(payload, viewerState, computed));
+  if (viewerState.showFilterBar) {
+    shell.appendChild(renderViewerFilterBar(payload, viewerState, computed, setViewerState));
+  } else if (hasViewerViewState(viewerState)) {
+    const collapsed = document.createElement("div");
+    collapsed.className = "stateframe-web-viewer-filterbar is-collapsed";
+    collapsed.append(
+      textSpan(viewerStateFilterSummary(payload, viewerState, computed), "stateframe-web-filterbar-summary"),
+      button("Show Filters", () => setViewerState({ showFilterBar: true })),
+    );
+    shell.appendChild(collapsed);
+  }
 
   if (commandStatus?.status === "saved") {
     const saved = document.createElement("div");
@@ -4928,8 +4978,8 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
       className: "stateframe-web-viewer-resizer",
       label: "Resize columns panel",
       value: viewerState.panelWidths.columns,
-      min: 180,
-      max: 440,
+      min: 220,
+      max: 520,
       onPreview: (width) => body.style.setProperty("--stateframe-viewer-columns-width", `${width}px`),
       onCommit: (width) => setViewerState({ panelWidths: { ...viewerState.panelWidths, columns: width } }),
     }));
@@ -5034,38 +5084,289 @@ function renderViewerLineageBar(payload, viewerState, ui, setUi) {
   return bar;
 }
 
+function renderViewerDatasetStrip(payload, state, computed) {
+  const strip = document.createElement("div");
+  strip.className = "stateframe-web-viewer-dataset-strip";
+  const summary = payload.summary || {};
+  const view = payload.view || {};
+  const visibleCount = visibleViewerColumns(payload, state).length;
+  const hiddenCount = (state.hiddenColumnIds || []).length;
+  const pinnedColumnCount = (state.pinnedColumnIds || []).length;
+  const pinnedRowCount = (state.pinnedRowIndices || []).length;
+  const items = [
+    ["Rows", formatInt(view.row_count || summary.row_count)],
+    ["Preview", `${formatInt(view.displayed_row_count || 0)}${view.truncated ? " truncated" : ""}`],
+    ["Filtered", `${formatInt(computed.indices.length)} (${formatPercent((computed.indices.length || 0) / Math.max(1, Number(view.displayed_row_count || 0)))})`],
+    ["Columns", `${formatInt(visibleCount)} visible / ${formatInt(view.column_count || 0)}`],
+    ["Missing", formatPercent(summary.missing_cell_ratio)],
+    ["Memory", formatBytes(summary.memory_bytes)],
+  ];
+  if (summary.duplicate_rows !== null && summary.duplicate_rows !== undefined) {
+    items.push(["Duplicate rows", formatInt(summary.duplicate_rows)]);
+  }
+  if (hiddenCount) items.push(["Offloaded", formatInt(hiddenCount)]);
+  if (pinnedColumnCount || pinnedRowCount) items.push(["Pinned", `${formatInt(pinnedColumnCount)} col / ${formatInt(pinnedRowCount)} row`]);
+  for (const [label, value] of items) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-dataset-stat";
+    item.append(
+      textSpan(label, "stateframe-web-dataset-stat-label"),
+      textSpan(value || "0", "stateframe-web-dataset-stat-value"),
+    );
+    strip.appendChild(item);
+  }
+  return strip;
+}
+
+function renderViewerFilterBar(payload, state, computed, setViewerState) {
+  const bar = document.createElement("div");
+  bar.className = "stateframe-web-viewer-filterbar";
+  const summary = textSpan(viewerStateFilterSummary(payload, state, computed), "stateframe-web-filterbar-summary");
+  const chips = document.createElement("div");
+  chips.className = "stateframe-web-filter-chips";
+
+  if (state.globalSearch) {
+    chips.appendChild(removableChip(`search: ${state.globalSearch}`, () => setViewerState({ globalSearch: "" })));
+  }
+  for (const [columnId, filter] of Object.entries(state.filters || {})) {
+    if (!filter || !Object.keys(filter).length) continue;
+    const column = getViewerColumn(payload, columnId);
+    if (!column) continue;
+    chips.appendChild(removableChip(`${column.display_name || column.source_name}: ${filterLabel(filter)}`, () => {
+      const next = { ...(state.filters || {}) };
+      delete next[columnId];
+      setViewerState({ filters: next });
+    }));
+  }
+  for (const [index, sort] of (state.sorts || []).entries()) {
+    const column = getViewerColumn(payload, sort.id);
+    if (!column) continue;
+    chips.appendChild(removableChip(`${index + 1}. ${column.display_name || column.source_name} ${sort.direction}`, () => {
+      setViewerState({ sorts: (state.sorts || []).filter((_, sortIndex) => sortIndex !== index) });
+    }));
+  }
+  if (!chips.childElementCount) chips.appendChild(textSpan("No filters or sorts", "stateframe-web-filterbar-empty"));
+
+  const copyCode = button("Copy Code", (event) => copyTextToClipboard(viewerCodeForState(payload, state), event.currentTarget));
+  const copyCell = button("Copy Cell", (event) => {
+    const cell = state.selectedCell;
+    const column = getViewerColumn(payload, cell?.columnId);
+    const value = cell && column ? valueFor(payload, cell.rowIndex, column) : "";
+    copyTextToClipboard(String(value ?? ""), event.currentTarget);
+  });
+  copyCell.disabled = !state.selectedCell;
+  const clearFilters = button("Clear Filters", () => setViewerState({ filters: {}, globalSearch: "" }));
+  clearFilters.disabled = !state.globalSearch && !Object.keys(state.filters || {}).length;
+  const clearSorts = button("Clear Sorts", () => setViewerState({ sorts: [] }));
+  clearSorts.disabled = !(state.sorts || []).length;
+  const hide = button("Hide Filters", () => setViewerState({ showFilterBar: false }));
+  bar.append(summary, chips, clearFilters, clearSorts, copyCell, copyCode, hide);
+  return bar;
+}
+
+function removableChip(label, onRemove) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "stateframe-web-filter-chip";
+  chip.textContent = `${label} x`;
+  chip.title = "Remove";
+  chip.addEventListener("click", onRemove);
+  return chip;
+}
+
+function viewerStateFilterSummary(payload, state, computed) {
+  const shown = computed.indices.length;
+  const total = Number(payload.view?.displayed_row_count || 0);
+  const sorts = (state.sorts || []).length;
+  const filters = Object.keys(state.filters || {}).length + (state.globalSearch ? 1 : 0);
+  const parts = [`${formatInt(shown)} of ${formatInt(total)} preview rows`];
+  if (filters) parts.push(`${formatInt(filters)} filter${filters === 1 ? "" : "s"}`);
+  if (sorts) parts.push(`${formatInt(sorts)} sort${sorts === 1 ? "" : "s"}`);
+  return parts.join(" / ");
+}
+
+function hasViewerViewState(state) {
+  return Boolean(
+    state.globalSearch
+    || Object.keys(state.filters || {}).length
+    || (state.sorts || []).length
+    || (state.pinnedColumnIds || []).length
+    || (state.pinnedRowIndices || []).length
+  );
+}
+
+function filterLabel(filter) {
+  if (filter.kind === "numeric") {
+    const parts = [];
+    if (filter.min !== undefined && filter.min !== "") parts.push(`>= ${filter.min}`);
+    if (filter.max !== undefined && filter.max !== "") parts.push(`<= ${filter.max}`);
+    return parts.join(" and ") || "numeric filter";
+  }
+  if (filter.kind === "datetime") {
+    const parts = [];
+    if (filter.min) parts.push(`from ${filter.min}`);
+    if (filter.max) parts.push(`to ${filter.max}`);
+    return parts.join(" ") || "date filter";
+  }
+  if (filter.kind === "empty") return "is empty";
+  if (filter.kind === "not_empty") return "is not empty";
+  return `${filter.mode || "contains"} ${filter.value || ""}`;
+}
+
+function viewerCodeForState(payload, state, frameName = "df") {
+  const lines = [`view = ${frameName}`];
+  for (const [columnId, filter] of Object.entries(state.filters || {})) {
+    const column = getViewerColumn(payload, columnId);
+    if (!column || !filter || !Object.keys(filter).length) continue;
+    const name = JSON.stringify(column.source_name);
+    if (filter.kind === "numeric") {
+      if (filter.min !== undefined && filter.min !== "") lines.push(`view = view[view[${name}] >= ${JSON.stringify(Number(filter.min))}]`);
+      if (filter.max !== undefined && filter.max !== "") lines.push(`view = view[view[${name}] <= ${JSON.stringify(Number(filter.max))}]`);
+    } else if (filter.kind === "datetime") {
+      if (filter.min) lines.push(`view = view[pd.to_datetime(view[${name}], errors="coerce") >= pd.to_datetime(${JSON.stringify(filter.min)})]`);
+      if (filter.max) lines.push(`view = view[pd.to_datetime(view[${name}], errors="coerce") <= pd.to_datetime(${JSON.stringify(filter.max)})]`);
+    } else if (filter.kind === "empty") {
+      lines.push(`view = view[view[${name}].isna() | view[${name}].astype("string").str.strip().eq("")]`);
+    } else if (filter.kind === "not_empty") {
+      lines.push(`view = view[~(view[${name}].isna() | view[${name}].astype("string").str.strip().eq(""))]`);
+    } else if (filter.value) {
+      const value = JSON.stringify(String(filter.value).toLowerCase());
+      if (filter.mode === "equals") lines.push(`view = view[view[${name}].astype("string").str.lower().eq(${value})]`);
+      else if (filter.mode === "starts") lines.push(`view = view[view[${name}].astype("string").str.lower().str.startswith(${value}, na=False)]`);
+      else lines.push(`view = view[view[${name}].astype("string").str.lower().str.contains(${value}, na=False, regex=False)]`);
+    }
+  }
+  if (state.globalSearch) {
+    const search = JSON.stringify(String(state.globalSearch).toLowerCase());
+    lines.push(`mask = view.astype("string").apply(lambda col: col.str.lower().str.contains(${search}, na=False, regex=False)).any(axis=1)`);
+    lines.push("view = view[mask]");
+  }
+  if ((state.sorts || []).length) {
+    const by = (state.sorts || []).map((sort) => getViewerColumn(payload, sort.id)?.source_name).filter(Boolean);
+    const ascending = (state.sorts || []).filter((sort) => getViewerColumn(payload, sort.id)).map((sort) => sort.direction !== "desc");
+    lines.push(`view = view.sort_values(${JSON.stringify(by)}, ascending=${JSON.stringify(ascending)})`);
+  }
+  const hidden = new Set(state.hiddenColumnIds || []);
+  const visible = orderedViewerColumns(payload, state)
+    .filter((column) => !hidden.has(column.id))
+    .map((column) => column.source_name);
+  if (visible.length) lines.push(`view = view[${JSON.stringify(visible)}]`);
+  return lines.join("\n");
+}
+
+function renderViewerHeaderCell(column, state, setViewerState) {
+  const cell = th("");
+  const sortIndex = (state.sorts || []).findIndex((sort) => sort.id === column.id);
+  const sort = sortIndex >= 0 ? state.sorts[sortIndex] : null;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-table-header-cell";
+  const name = textSpan(column.display_name || column.source_name || column.id, "stateframe-web-table-header-name");
+  const dtype = textSpan(column.dtype || column.semantic_type || "", "stateframe-web-table-header-type");
+  wrap.append(name, dtype);
+  if (sort) {
+    wrap.appendChild(textSpan(`${sort.direction === "desc" ? "Down" : "Up"} ${sortIndex + 1}`, "stateframe-web-sort-badge"));
+  }
+  if ((state.pinnedColumnIds || []).includes(column.id)) {
+    wrap.appendChild(textSpan("Pinned", "stateframe-web-pin-badge"));
+  }
+  cell.replaceChildren(wrap);
+  cell.addEventListener("click", (event) => setViewerState({
+    selectedColumnId: column.id,
+    sorts: nextSorts(state.sorts, column.id, { append: event.shiftKey || event.ctrlKey || event.metaKey }),
+  }));
+  cell.addEventListener("dblclick", () => setViewerState({
+    pinnedColumnIds: toggleArrayValue(state.pinnedColumnIds, column.id),
+  }));
+  cell.title = "Click to sort. Shift/Ctrl/Cmd-click to add a sort layer. Double-click to pin.";
+  return cell;
+}
+
 function renderViewerColumns(payload, state, setViewerState) {
   const panel = document.createElement("section");
   panel.className = "stateframe-web-viewer-columns";
   panel.dataset.scrollKey = "viewer-columns";
   const header = document.createElement("div");
   header.className = "stateframe-web-panel-header";
-  header.textContent = "Columns";
-  panel.appendChild(header);
+  header.textContent = "Column Summary";
+  const search = filterInput("Search columns", state.columnSearch || "", (value) => setViewerState({ columnSearch: value }), "viewer-column-search");
+  search.classList.add("stateframe-web-column-search");
+  const sort = document.createElement("select");
+  sort.className = "stateframe-web-select";
+  for (const [value, label] of [
+    ["original", "Original order"],
+    ["name_asc", "Name A-Z"],
+    ["name_desc", "Name Z-A"],
+    ["type_asc", "Type A-Z"],
+    ["type_desc", "Type Z-A"],
+    ["missing_desc", "Most missing"],
+    ["unique_desc", "Most unique"],
+    ["issues_desc", "Most issues"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    sort.appendChild(option);
+  }
+  sort.value = state.columnSort || "original";
+  sort.addEventListener("change", () => setViewerState({ columnSort: sort.value }));
+  const controls = document.createElement("div");
+  controls.className = "stateframe-web-column-panel-controls";
+  controls.append(search, sort);
+  panel.append(header, controls);
 
-  const ordered = orderedViewerColumns(payload, state);
+  const ordered = summaryViewerColumns(payload, state);
   const hidden = new Set(state.hiddenColumnIds || []);
+  const pinned = new Set(state.pinnedColumnIds || []);
   const list = document.createElement("div");
   list.className = "stateframe-web-viewer-column-list";
+  if (!ordered.length) {
+    list.appendChild(empty("No columns match this search."));
+  }
   ordered.forEach((column, index) => {
     const row = document.createElement("div");
     row.className = "stateframe-web-viewer-column";
     if (column.id === state.selectedColumnId) row.classList.add("is-selected");
     if (hidden.has(column.id)) row.classList.add("is-hidden");
-    const name = document.createElement("button");
-    name.type = "button";
-    name.className = "stateframe-web-column-name";
-    name.textContent = column.display_name || column.source_name || column.id;
-    name.addEventListener("click", () => setViewerState({ selectedColumnId: column.id }));
+    if (pinned.has(column.id)) row.classList.add("is-pinned");
+    row.addEventListener("dblclick", () => setViewerState({
+      selectedColumnId: column.id,
+      collapsedPanels: { ...state.collapsedPanels, columns: true },
+    }));
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "stateframe-web-column-summary-main";
+    main.addEventListener("click", () => setViewerState({ selectedColumnId: column.id }));
+    const topLine = document.createElement("div");
+    topLine.className = "stateframe-web-column-summary-top";
+    topLine.append(
+      textSpan(column.display_name || column.source_name || column.id, "stateframe-web-column-name"),
+      textSpan(column.semantic_type || column.dtype || "unknown", "stateframe-web-column-type"),
+    );
+    const statLine = document.createElement("div");
+    statLine.className = "stateframe-web-column-summary-stats";
+    statLine.append(
+      textSpan(`Missing ${formatPercent(column.missing_ratio) || "0.0%"}`, "stateframe-web-column-stat"),
+      textSpan(`Unique ${formatInt(column.distinct_count)}`, "stateframe-web-column-stat"),
+    );
+    main.append(topLine, renderColumnMissingBar(column), renderColumnSparkline(column), statLine);
+    const actualIndex = orderedViewerColumns(payload, state).findIndex((item) => item.id === column.id);
+    const originalSort = (state.columnSort || "original") === "original" && !(state.columnSearch || "").trim();
     row.append(
-      name,
-      tinyButton("\u2191", () => setViewerState({ columnOrder: moveId(state.columnOrder, column.id, -1) }), index === 0, "Move column up", true),
-      tinyButton("\u2193", () => setViewerState({ columnOrder: moveId(state.columnOrder, column.id, 1) }), index === ordered.length - 1, "Move column down", true),
+      main,
+      tinyButton(pinned.has(column.id) ? "Unpin" : "Pin", () => {
+        const nextPinned = pinned.has(column.id)
+          ? state.pinnedColumnIds.filter((id) => id !== column.id)
+          : [...state.pinnedColumnIds, column.id];
+        setViewerState({ pinnedColumnIds: nextPinned });
+      }, hidden.has(column.id), pinned.has(column.id) ? "Unpin column" : "Pin column"),
+      tinyButton("Up", () => setViewerState({ columnOrder: moveId(state.columnOrder, column.id, -1) }), !originalSort || actualIndex <= 0, "Move column up"),
+      tinyButton("Down", () => setViewerState({ columnOrder: moveId(state.columnOrder, column.id, 1) }), !originalSort || actualIndex < 0 || actualIndex === orderedViewerColumns(payload, state).length - 1, "Move column down"),
       tinyButton(hidden.has(column.id) ? "\u21e4" : "\u21e5", () => {
+        const nextPinned = state.pinnedColumnIds.filter((id) => id !== column.id);
         const next = hidden.has(column.id)
           ? state.hiddenColumnIds.filter((id) => id !== column.id)
           : [...state.hiddenColumnIds, column.id];
-        setViewerState({ hiddenColumnIds: next });
+        setViewerState({ hiddenColumnIds: next, pinnedColumnIds: nextPinned });
       }, false, hidden.has(column.id) ? "Load column back into view" : "Offload column from view", true),
     );
     list.appendChild(row);
@@ -5082,15 +5383,37 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
   table.className = "stateframe-web-table";
   const activeMatch = computed.matches[ui.activeMatchIndex] || null;
   const searchNeedle = String(state.globalSearch || "").trim().toLowerCase();
+  const pinnedColumns = new Set(state.pinnedColumnIds || []);
+  const pinnedVisibleColumns = visibleColumns.filter((column) => pinnedColumns.has(column.id));
+  const pinnedOffsets = new Map();
+  let pinnedLeft = state.showIndex ? 64 : 0;
+  for (const column of pinnedVisibleColumns) {
+    pinnedOffsets.set(column.id, pinnedLeft);
+    pinnedLeft += viewerColumnWidth(state, column);
+  }
+  const colgroup = document.createElement("colgroup");
+  if (state.showIndex) {
+    const indexCol = document.createElement("col");
+    indexCol.style.width = "64px";
+    colgroup.appendChild(indexCol);
+  }
+  for (const column of visibleColumns) {
+    const col = document.createElement("col");
+    col.style.width = `${viewerColumnWidth(state, column)}px`;
+    colgroup.appendChild(col);
+  }
+  table.appendChild(colgroup);
   const thead = document.createElement("thead");
   const header = document.createElement("tr");
-  if (state.showIndex) header.appendChild(th("#"));
+  if (state.showIndex) {
+    const indexHeader = th("#");
+    indexHeader.classList.add("is-index-column");
+    header.appendChild(indexHeader);
+  }
   for (const column of visibleColumns) {
-    const cell = th(column.display_name || column.source_name || column.id);
-    cell.addEventListener("click", () => setViewerState({
-      selectedColumnId: column.id,
-      sorts: nextSorts(state.sorts, column.id),
-    }));
+    const cell = renderViewerHeaderCell(column, state, setViewerState);
+    applyViewerColumnSizing(cell, state, column);
+    if (pinnedColumns.has(column.id)) applyPinnedColumnCell(cell, pinnedOffsets.get(column.id), true);
     header.appendChild(cell);
   }
   thead.appendChild(header);
@@ -5101,16 +5424,49 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
   const limit = Math.max(40, Math.min(500, Math.floor(VIEWER_GRID_CELL_BUDGET / visibleCellWidth)));
   const activeVirtualIndex = activeMatch?.virtualIndex ?? 0;
   const start = activeVirtualIndex >= limit ? Math.max(0, activeVirtualIndex - 25) : 0;
-  const rows = computed.indices.slice(start, start + limit);
+  const pinnedRowSet = new Set(state.pinnedRowIndices || []);
+  const matchedPinnedRows = (state.pinnedRowIndices || []).filter((rowIndex) => computed.indices.includes(rowIndex));
+  const bodyRows = computed.indices
+    .slice(start, start + limit)
+    .filter((rowIndex) => !pinnedRowSet.has(rowIndex));
+  const rows = [...matchedPinnedRows, ...bodyRows];
   const bodyFragment = document.createDocumentFragment();
+  let pinnedRowOrder = 0;
   for (const rowIndex of rows) {
     const tr = document.createElement("tr");
-    if (state.showIndex) tr.appendChild(td(payload.index?.[rowIndex] ?? rowIndex));
+    const isPinnedRow = pinnedRowSet.has(rowIndex);
+    if (isPinnedRow) tr.classList.add("is-pinned-row");
+    if (state.showIndex) {
+      const indexCell = td(payload.index?.[rowIndex] ?? rowIndex);
+      indexCell.classList.add("is-index-column");
+      if (isPinnedRow) applyPinnedRowCell(indexCell, pinnedRowOrder);
+      indexCell.title = isPinnedRow ? "Pinned row. Double-click to unpin." : "Double-click to pin this row.";
+      indexCell.addEventListener("dblclick", () => setViewerState({
+        pinnedRowIndices: toggleNumberValue(state.pinnedRowIndices, rowIndex),
+      }));
+      tr.appendChild(indexCell);
+    }
     for (const column of visibleColumns) {
       const value = valueFor(payload, rowIndex, column);
       const cell = td(value);
+      applyViewerColumnSizing(cell, state, column);
+      if (pinnedColumns.has(column.id)) applyPinnedColumnCell(cell, pinnedOffsets.get(column.id), false);
+      if (isPinnedRow) applyPinnedRowCell(cell, pinnedRowOrder);
+      cell.title = String(value ?? "");
+      cell.addEventListener("click", () => setViewerState({
+        selectedCell: { rowIndex, columnId: column.id },
+        selectedColumnId: column.id,
+      }));
+      cell.addEventListener("dblclick", () => copyTextToClipboard(String(value ?? ""), null));
       if (searchNeedle && cellMatches(value, searchNeedle)) {
         cell.classList.add("is-search-match");
+      }
+      if (
+        state.selectedCell
+        && state.selectedCell.rowIndex === rowIndex
+        && state.selectedCell.columnId === column.id
+      ) {
+        cell.classList.add("is-selected-cell");
       }
       if (
         activeMatch
@@ -5123,6 +5479,7 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
       tr.appendChild(cell);
     }
     bodyFragment.appendChild(tr);
+    if (isPinnedRow) pinnedRowOrder += 1;
   }
   tbody.appendChild(bodyFragment);
   table.appendChild(tbody);
@@ -5161,6 +5518,8 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   actions.append(
     button("Sort Asc", () => setViewerState({ sorts: [{ id: column.id, direction: "asc" }] })),
     button("Sort Desc", () => setViewerState({ sorts: [{ id: column.id, direction: "desc" }] })),
+    button("Add Asc", () => setViewerState({ sorts: nextSorts(state.sorts, column.id, { append: true, direction: "asc" }) })),
+    button("Add Desc", () => setViewerState({ sorts: nextSorts(state.sorts, column.id, { append: true, direction: "desc" }) })),
   );
   inspector.appendChild(actions);
 
@@ -5270,7 +5629,13 @@ function renderViewerFilter(column, state, setViewerState) {
     const text = filterInput("Value", filter.value ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "text", mode: mode.value, value }, state, setViewerState), `filter-${column.id}-value`);
     wrap.append(mode, text);
   }
-  wrap.append(button("Clear Filter", () => clearColumnFilter(column.id, state, setViewerState)));
+  wrap.append(
+    inlineControls(
+      button("Empty", () => setColumnFilter(column.id, { kind: "empty" }, state, setViewerState)),
+      button("Not Empty", () => setColumnFilter(column.id, { kind: "not_empty" }, state, setViewerState)),
+      button("Clear Filter", () => clearColumnFilter(column.id, state, setViewerState)),
+    ),
+  );
   return wrap;
 }
 
@@ -5750,7 +6115,11 @@ function passesFilters(payload, state, rowIndex) {
     if (!column || !filter || !Object.keys(filter).length) continue;
     const raw = valueFor(payload, rowIndex, column);
     const text = String(raw ?? "");
-    if (filter.kind === "numeric") {
+    if (filter.kind === "empty") {
+      if (!(raw === null || raw === undefined || text.trim() === "")) return false;
+    } else if (filter.kind === "not_empty") {
+      if (raw === null || raw === undefined || text.trim() === "") return false;
+    } else if (filter.kind === "numeric") {
       const value = Number(raw);
       if (filter.min !== undefined && filter.min !== "" && !(value >= Number(filter.min))) return false;
       if (filter.max !== undefined && filter.max !== "" && !(value <= Number(filter.max))) return false;
@@ -5806,7 +6175,37 @@ function orderedViewerColumns(payload, state) {
 
 function visibleViewerColumns(payload, state) {
   const hidden = new Set(state.hiddenColumnIds || []);
-  return orderedViewerColumns(payload, state).filter((column) => !hidden.has(column.id));
+  const pinned = new Set(state.pinnedColumnIds || []);
+  const ordered = orderedViewerColumns(payload, state).filter((column) => !hidden.has(column.id));
+  return [
+    ...ordered.filter((column) => pinned.has(column.id)),
+    ...ordered.filter((column) => !pinned.has(column.id)),
+  ];
+}
+
+function summaryViewerColumns(payload, state) {
+  const query = String(state.columnSearch || "").trim().toLowerCase();
+  let columns = orderedViewerColumns(payload, state);
+  if (query) {
+    columns = columns.filter((column) => [
+      column.display_name,
+      column.source_name,
+      column.dtype,
+      column.semantic_type,
+      column.role,
+    ].join(" ").toLowerCase().includes(query));
+  }
+  const sort = state.columnSort || "original";
+  const byName = (a, b) => String(a.display_name || a.source_name || "").localeCompare(String(b.display_name || b.source_name || ""));
+  const byType = (a, b) => String(a.semantic_type || a.dtype || "").localeCompare(String(b.semantic_type || b.dtype || ""));
+  if (sort === "name_asc") columns = [...columns].sort(byName);
+  else if (sort === "name_desc") columns = [...columns].sort((a, b) => byName(b, a));
+  else if (sort === "type_asc") columns = [...columns].sort(byType);
+  else if (sort === "type_desc") columns = [...columns].sort((a, b) => byType(b, a));
+  else if (sort === "missing_desc") columns = [...columns].sort((a, b) => Number(b.missing_ratio || 0) - Number(a.missing_ratio || 0));
+  else if (sort === "unique_desc") columns = [...columns].sort((a, b) => Number(b.distinct_count || 0) - Number(a.distinct_count || 0));
+  else if (sort === "issues_desc") columns = [...columns].sort((a, b) => (b.issues || []).length - (a.issues || []).length);
+  return columns;
 }
 
 function getViewerColumn(payload, id) {
@@ -5817,6 +6216,71 @@ function valueFor(payload, rowIndex, column) {
   const index = viewerPayloadCache(payload).columnIndexById.get(column.id);
   if (index === undefined) return undefined;
   return payload.rows?.[rowIndex]?.[index];
+}
+
+function viewerColumnWidth(state, column) {
+  const raw = state.widths?.[column.id] || column.width || 140;
+  return clampNumber(raw, 140, 84, 420);
+}
+
+function applyViewerColumnSizing(cell, state, column) {
+  const width = viewerColumnWidth(state, column);
+  cell.style.width = `${width}px`;
+  cell.style.minWidth = `${width}px`;
+  cell.style.maxWidth = `${width}px`;
+}
+
+function applyPinnedColumnCell(cell, left, header) {
+  cell.classList.add("is-pinned-column");
+  if (header) cell.classList.add("is-pinned-header");
+  cell.style.left = `${Number(left || 0)}px`;
+}
+
+function applyPinnedRowCell(cell, order) {
+  cell.classList.add("is-pinned-row-cell");
+  cell.style.top = `${34 + Number(order || 0) * 35}px`;
+}
+
+function renderColumnMissingBar(column) {
+  const outer = document.createElement("div");
+  outer.className = "stateframe-web-column-missing";
+  const inner = document.createElement("div");
+  inner.className = "stateframe-web-column-missing-fill";
+  inner.style.width = `${Math.max(0, Math.min(100, Number(column.missing_ratio || 0) * 100))}%`;
+  outer.title = `${formatInt(column.missing_count)} missing (${formatPercent(column.missing_ratio)})`;
+  outer.appendChild(inner);
+  return outer;
+}
+
+function renderColumnSparkline(column) {
+  if (column.histogram?.bins?.length) {
+    const chart = document.createElement("div");
+    chart.className = "stateframe-web-column-spark";
+    for (const bin of column.histogram.bins.slice(0, 24)) {
+      const bar = document.createElement("span");
+      const height = column.histogram.max_count ? Math.max(2, (bin.count / column.histogram.max_count) * 22) : 2;
+      bar.style.height = `${height}px`;
+      bar.title = `${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}: ${formatInt(bin.count)}`;
+      chart.appendChild(bar);
+    }
+    return chart;
+  }
+  if (column.top_values?.length) {
+    const chart = document.createElement("div");
+    chart.className = "stateframe-web-column-spark is-frequency";
+    const max = Math.max(...column.top_values.slice(0, 8).map((item) => Number(item.count || 0)), 1);
+    for (const item of column.top_values.slice(0, 8)) {
+      const bar = document.createElement("span");
+      const width = Math.max(4, (Number(item.count || 0) / max) * 100);
+      bar.style.width = `${width}%`;
+      bar.title = `${formatCell(item.value)}: ${formatInt(item.count)}`;
+      chart.appendChild(bar);
+    }
+    return chart;
+  }
+  const emptySpark = document.createElement("div");
+  emptySpark.className = "stateframe-web-column-spark is-empty";
+  return emptySpark;
 }
 
 function setColumnFilter(columnId, filter, state, setViewerState) {
@@ -5857,11 +6321,23 @@ function draftSummary(payload, state) {
   return { has_changes: Boolean(pills.length), pills };
 }
 
-function nextSorts(sorts, columnId) {
-  const current = (sorts || []).find((sort) => sort.id === columnId);
-  if (!current) return [{ id: columnId, direction: "asc" }];
-  if (current.direction === "asc") return [{ id: columnId, direction: "desc" }];
-  return [];
+function nextSorts(sorts, columnId, { append = false, direction = null } = {}) {
+  const currentSorts = Array.isArray(sorts) ? sorts : [];
+  const index = currentSorts.findIndex((sort) => sort.id === columnId);
+  const current = index >= 0 ? currentSorts[index] : null;
+  const nextDirection = direction || (!current ? "asc" : current.direction === "asc" ? "desc" : null);
+  if (!append) {
+    return nextDirection ? [{ id: columnId, direction: nextDirection }] : [];
+  }
+  if (index < 0) {
+    return nextDirection ? [...currentSorts, { id: columnId, direction: nextDirection }] : currentSorts;
+  }
+  if (!nextDirection) {
+    return currentSorts.filter((_, sortIndex) => sortIndex !== index);
+  }
+  return currentSorts.map((sort, sortIndex) => (
+    sortIndex === index ? { ...sort, direction: nextDirection } : sort
+  ));
 }
 
 function moveId(ids, id, delta) {
@@ -6327,6 +6803,14 @@ function toggleArrayValue(values, value) {
   if (set.has(value)) set.delete(value);
   else set.add(value);
   return Array.from(set);
+}
+
+function toggleNumberValue(values, value) {
+  const number = Number(value);
+  const set = new Set((values || []).map((item) => Number(item)));
+  if (set.has(number)) set.delete(number);
+  else set.add(number);
+  return Array.from(set).filter((item) => Number.isInteger(item)).sort((a, b) => a - b);
 }
 
 function deleteSelectionCount(state) {

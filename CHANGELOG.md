@@ -10,6 +10,8 @@ This project follows semantic versioning while the API is stabilizing:
 
 ## Unreleased
 
+## 0.3.0 - 2026-05-27
+
 - Added the first shared operation registry for UI- and replay-readable
   cleansing controls. Cleaning plan actions now expose operation ids, control
   metadata, affected row counts, examples, risk, default-apply behavior, and a
@@ -90,6 +92,9 @@ This project follows semantic versioning while the API is stabilizing:
   contribution lists, and richer classification reports including precision,
   recall, F1, support, confusion matrices, ROC curve data, and
   precision-recall curve data.
+- Added XGBoost SHAP support for modeling experiments, including a fallback
+  path for XGBoost estimators that are not accepted by the default SHAP
+  explainer interface.
 - Added a smarter visual inspector that classifies controls as basic,
   advanced, or expert, supports in-panel control search, and filters controls
   by chart bindings so the visual builder stays compact until deeper options
@@ -108,6 +113,10 @@ This project follows semantic versioning while the API is stabilizing:
   metric tiles, confusion matrices, ROC/precision-recall curves, SHAP global
   feature bars, beeswarm-style SHAP distributions, and expandable per-record
   SHAP contribution reports.
+- Added power-viewer controls for pinned columns, pinned rows, selected-cell
+  copying, dataset and filter summary strips, column search/sort, column
+  sparklines, collapsible side panels, and stacked sorts while keeping
+  view-only controls out of replayed dataframe signatures.
 
 ## 0.2.2 - 2026-05-21
 

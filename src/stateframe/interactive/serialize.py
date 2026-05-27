@@ -184,15 +184,25 @@ def initial_view_state(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "columnOrder": column_order,
         "hiddenColumnIds": [],
+        "pinnedColumnIds": [],
+        "pinnedRowIndices": [],
         "sorts": [],
         "filters": {},
         "globalSearch": "",
+        "columnSearch": "",
+        "columnSort": "original",
         "selectedColumnId": column_order[0] if column_order else None,
+        "selectedCell": None,
         "showIndex": True,
+        "showFilterBar": True,
         "widths": widths,
         "panelWidths": {
-            "columns": 240,
+            "columns": 300,
             "inspector": 320,
+        },
+        "collapsedPanels": {
+            "columns": False,
+            "inspector": False,
         },
     }
 

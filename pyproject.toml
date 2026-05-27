@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stateframe"
-version = "0.2.2"
+version = "0.3.0"
 description = "Adaptive exploratory data analysis for DataFrames and columnar datasets."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -62,6 +62,7 @@ interactive = [
 ]
 ml = [
     "scikit-learn>=1.4",
+    "shap>=0.45",
 ]
 
 [project.scripts]

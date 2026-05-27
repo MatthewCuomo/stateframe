@@ -1,3 +1,6 @@
+import importlib.abc
+import sys
+
 import pandas as pd
 import pytest
 
@@ -42,6 +45,40 @@ def test_modeling_experiment_runs_random_forest_with_shap_observability():
     assert payload["explanation"]["records"][0]["top_contributions"]
 
 
+def test_modeling_experiment_auto_explanation_falls_back_without_shap(monkeypatch):
+    blocked_modules = {
+        name: module
+        for name, module in list(sys.modules.items())
+        if name == "shap" or name.startswith("shap.")
+    }
+    for name in blocked_modules:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    class BlockShap(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "shap" or fullname.startswith("shap."):
+                raise ModuleNotFoundError("No module named 'shap'")
+            return None
+
+    blocker = BlockShap()
+    sys.meta_path.insert(0, blocker)
+    try:
+        scan = sf.scan(_classification_frame(), target="target", goal="modeling")
+        result = scan.modeling_experiment(
+            {
+                "estimator": "random_forest",
+                "explanation": {"enabled": True, "method": "auto", "max_rows": 20},
+            }
+        )
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(blocked_modules)
+
+    assert result.explanation["method"] == "permutation"
+    assert result.explanation["top_features"]
+    assert any("SHAP auto explanation fell back" in warning for warning in result.warnings)
+
+
 def test_modeling_experiment_supports_knn_grid_search_regression():
     df = pd.DataFrame(
         {
@@ -69,6 +106,36 @@ def test_modeling_experiment_supports_knn_grid_search_regression():
     assert "mae" in result.metrics
     assert result.cross_validation["enabled"] is True
     assert result.explanation["top_features"]
+
+
+def test_modeling_experiment_runs_xgboost_with_tree_shap_observability():
+    pytest.importorskip("xgboost")
+    rows = 60
+    df = pd.DataFrame(
+        {
+            "sqft": [900 + value * 35 for value in range(rows)],
+            "beds": [2 + value % 4 for value in range(rows)],
+            "city": ["A", "B", "C"] * 20,
+            "price": [250_000 + value * 9_000 + (value % 3) * 15_000 for value in range(rows)],
+        }
+    )
+    scan = sf.scan(df, target="price", goal="modeling")
+
+    result = scan.modeling_experiment(
+        {
+            "task": "regression",
+            "estimator": "xgboost",
+            "features": ["sqft", "beds", "city"],
+            "estimator_params": {"n_estimators": 8, "max_depth": 2, "learning_rate": 0.1},
+            "explanation": {"enabled": True, "method": "shap", "max_rows": 10},
+        }
+    )
+
+    assert result.explanation["method"] == "shap"
+    assert result.explanation["top_features"]
+    assert result.explanation["beeswarm"]
+    assert result.explanation["records"][0]["top_contributions"]
+    assert not any("SHAP failed" in warning for warning in result.warnings)
 
 
 def test_modeling_experiment_supports_row_sampling_and_regression_residuals():

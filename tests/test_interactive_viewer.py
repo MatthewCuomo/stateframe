@@ -5,6 +5,7 @@ import stateframe as sf
 from stateframe.interactive.serialize import (
     apply_view_state,
     build_viewer_payload,
+    initial_view_state,
     summarize_draft_state,
     summarize_view_state,
     view_state_signature,
@@ -148,6 +149,55 @@ def test_draft_summary_surfaces_unsaved_viewer_changes():
     assert labels["search"] == "search: ada"
     assert labels["hidden_columns"] == "1 offloaded"
     assert labels["column_order"] == "reordered columns"
+
+
+def test_initial_view_state_includes_power_viewer_controls():
+    df = pd.DataFrame(
+        {
+            "name": ["Ada", "Grace"],
+            "score": [10, 20],
+        }
+    )
+    profile = sf.scan(df)
+    payload = build_viewer_payload(profile)
+
+    state = initial_view_state(payload)
+
+    assert state["columnSearch"] == ""
+    assert state["columnSort"] == "original"
+    assert state["pinnedColumnIds"] == []
+    assert state["pinnedRowIndices"] == []
+    assert state["selectedCell"] is None
+    assert state["showFilterBar"] is True
+    assert state["collapsedPanels"] == {"columns": False, "inspector": False}
+    assert state["panelWidths"]["columns"] == 300
+
+
+def test_view_only_controls_do_not_change_view_state_signature_or_dataframe():
+    df = pd.DataFrame(
+        {
+            "name": ["Ada", "Grace", "Alan"],
+            "score": [10, 30, 20],
+        }
+    )
+    profile = sf.scan(df)
+    payload = build_viewer_payload(profile)
+    base_state = initial_view_state(payload)
+    view_only_state = {
+        **base_state,
+        "pinnedColumnIds": [payload["columns"][1]["id"]],
+        "pinnedRowIndices": [1],
+        "columnSearch": "sco",
+        "columnSort": "missing_desc",
+        "selectedCell": {"rowIndex": 1, "columnId": payload["columns"][1]["id"]},
+        "showFilterBar": False,
+    }
+
+    assert view_state_signature(payload, base_state) == view_state_signature(payload, view_only_state)
+    pd.testing.assert_frame_equal(
+        apply_view_state(df, payload, base_state),
+        apply_view_state(df, payload, view_only_state),
+    )
 
 
 def test_view_launches_shared_web_viewer_surface():

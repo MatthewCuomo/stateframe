@@ -3552,8 +3552,20 @@ def _viewer_state_for_payload(
         for column_id in initial_state.get("hiddenColumnIds", [])
         if column_id in column_ids
     ]
+    hidden_ids = set(state["hiddenColumnIds"])
+    state["pinnedColumnIds"] = [
+        column_id
+        for column_id in initial_state.get("pinnedColumnIds", [])
+        if column_id in column_ids and column_id not in hidden_ids
+    ]
+    row_count = int(payload.get("view", {}).get("displayed_row_count") or 0)
+    state["pinnedRowIndices"] = [
+        int(row_index)
+        for row_index in initial_state.get("pinnedRowIndices", [])
+        if isinstance(row_index, int) and 0 <= row_index < row_count
+    ]
     state["sorts"] = [
-        sort
+        dict(sort)
         for sort in initial_state.get("sorts", [])
         if isinstance(sort, dict)
         and sort.get("id") in column_ids
@@ -3567,7 +3579,36 @@ def _viewer_state_for_payload(
     if initial_state.get("selectedColumnId") in column_ids:
         state["selectedColumnId"] = initial_state.get("selectedColumnId")
     state["globalSearch"] = str(initial_state.get("globalSearch") or "")
+    state["columnSearch"] = str(initial_state.get("columnSearch") or "")
+    if initial_state.get("columnSort") in {
+        "original",
+        "name_asc",
+        "name_desc",
+        "type_asc",
+        "type_desc",
+        "missing_desc",
+        "unique_desc",
+        "issues_desc",
+    }:
+        state["columnSort"] = initial_state.get("columnSort")
     state["showIndex"] = initial_state.get("showIndex") is not False
+    state["showFilterBar"] = initial_state.get("showFilterBar") is not False
+    selected_cell = initial_state.get("selectedCell")
+    if isinstance(selected_cell, dict):
+        row_index = selected_cell.get("rowIndex")
+        column_id = selected_cell.get("columnId")
+        if isinstance(row_index, int) and 0 <= row_index < row_count and column_id in column_ids:
+            state["selectedCell"] = {
+                "rowIndex": row_index,
+                "columnId": column_id,
+            }
+    collapsed = initial_state.get("collapsedPanels")
+    if isinstance(collapsed, dict):
+        state["collapsedPanels"] = {
+            **state.get("collapsedPanels", {}),
+            "columns": bool(collapsed.get("columns")),
+            "inspector": bool(collapsed.get("inspector")),
+        }
     panel_widths = initial_state.get("panelWidths")
     if isinstance(panel_widths, dict):
         state["panelWidths"] = {
@@ -3580,6 +3621,8 @@ def _viewer_state_for_payload(
                 and value > 0
             },
         }
+        state["panelWidths"]["columns"] = max(220, min(520, int(state["panelWidths"].get("columns") or 300)))
+        state["panelWidths"]["inspector"] = max(240, min(600, int(state["panelWidths"].get("inspector") or 320)))
     return state
 
 

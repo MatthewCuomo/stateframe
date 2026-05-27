@@ -2,17 +2,33 @@
 
 [![CI](https://github.com/MatthewCuomo/stateframe/actions/workflows/ci.yml/badge.svg)](https://github.com/MatthewCuomo/stateframe/actions/workflows/ci.yml)
 
-`stateframe` is an adaptive EDA library. It starts with a broad scan, infers what
-kind of dataset it is looking at, ranks risks and opportunities, and recommends
-the next useful diagnostic lenses.
+`stateframe` is an adaptive EDA workbench for DataFrames. It starts with a broad
+scan, infers what kind of dataset it is looking at, ranks risks and
+opportunities, and turns those next steps into replayable cleaning, modeling,
+visualization, and notebook provenance flows.
 
-This repo is still early, but the first deterministic scan engine is now in
-place.
+The project is still pre-1.0, but the current release is centered on the
+workspace web UI: inspect a dataframe, branch useful states, clean or prepare
+features, run modeling experiments, save visual/model leaves, and pull any
+tracked state back into Python.
 
 ## Install
 
 ```powershell
 pip install stateframe
+```
+
+For modeling experiments, estimator comparisons, and SHAP/permutation
+explainability, install the machine-learning extra:
+
+```powershell
+pip install "stateframe[ml]"
+```
+
+XGBoost remains optional for users who want that estimator:
+
+```powershell
+pip install xgboost
 ```
 
 ```python
@@ -41,7 +57,7 @@ scan.use_suggested().summary()
 `sf.profile(...)` remains available as an alias-style entry point for users who
 prefer the older name.
 
-## What The First Pass Does
+## Core Scan
 
 - Profiles dataset shape, memory, duplicate rows, missing cells, and inferred
   column type counts.
@@ -125,9 +141,10 @@ baseline.data["baseline_score"]
 baseline.data["model_score"]
 ```
 
-For configurable experiments, use a replayable modeling spec. The experiment
-runner handles preprocessing, holdout splits, cross-validation, optional grid
-search, estimator parameters, metrics, and SHAP observability:
+For configurable experiments, install `stateframe[ml]` and use a replayable
+modeling spec. The experiment runner handles preprocessing, holdout splits,
+cross-validation, optional grid search, estimator parameters, metrics, and
+SHAP/permutation observability:
 
 ```python
 result = scan.modeling_experiment({
@@ -150,10 +167,12 @@ fold, preprocessing, tuning, estimator, and observability controls. Supervised
 classification results include precision, recall, F1, support, confusion
 matrix, ROC and precision-recall curve data when available; SHAP results include
 global feature rankings, beeswarm-ready rows, and per-record contribution lists
-for individual row inspection. The web workbench renders these as first-class
-report panels: metric tiles, confusion matrices, ROC/precision-recall curves,
-SHAP feature bars, beeswarm-style distributions, and expandable per-record
-contribution views.
+for individual row inspection. If SHAP is unavailable or unsuitable for a
+specific model, automatic explanation falls back to permutation or model-native
+importance. The web workbench renders these as first-class report panels:
+metric tiles, confusion matrices, ROC/precision-recall curves, SHAP feature
+bars, beeswarm-style distributions, and expandable per-record contribution
+views.
 
 ## Lenses
 

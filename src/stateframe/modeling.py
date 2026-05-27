@@ -2088,10 +2088,7 @@ def _explain_model(
     model = pipeline.named_steps["model"]
     if method in {"auto", "shap"}:
         try:
-            import shap
-
-            explainer = shap.Explainer(model, sample)
-            values = explainer(sample)
+            values = _compute_shap_values(model, sample)
             payload = _shap_payload(values, sample)
             return {
                 "enabled": True,
@@ -2125,6 +2122,35 @@ def _explain_model(
         except Exception as exc:
             warnings.append(f"Permutation explanation failed: {exc}")
     return {"enabled": True, "method": "model_importance", "top_features": fallback_importance[:20]}
+
+
+def _compute_shap_values(model: Any, sample: pd.DataFrame) -> Any:
+    import shap
+
+    try:
+        explainer = shap.Explainer(model, sample)
+        return explainer(sample)
+    except Exception as primary_exc:
+        if not _should_try_tree_shap(model):
+            raise
+        try:
+            explainer = shap.TreeExplainer(model)
+            return explainer(sample)
+        except Exception as tree_exc:
+            try:
+                explainer = shap.Explainer(model.predict, sample)
+                return explainer(sample)
+            except Exception as callable_exc:
+                raise RuntimeError(
+                    f"{primary_exc}; TreeExplainer failed: {tree_exc}; callable SHAP failed: {callable_exc}"
+                ) from callable_exc
+
+
+def _should_try_tree_shap(model: Any) -> bool:
+    model_type = type(model)
+    module = str(getattr(model_type, "__module__", "")).lower()
+    name = str(getattr(model_type, "__name__", "")).lower()
+    return "xgboost" in module or name.startswith("xgb") or hasattr(model, "get_booster")
 
 
 def _cluster_profile_importance(X: pd.DataFrame, labels: pd.Series) -> list[dict[str, Any]]:

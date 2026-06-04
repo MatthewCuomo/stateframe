@@ -1609,6 +1609,94 @@
   padding: 8px;
 }
 
+.stateframe-web-value-overview {
+  display: grid;
+  gap: 10px;
+}
+
+.stateframe-web-value-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 6px;
+}
+
+.stateframe-web-value-overview-stat {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 7px 8px;
+}
+
+.stateframe-web-value-overview-label {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.stateframe-web-value-overview-value {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-value-overview-caption {
+  min-width: 0;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-value-profile {
+  display: grid;
+  gap: 6px;
+}
+
+.stateframe-web-value-profile-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr);
+  gap: 2px 8px;
+  border-bottom: 1px solid #eef2f7;
+  padding-bottom: 6px;
+}
+
+.stateframe-web-value-profile-label {
+  min-width: 0;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-value-profile-value {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-value-profile-detail {
+  grid-column: 2;
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .stateframe-web-histogram {
   display: flex;
   align-items: end;
@@ -1634,7 +1722,7 @@
 
 .stateframe-web-top-value {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #eef2f7;
@@ -1652,6 +1740,19 @@
 .stateframe-web-top-value.is-active .stateframe-web-top-value-name,
 .stateframe-web-top-value.is-active .stateframe-web-top-value-count {
   color: #1d4ed8;
+}
+
+.stateframe-web-top-value.is-excluded {
+  border-bottom-color: #fed7aa;
+  border-radius: 5px;
+  background: #fff7ed;
+  color: #c2410c;
+  padding: 4px;
+}
+
+.stateframe-web-top-value.is-excluded .stateframe-web-top-value-name,
+.stateframe-web-top-value.is-excluded .stateframe-web-top-value-count {
+  color: #c2410c;
 }
 
 .stateframe-web-top-value-name {

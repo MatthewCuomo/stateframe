@@ -2,6 +2,8 @@ const VIEWER_PAYLOAD_CACHE = new WeakMap();
 const VIEWER_GRID_CELL_BUDGET = 12000;
 const VIEWER_MATCH_LIMIT = 1000;
 const VIEWER_MATCH_ROW_SCAN_LIMIT = 2500;
+const VALUE_OVERVIEW_PROFILE_LIMIT = 6;
+const VALUE_OVERVIEW_ROW_LIMIT = 2500;
 
 function render({ model, el, signal }) {
   let payload = model.get("payload") || {};
@@ -5110,7 +5112,7 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
       onPreview: (width) => body.style.setProperty("--stateframe-viewer-inspector-width", `${width}px`),
       onCommit: (width) => setViewerState({ panelWidths: { ...viewerState.panelWidths, inspector: width } }),
     }));
-    body.appendChild(renderViewerInspector(payload, viewerState, selectedColumn, setViewerState, sendCommand));
+    body.appendChild(renderViewerInspector(payload, viewerState, selectedColumn, setViewerState, sendCommand, computed));
   }
   shell.appendChild(body);
 
@@ -5390,7 +5392,14 @@ function filterLabel(filter) {
   }
   if (filter.kind === "empty") return "is empty";
   if (filter.kind === "not_empty") return "is not empty";
-  return `${filter.mode || "contains"} ${filter.value || ""}`;
+  const textLabels = {
+    contains: "contains",
+    not_contains: "does not contain",
+    equals: "equals",
+    not_equals: "not equal",
+    starts: "starts with",
+  };
+  return `${textLabels[filter.mode || "contains"] || filter.mode || "contains"} ${filter.value || ""}`;
 }
 
 function viewerCodeForState(payload, state, frameName = "df") {
@@ -5411,7 +5420,9 @@ function viewerCodeForState(payload, state, frameName = "df") {
     } else if (filter.value) {
       const value = JSON.stringify(String(filter.value).toLowerCase());
       if (filter.mode === "equals") lines.push(`view = view[view[${name}].astype("string").str.lower().eq(${value})]`);
+      else if (filter.mode === "not_equals") lines.push(`view = view[view[${name}].astype("string").str.lower().ne(${value}).fillna(True)]`);
       else if (filter.mode === "starts") lines.push(`view = view[view[${name}].astype("string").str.lower().str.startswith(${value}, na=False)]`);
+      else if (filter.mode === "not_contains") lines.push(`view = view[~view[${name}].astype("string").str.lower().str.contains(${value}, na=False, regex=False)]`);
       else lines.push(`view = view[view[${name}].astype("string").str.lower().str.contains(${value}, na=False, regex=False)]`);
     }
   }
@@ -5675,7 +5686,7 @@ function renderViewerGrid(payload, state, computed, visibleColumns, setViewerSta
   return wrap;
 }
 
-function renderViewerInspector(payload, state, column, setViewerState, sendCommand) {
+function renderViewerInspector(payload, state, column, setViewerState, sendCommand, computed) {
   const inspector = document.createElement("aside");
   inspector.className = "stateframe-web-viewer-inspector";
   inspector.dataset.scrollKey = "viewer-inspector";
@@ -5695,6 +5706,8 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   inspector.appendChild(renderViewerStats(column));
   const selectedCellPanel = renderSelectedCellPanel(payload, state, column, setViewerState);
   if (selectedCellPanel) inspector.appendChild(section("Selected Cell", selectedCellPanel));
+  const selectedValueOverview = renderSelectedValueOverview(payload, state, column, setViewerState, computed);
+  if (selectedValueOverview) inspector.appendChild(section("Value Overview", selectedValueOverview));
 
   const actions = document.createElement("div");
   actions.className = "stateframe-web-action-row";
@@ -5797,6 +5810,7 @@ function renderSelectedCellPanel(payload, state, column, setViewerState) {
   }));
   panel.appendChild(inlineControls(
     button("Only This", () => setColumnFilter(column.id, valueFilterForColumn(column, value), state, setViewerState)),
+    button("Exclude This", () => setColumnFilter(column.id, valueFilterForColumn(column, value, { exclude: true }), state, setViewerState)),
     button(
       (state.pinnedRowIndices || []).map(Number).includes(Number(cell.rowIndex)) ? "Unpin Row" : "Pin Row",
       () => setViewerState({ pinnedRowIndices: toggleNumberValue(state.pinnedRowIndices, cell.rowIndex) }),
@@ -5806,24 +5820,76 @@ function renderSelectedCellPanel(payload, state, column, setViewerState) {
   return panel;
 }
 
+function renderSelectedValueOverview(payload, state, column, setViewerState, computed) {
+  const cell = state.selectedCell;
+  if (!cell || cell.columnId !== column.id) return null;
+  const value = valueFor(payload, cell.rowIndex, column);
+  const loadedRows = payload.rows || [];
+  const loadedMatches = selectedValueRows(payload, column, value);
+  const currentRows = computed?.indices || [];
+  const currentMatches = currentRows.filter((rowIndex) => valueMatchesForColumn(column, valueFor(payload, rowIndex, column), value));
+  const panel = document.createElement("div");
+  panel.className = "stateframe-web-value-overview";
+
+  const stats = document.createElement("div");
+  stats.className = "stateframe-web-value-overview-stats";
+  stats.append(
+    valueOverviewStat("Current view", formatInt(currentMatches.length), `${formatPercent(safeRatio(currentMatches.length, currentRows.length)) || "0.0%"} of visible rows`),
+    valueOverviewStat("Loaded preview", formatInt(loadedMatches.length), `${formatPercent(safeRatio(loadedMatches.length, loadedRows.length)) || "0.0%"} of loaded rows`),
+    valueOverviewStat("Selected row", formatCell(payload.index?.[cell.rowIndex] ?? cell.rowIndex), column.display_name || column.source_name || column.id),
+  );
+  panel.appendChild(stats);
+
+  const profile = selectedValueProfile(payload, state, column, loadedMatches);
+  if (profile.length) {
+    const profileList = document.createElement("div");
+    profileList.className = "stateframe-web-value-profile";
+    for (const item of profile) {
+      const row = document.createElement("div");
+      row.className = "stateframe-web-value-profile-row";
+      row.title = item.title || "";
+      row.append(
+        textSpan(item.label, "stateframe-web-value-profile-label"),
+        textSpan(item.value, "stateframe-web-value-profile-value"),
+        textSpan(item.detail, "stateframe-web-value-profile-detail"),
+      );
+      profileList.appendChild(row);
+    }
+    panel.appendChild(profileList);
+  } else {
+    panel.appendChild(empty("No comparable rows are loaded for this value."));
+  }
+
+  panel.appendChild(inlineControls(
+    button("Only This Value", () => setColumnFilter(column.id, valueFilterForColumn(column, value), state, setViewerState)),
+    button("Exclude Value", () => setColumnFilter(column.id, valueFilterForColumn(column, value, { exclude: true }), state, setViewerState)),
+  ));
+  return panel;
+}
+
 function renderViewerFilter(column, state, setViewerState) {
   const filter = state.filters?.[column.id] || {};
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-filter";
-  const semantic = column.semantic_type || "";
-  if (semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic)) {
+  if (isNumericColumn(column)) {
     wrap.appendChild(renderNumericFilter(column, filter, state, setViewerState));
-  } else if (semantic.includes("datetime")) {
+  } else if (isDatetimeColumn(column)) {
     const min = filterInput("Start", filter.min ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "datetime", min: value }, state, setViewerState), `filter-${column.id}-start`);
     const max = filterInput("End", filter.max ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "datetime", max: value }, state, setViewerState), `filter-${column.id}-end`);
     wrap.append(min, max);
   } else {
     const mode = document.createElement("select");
     mode.className = "stateframe-web-select";
-    for (const value of ["contains", "equals", "starts"]) {
+    for (const [value, label] of [
+      ["contains", "contains"],
+      ["not_contains", "does not contain"],
+      ["equals", "equals"],
+      ["not_equals", "not equal"],
+      ["starts", "starts with"],
+    ]) {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = value;
+      option.textContent = label;
       mode.appendChild(option);
     }
     mode.value = filter.mode || "contains";
@@ -5931,7 +5997,9 @@ function renderTopValues(column, state, setViewerState) {
     const row = document.createElement("div");
     row.className = "stateframe-web-top-value";
     const filter = topValueFilter(column, item.value);
+    const excludeFilter = valueFilterForColumn(column, item.value, { exclude: true });
     if (filtersEqual(activeFilter, filter)) row.classList.add("is-active");
+    if (filtersEqual(activeFilter, excludeFilter)) row.classList.add("is-excluded");
     const value = document.createElement("span");
     value.className = "stateframe-web-top-value-name";
     value.textContent = formatCell(item.value);
@@ -5939,7 +6007,8 @@ function renderTopValues(column, state, setViewerState) {
     count.className = "stateframe-web-top-value-count";
     count.textContent = `${formatInt(item.count)} ${item.ratio !== undefined ? formatPercent(item.ratio) : ""}`;
     const only = tinyButton("Only", () => setColumnFilter(column.id, filter, state, setViewerState), false, `Filter to ${formatCell(item.value)}`);
-    row.append(value, count, only);
+    const exclude = tinyButton("Exclude", () => setColumnFilter(column.id, excludeFilter, state, setViewerState), false, `Exclude ${formatCell(item.value)}`);
+    row.append(value, count, only, exclude);
     list.appendChild(row);
   }
   return list;
@@ -5949,13 +6018,206 @@ function topValueFilter(column, value) {
   return valueFilterForColumn(column, value);
 }
 
-function valueFilterForColumn(column, value) {
-  if (value === null || value === undefined || value === "") return { kind: "empty" };
-  const semantic = column.semantic_type || "";
-  if (semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic)) {
-    return { kind: "numeric", mode: "eq", value: String(value) };
+function valueFilterForColumn(column, value, options = {}) {
+  if (value === null || value === undefined || value === "") {
+    return options.exclude ? { kind: "not_empty" } : { kind: "empty" };
   }
-  return { kind: "text", mode: "equals", value: String(value) };
+  if (isNumericColumn(column)) {
+    return { kind: "numeric", mode: options.exclude ? "neq" : "eq", value: String(value) };
+  }
+  return { kind: "text", mode: options.exclude ? "not_equals" : "equals", value: String(value) };
+}
+
+function selectedValueRows(payload, column, value) {
+  const cache = viewerPayloadCache(payload);
+  const cacheKey = `${column.id}\u0001${comparableValueKey(column, value)}`;
+  const cached = cache.selectedValueRows.get(cacheKey);
+  if (cached) return cached;
+  const rows = payload.rows || [];
+  const matches = [];
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    if (valueMatchesForColumn(column, valueFor(payload, rowIndex, column), value)) {
+      matches.push(rowIndex);
+    }
+  }
+  cache.selectedValueRows.set(cacheKey, matches);
+  return matches;
+}
+
+function selectedValueProfile(payload, state, selectedColumn, rowIndices) {
+  const limitedRows = rowIndices.slice(0, VALUE_OVERVIEW_ROW_LIMIT);
+  if (!limitedRows.length) return [];
+  return visibleViewerColumns(payload, state)
+    .filter((column) => column.id !== selectedColumn.id)
+    .map((column) => profileColumnForRows(payload, column, limitedRows))
+    .filter(Boolean)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, VALUE_OVERVIEW_PROFILE_LIMIT);
+}
+
+function profileColumnForRows(payload, column, rowIndices) {
+  if (isNumericColumn(column)) return numericProfileColumnForRows(payload, column, rowIndices);
+  if (isDatetimeColumn(column)) return datetimeProfileColumnForRows(payload, column, rowIndices);
+  return categoricalProfileColumnForRows(payload, column, rowIndices);
+}
+
+function categoricalProfileColumnForRows(payload, column, rowIndices) {
+  const counts = valueCountsForRows(payload, column, rowIndices);
+  if (!counts.length) return null;
+  const top = counts[0];
+  const ratio = safeRatio(top.count, rowIndices.length);
+  const overallCount = valueCountAcrossPayload(payload, column, top.value);
+  const overallRatio = safeRatio(overallCount, (payload.rows || []).length);
+  return {
+    label: column.display_name || column.source_name || column.id,
+    value: formatCell(top.value),
+    detail: `${formatInt(top.count)} rows (${formatPercent(ratio) || "0.0%"}) / all ${formatPercent(overallRatio) || "0.0%"}`,
+    score: ratio + Math.max(0, ratio - overallRatio),
+    title: `Top value in selected cohort for ${column.source_name || column.id}`,
+  };
+}
+
+function numericProfileColumnForRows(payload, column, rowIndices) {
+  const values = numericValuesForRows(payload, column, rowIndices);
+  if (!values.length) return null;
+  const allValues = numericValuesForColumn(payload, column);
+  const average = mean(values);
+  const allAverage = mean(allValues);
+  const delta = Number.isFinite(allAverage) ? average - allAverage : 0;
+  const detail = Number.isFinite(allAverage)
+    ? `all avg ${formatNumber(allAverage)}${delta ? ` / ${signedFormatNumber(delta)}` : ""}`
+    : `${formatInt(values.length)} numeric rows`;
+  return {
+    label: column.display_name || column.source_name || column.id,
+    value: `avg ${formatNumber(average)}`,
+    detail,
+    score: 0.35 + Math.min(2, Math.abs(delta) / Math.max(1, Math.abs(allAverage || 0))),
+    title: `Numeric average in selected cohort for ${column.source_name || column.id}`,
+  };
+}
+
+function datetimeProfileColumnForRows(payload, column, rowIndices) {
+  const times = rowIndices
+    .map((rowIndex) => new Date(valueFor(payload, rowIndex, column)).getTime())
+    .filter((value) => Number.isFinite(value));
+  if (!times.length) return null;
+  const min = Math.min(...times);
+  const max = Math.max(...times);
+  return {
+    label: column.display_name || column.source_name || column.id,
+    value: formatShortDate(min),
+    detail: min === max ? "single date" : `to ${formatShortDate(max)}`,
+    score: 0.25,
+    title: `Date range in selected cohort for ${column.source_name || column.id}`,
+  };
+}
+
+function valueCountsForRows(payload, column, rowIndices) {
+  const counts = new Map();
+  for (const rowIndex of rowIndices) {
+    const value = valueFor(payload, rowIndex, column);
+    const key = comparableValueKey(column, value);
+    const current = counts.get(key) || { value, count: 0 };
+    current.count += 1;
+    counts.set(key, current);
+  }
+  return [...counts.values()].sort((left, right) => right.count - left.count);
+}
+
+function valueCountAcrossPayload(payload, column, value) {
+  let count = 0;
+  for (let rowIndex = 0; rowIndex < (payload.rows || []).length; rowIndex += 1) {
+    if (valueMatchesForColumn(column, valueFor(payload, rowIndex, column), value)) count += 1;
+  }
+  return count;
+}
+
+function numericValuesForRows(payload, column, rowIndices) {
+  return rowIndices
+    .map((rowIndex) => Number(valueFor(payload, rowIndex, column)))
+    .filter((value) => Number.isFinite(value));
+}
+
+function numericValuesForColumn(payload, column) {
+  const cache = viewerPayloadCache(payload);
+  const cached = cache.numericValuesByColumn.get(column.id);
+  if (cached) return cached;
+  const values = [];
+  for (let rowIndex = 0; rowIndex < (payload.rows || []).length; rowIndex += 1) {
+    const value = Number(valueFor(payload, rowIndex, column));
+    if (Number.isFinite(value)) values.push(value);
+  }
+  cache.numericValuesByColumn.set(column.id, values);
+  return values;
+}
+
+function valueMatchesForColumn(column, left, right) {
+  if (isEmptyValue(right)) return isEmptyValue(left);
+  if (isNumericColumn(column)) {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+  }
+  if (isDatetimeColumn(column)) {
+    const leftTime = new Date(left).getTime();
+    const rightTime = new Date(right).getTime();
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime)) return leftTime === rightTime;
+  }
+  return String(left ?? "").toLowerCase() === String(right ?? "").toLowerCase();
+}
+
+function comparableValueKey(column, value) {
+  if (isEmptyValue(value)) return "__empty__";
+  if (isNumericColumn(column)) {
+    const number = Number(value);
+    return Number.isFinite(number) ? `number:${number}` : `text:${String(value).toLowerCase()}`;
+  }
+  if (isDatetimeColumn(column)) {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) ? `date:${time}` : `text:${String(value).toLowerCase()}`;
+  }
+  return `text:${String(value).toLowerCase()}`;
+}
+
+function valueOverviewStat(label, value, caption) {
+  const item = document.createElement("div");
+  item.className = "stateframe-web-value-overview-stat";
+  item.append(
+    textSpan(label, "stateframe-web-value-overview-label"),
+    textSpan(value, "stateframe-web-value-overview-value"),
+    textSpan(caption, "stateframe-web-value-overview-caption"),
+  );
+  return item;
+}
+
+function isNumericColumn(column) {
+  const semantic = column.semantic_type || "";
+  return semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic);
+}
+
+function isDatetimeColumn(column) {
+  return String(column.semantic_type || "").includes("datetime");
+}
+
+function isEmptyValue(value) {
+  return value === null || value === undefined || String(value).trim() === "";
+}
+
+function safeRatio(value, total) {
+  const denominator = Number(total || 0);
+  if (!denominator) return 0;
+  return Number(value || 0) / denominator;
+}
+
+function mean(values) {
+  if (!values.length) return NaN;
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function signedFormatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "0";
+  return `${number > 0 ? "+" : ""}${formatNumber(number)}`;
 }
 
 function filtersEqual(left, right) {
@@ -6315,7 +6577,9 @@ function viewerPayloadCache(payload) {
     columnById,
     columnIndexById,
     computedRows: null,
+    numericValuesByColumn: new Map(),
     rowSearchText: null,
+    selectedValueRows: new Map(),
   };
   VIEWER_PAYLOAD_CACHE.set(payload, cache);
   return cache;
@@ -6430,7 +6694,9 @@ function passesFilters(payload, state, rowIndex) {
       if (!needle) continue;
       const haystack = text.toLowerCase();
       if (filter.mode === "equals" && haystack !== needle) return false;
+      if (filter.mode === "not_equals" && haystack === needle) return false;
       if (filter.mode === "starts" && !haystack.startsWith(needle)) return false;
+      if (filter.mode === "not_contains" && haystack.includes(needle)) return false;
       if ((!filter.mode || filter.mode === "contains") && !haystack.includes(needle)) return false;
     }
   }
@@ -7567,6 +7833,12 @@ function formatDate(value) {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function formatShortDate(value) {
+  if (!value && value !== 0) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
 }
 
 function formatBytes(value) {

@@ -1625,11 +1625,24 @@
 
 .stateframe-web-top-value {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #eef2f7;
   padding-bottom: 6px;
+}
+
+.stateframe-web-top-value.is-active {
+  border-bottom-color: #bfdbfe;
+  border-radius: 5px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 4px;
+}
+
+.stateframe-web-top-value.is-active .stateframe-web-top-value-name,
+.stateframe-web-top-value.is-active .stateframe-web-top-value-count {
+  color: #1d4ed8;
 }
 
 .stateframe-web-top-value-name {
@@ -1640,6 +1653,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.stateframe-web-numeric-filter {
+  display: grid;
+  gap: 8px;
 }
 
 .stateframe-web-top-value-count {

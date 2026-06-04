@@ -5331,12 +5331,56 @@ function hasViewerViewState(state) {
   );
 }
 
+function numericFilterLabel(filter) {
+  const mode = filter.mode || "between";
+  const value = numericFilterInput(filter.value);
+  const min = numericFilterInput(filter.min);
+  const max = numericFilterInput(filter.max);
+  if (mode === "eq") return value === null ? "equals" : `= ${value}`;
+  if (mode === "neq") return value === null ? "not equal" : `!= ${value}`;
+  if (mode === "gt") return value === null ? "greater than" : `> ${value}`;
+  if (mode === "gte") return value === null ? "at least" : `>= ${value}`;
+  if (mode === "lt") return value === null ? "less than" : `< ${value}`;
+  if (mode === "lte") return value === null ? "at most" : `<= ${value}`;
+  if (mode === "outside") {
+    const parts = [];
+    if (min !== null) parts.push(`< ${min}`);
+    if (max !== null) parts.push(`> ${max}`);
+    return parts.join(" or ") || "outside range";
+  }
+  const parts = [];
+  if (min !== null) parts.push(`>= ${min}`);
+  if (max !== null) parts.push(`<= ${max}`);
+  return parts.join(" and ") || "between";
+}
+
+function numericFilterCodeLines(columnName, filter) {
+  const series = `pd.to_numeric(view[${columnName}], errors="coerce")`;
+  const mode = filter.mode || "between";
+  const value = numericFilterInput(filter.value);
+  const min = numericFilterInput(filter.min);
+  const max = numericFilterInput(filter.max);
+  if (mode === "eq" && value !== null) return [`view = view[${series}.eq(${JSON.stringify(value)})]`];
+  if (mode === "neq" && value !== null) return [`view = view[${series}.ne(${JSON.stringify(value)})]`];
+  if (mode === "gt" && value !== null) return [`view = view[${series} > ${JSON.stringify(value)}]`];
+  if (mode === "gte" && value !== null) return [`view = view[${series} >= ${JSON.stringify(value)}]`];
+  if (mode === "lt" && value !== null) return [`view = view[${series} < ${JSON.stringify(value)}]`];
+  if (mode === "lte" && value !== null) return [`view = view[${series} <= ${JSON.stringify(value)}]`];
+  if (mode === "outside") {
+    const parts = [];
+    if (min !== null) parts.push(`(${series} < ${JSON.stringify(min)})`);
+    if (max !== null) parts.push(`(${series} > ${JSON.stringify(max)})`);
+    return parts.length ? [`view = view[${parts.join(" | ")}]`] : [];
+  }
+  const lines = [];
+  if (min !== null) lines.push(`view = view[${series} >= ${JSON.stringify(min)}]`);
+  if (max !== null) lines.push(`view = view[${series} <= ${JSON.stringify(max)}]`);
+  return lines;
+}
+
 function filterLabel(filter) {
   if (filter.kind === "numeric") {
-    const parts = [];
-    if (filter.min !== undefined && filter.min !== "") parts.push(`>= ${filter.min}`);
-    if (filter.max !== undefined && filter.max !== "") parts.push(`<= ${filter.max}`);
-    return parts.join(" and ") || "numeric filter";
+    return numericFilterLabel(filter);
   }
   if (filter.kind === "datetime") {
     const parts = [];
@@ -5356,8 +5400,7 @@ function viewerCodeForState(payload, state, frameName = "df") {
     if (!column || !filter || !Object.keys(filter).length) continue;
     const name = JSON.stringify(column.source_name);
     if (filter.kind === "numeric") {
-      if (filter.min !== undefined && filter.min !== "") lines.push(`view = view[view[${name}] >= ${JSON.stringify(Number(filter.min))}]`);
-      if (filter.max !== undefined && filter.max !== "") lines.push(`view = view[view[${name}] <= ${JSON.stringify(Number(filter.max))}]`);
+      lines.push(...numericFilterCodeLines(name, filter));
     } else if (filter.kind === "datetime") {
       if (filter.min) lines.push(`view = view[pd.to_datetime(view[${name}], errors="coerce") >= pd.to_datetime(${JSON.stringify(filter.min)})]`);
       if (filter.max) lines.push(`view = view[pd.to_datetime(view[${name}], errors="coerce") <= pd.to_datetime(${JSON.stringify(filter.max)})]`);
@@ -5673,7 +5716,7 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
     })));
   }
   if (column.datetime_range) inspector.appendChild(section("Time Range", keyValueList(column.datetime_range)));
-  if (column.top_values?.length) inspector.appendChild(section("Top Values", renderTopValues(column.top_values)));
+  if (column.top_values?.length) inspector.appendChild(section("Top Values", renderTopValues(column, state, setViewerState)));
   if (column.issues?.length) inspector.appendChild(section("Issues", renderBullets(column.issues.map((issue) => issue.title))));
   if (column.insights?.length) inspector.appendChild(section("Insights", renderBullets(column.insights.map((insight) => insight.message))));
   if (column.metrics && Object.keys(column.metrics).length) inspector.appendChild(section("Metrics", keyValueList(column.metrics)));
@@ -5746,9 +5789,7 @@ function renderViewerFilter(column, state, setViewerState) {
   wrap.className = "stateframe-web-filter";
   const semantic = column.semantic_type || "";
   if (semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic)) {
-    const min = filterInput("Min", filter.min ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "numeric", min: value }, state, setViewerState), `filter-${column.id}-min`);
-    const max = filterInput("Max", filter.max ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "numeric", max: value }, state, setViewerState), `filter-${column.id}-max`);
-    wrap.append(min, max);
+    wrap.appendChild(renderNumericFilter(column, filter, state, setViewerState));
   } else if (semantic.includes("datetime")) {
     const min = filterInput("Start", filter.min ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "datetime", min: value }, state, setViewerState), `filter-${column.id}-start`);
     const max = filterInput("End", filter.max ?? "", (value) => setColumnFilter(column.id, { ...filter, kind: "datetime", max: value }, state, setViewerState), `filter-${column.id}-end`);
@@ -5774,6 +5815,58 @@ function renderViewerFilter(column, state, setViewerState) {
       button("Clear Filter", () => clearColumnFilter(column.id, state, setViewerState)),
     ),
   );
+  return wrap;
+}
+
+function renderNumericFilter(column, filter, state, setViewerState) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-numeric-filter";
+  const mode = filter.mode || "between";
+  const modeSelect = document.createElement("select");
+  modeSelect.className = "stateframe-web-select";
+  const choices = [
+    ["between", "Between"],
+    ["outside", "Outside range"],
+    ["eq", "Equals"],
+    ["neq", "Not equal"],
+    ["gt", "Greater than"],
+    ["gte", "At least"],
+    ["lt", "Less than"],
+    ["lte", "At most"],
+  ];
+  for (const [value, label] of choices) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    modeSelect.appendChild(option);
+  }
+  modeSelect.value = mode;
+  modeSelect.addEventListener("change", () => {
+    const nextMode = modeSelect.value;
+    if (["between", "outside"].includes(nextMode)) {
+      setColumnFilter(column.id, {
+        kind: "numeric",
+        mode: nextMode,
+        min: filter.min ?? "",
+        max: filter.max ?? "",
+      }, state, setViewerState);
+      return;
+    }
+    setColumnFilter(column.id, {
+      kind: "numeric",
+      mode: nextMode,
+      value: filter.value ?? filter.min ?? filter.max ?? "",
+    }, state, setViewerState);
+  });
+  wrap.appendChild(modeSelect);
+  if (["between", "outside"].includes(mode)) {
+    const min = filterInput("Min", filter.min ?? "", (value) => setColumnFilter(column.id, { kind: "numeric", mode, min: value, max: filter.max ?? "" }, state, setViewerState), `filter-${column.id}-min`);
+    const max = filterInput("Max", filter.max ?? "", (value) => setColumnFilter(column.id, { kind: "numeric", mode, min: filter.min ?? "", max: value }, state, setViewerState), `filter-${column.id}-max`);
+    wrap.append(min, max);
+  } else {
+    const value = filterInput("Value", filter.value ?? "", (nextValue) => setColumnFilter(column.id, { kind: "numeric", mode, value: nextValue }, state, setViewerState), `filter-${column.id}-value`);
+    wrap.appendChild(value);
+  }
   return wrap;
 }
 
@@ -5806,22 +5899,43 @@ function renderHistogram(histogram) {
   return chart;
 }
 
-function renderTopValues(topValues) {
+function renderTopValues(column, state, setViewerState) {
+  const topValues = column.top_values || [];
   const list = document.createElement("div");
   list.className = "stateframe-web-top-values";
+  const activeFilter = state.filters?.[column.id] || {};
   for (const item of topValues.slice(0, 12)) {
     const row = document.createElement("div");
     row.className = "stateframe-web-top-value";
+    const filter = topValueFilter(column, item.value);
+    if (filtersEqual(activeFilter, filter)) row.classList.add("is-active");
     const value = document.createElement("span");
     value.className = "stateframe-web-top-value-name";
     value.textContent = formatCell(item.value);
     const count = document.createElement("span");
     count.className = "stateframe-web-top-value-count";
     count.textContent = `${formatInt(item.count)} ${item.ratio !== undefined ? formatPercent(item.ratio) : ""}`;
-    row.append(value, count);
+    const only = tinyButton("Only", () => setColumnFilter(column.id, filter, state, setViewerState), false, `Filter to ${formatCell(item.value)}`);
+    row.append(value, count, only);
     list.appendChild(row);
   }
   return list;
+}
+
+function topValueFilter(column, value) {
+  if (value === null || value === undefined || value === "") return { kind: "empty" };
+  const semantic = column.semantic_type || "";
+  if (semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic)) {
+    return { kind: "numeric", mode: "eq", value: String(value) };
+  }
+  return { kind: "text", mode: "equals", value: String(value) };
+}
+
+function filtersEqual(left, right) {
+  const leftKeys = Object.keys(left || {}).sort();
+  const rightKeys = Object.keys(right || {}).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key, index) => key === rightKeys[index] && String(left?.[key]) === String(right?.[key]));
 }
 
 function renderBullets(items) {
@@ -6279,9 +6393,7 @@ function passesFilters(payload, state, rowIndex) {
     } else if (filter.kind === "not_empty") {
       if (raw === null || raw === undefined || text.trim() === "") return false;
     } else if (filter.kind === "numeric") {
-      const value = Number(raw);
-      if (filter.min !== undefined && filter.min !== "" && !(value >= Number(filter.min))) return false;
-      if (filter.max !== undefined && filter.max !== "" && !(value <= Number(filter.max))) return false;
+      if (!passesNumericFilter(raw, filter)) return false;
     } else if (filter.kind === "datetime") {
       const value = new Date(raw).getTime();
       if (filter.min && !(value >= new Date(filter.min).getTime())) return false;
@@ -6296,6 +6408,34 @@ function passesFilters(payload, state, rowIndex) {
     }
   }
   return true;
+}
+
+function passesNumericFilter(raw, filter) {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return false;
+  const mode = filter.mode || "between";
+  const target = numericFilterInput(filter.value);
+  const min = numericFilterInput(filter.min);
+  const max = numericFilterInput(filter.max);
+  if (mode === "eq") return target === null ? true : value === target;
+  if (mode === "neq") return target === null ? true : value !== target;
+  if (mode === "gt") return target === null ? true : value > target;
+  if (mode === "gte") return target === null ? true : value >= target;
+  if (mode === "lt") return target === null ? true : value < target;
+  if (mode === "lte") return target === null ? true : value <= target;
+  if (mode === "outside") {
+    if (min === null && max === null) return true;
+    return (min !== null && value < min) || (max !== null && value > max);
+  }
+  if (min !== null && value < min) return false;
+  if (max !== null && value > max) return false;
+  return true;
+}
+
+function numericFilterInput(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function compareRows(payload, a, b, sorts) {

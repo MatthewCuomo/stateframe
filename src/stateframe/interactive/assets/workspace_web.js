@@ -5721,7 +5721,7 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
 
   inspector.appendChild(section("Filter", renderViewerFilter(column, state, setViewerState)));
   inspector.appendChild(section("Visualize", renderViewerPlotControls(column, state, sendCommand)));
-  if (column.histogram) inspector.appendChild(section("Spread", renderHistogram(column.histogram)));
+  if (column.histogram) inspector.appendChild(section("Spread", renderHistogram(column.histogram, column, state, setViewerState)));
   if (column.binary_profile) {
     inspector.appendChild(section("Binary Flag", keyValueList({
       Kind: column.binary_profile.kind,
@@ -5974,18 +5974,39 @@ function renderColumnRecommendations(recommendations) {
   return list;
 }
 
-function renderHistogram(histogram) {
+function renderHistogram(histogram, column = null, state = null, setViewerState = null) {
   const chart = document.createElement("div");
   chart.className = "stateframe-web-histogram";
+  const interactive = Boolean(column && state && setViewerState && isNumericColumn(column));
+  const activeFilter = state?.filters?.[column?.id] || {};
   for (const bin of histogram.bins || []) {
-    const bar = document.createElement("div");
+    const bar = document.createElement(interactive ? "button" : "div");
     bar.className = "stateframe-web-histogram-bar";
+    const label = `${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}: ${formatInt(bin.count)}`;
+    if (interactive) {
+      bar.type = "button";
+      bar.classList.add("is-clickable");
+      if (histogramBinMatchesFilter(bin, activeFilter)) bar.classList.add("is-active");
+      bar.setAttribute("aria-label", `Filter ${column.display_name || column.source_name || column.id} from ${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}`);
+      bar.addEventListener("click", () => setColumnFilter(column.id, {
+        kind: "numeric",
+        mode: "between",
+        min: String(bin.lower),
+        max: String(bin.upper),
+      }, state, setViewerState));
+    }
     const height = histogram.max_count ? Math.max(4, (bin.count / histogram.max_count) * 72) : 4;
     bar.style.height = `${height}px`;
-    bar.title = `${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}: ${formatInt(bin.count)}`;
+    bar.title = `${label}${interactive ? ". Click to filter this range." : ""}`;
     chart.appendChild(bar);
   }
   return chart;
+}
+
+function histogramBinMatchesFilter(bin, filter) {
+  if (!filter || filter.kind !== "numeric" || (filter.mode || "between") !== "between") return false;
+  return numericFilterInput(filter.min) === numericFilterInput(bin.lower)
+    && numericFilterInput(filter.max) === numericFilterInput(bin.upper);
 }
 
 function renderTopValues(column, state, setViewerState) {

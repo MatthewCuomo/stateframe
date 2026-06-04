@@ -1711,8 +1711,25 @@
 .stateframe-web-histogram-bar {
   flex: 1 1 0;
   min-width: 4px;
+  border: 0;
   border-radius: 3px 3px 0 0;
   background: #14b8a6;
+  padding: 0;
+}
+
+.stateframe-web-histogram-bar.is-clickable {
+  cursor: pointer;
+}
+
+.stateframe-web-histogram-bar.is-clickable:hover,
+.stateframe-web-histogram-bar.is-clickable:focus-visible {
+  background: #0f766e;
+  outline: 2px solid #99f6e4;
+  outline-offset: 2px;
+}
+
+.stateframe-web-histogram-bar.is-active {
+  background: #1d4ed8;
 }
 
 .stateframe-web-top-values {

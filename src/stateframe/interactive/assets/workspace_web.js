@@ -1766,7 +1766,7 @@ function renderEntries(tree, selectedEntry, state, setState) {
     const thumbnail = renderEntryThumbnail(entry);
     const footer = document.createElement("div");
     footer.className = "stateframe-web-entry-footer";
-    if (entry.has_snapshot) footer.append(pill("pull ready"));
+    if (entry.has_snapshot || entry.has_ancestor_snapshot) footer.append(pill("pull ready"));
     else if (canReplayFromSource(tree, entry)) footer.append(pill("replay ready"));
     if (isCollapsed) footer.append(pill(`${formatInt(descendantCount(entry.id, hierarchy.byParent))} hidden`));
     if (entry.is_active) footer.append(pill("active"));
@@ -1845,7 +1845,7 @@ function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStat
   actions.className = "stateframe-web-action-row";
   const outputArtifacts = entryOutputArtifacts(entry);
   const isLeafOutput = isOutputEntry(entry) || outputArtifacts.length > 0;
-  const canOpen = !isLeafOutput && entry.has_state && (entry.has_snapshot || canReplayFromSource(tree, entry) || entry.state?.has_data);
+  const canOpen = !isLeafOutput && entry.has_state && (entry.has_snapshot || entry.has_ancestor_snapshot || canReplayFromSource(tree, entry) || entry.state?.has_data);
   if (!isLeafOutput) {
     const open = button("Open Viewer", openSelectedViewer);
     open.disabled = !canOpen;
@@ -6532,6 +6532,9 @@ function hydrationCallout(tree, entry) {
   } else if (entry.has_snapshot) {
     title.textContent = "Ready to pull";
     body.textContent = "Open the viewer here, or run df = web.pull_selected() in the next cell.";
+  } else if (entry.has_ancestor_snapshot) {
+    title.textContent = "Ready to pull";
+    body.textContent = "stateframe can load the nearest saved data snapshot and replay this branch.";
   } else if (canReplayFromSource(tree, entry)) {
     title.textContent = "Ready to replay";
     body.textContent = "stateframe can reload the base source and replay the saved path for this state.";

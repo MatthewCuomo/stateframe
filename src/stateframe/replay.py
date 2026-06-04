@@ -20,7 +20,12 @@ def replay_tree_state(
     entry_id: str | None = None,
     source_params: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """Replay a saved tree from its base source to a selected entry."""
+    """Replay a saved tree to a selected entry.
+
+    Replay starts from the nearest saved dataframe snapshot on the selected
+    lineage path. If no snapshot exists, stateframe falls back to the root
+    source metadata.
+    """
 
     ledger = saved_ledger_payload(tree_payload)
     entries = list(ledger.get("entries") or [])
@@ -32,8 +37,14 @@ def replay_tree_state(
     if not path:
         raise ReplayError(f"Unknown saved tree entry: {selected}")
 
-    frame = load_source_frame(tree_payload, workspace=workspace, params=source_params)
-    for entry in path[1:]:
+    snapshot = _nearest_snapshot_frame(path, workspace=workspace)
+    if snapshot is None:
+        frame = load_source_frame(tree_payload, workspace=workspace, params=source_params)
+        start_index = 0
+    else:
+        start_index, frame = snapshot
+
+    for entry in path[start_index + 1:]:
         frame = replay_entry(frame, entry)
     return frame
 
@@ -286,6 +297,46 @@ def _entry_path(entries: list[dict[str, Any]], selected: str | None) -> list[dic
         result.append(entry)
         current = entry.get("parent_id")
     return list(reversed(result))
+
+
+def _nearest_snapshot_frame(
+    path: list[dict[str, Any]],
+    *,
+    workspace: Any | None,
+) -> tuple[int, pd.DataFrame] | None:
+    for index in range(len(path) - 1, -1, -1):
+        snapshot = _data_snapshot_artifact(path[index])
+        if snapshot is None:
+            continue
+        from stateframe.save import load_data
+
+        return index, load_data(_artifact_path(workspace, snapshot))
+    return None
+
+
+def _data_snapshot_artifact(entry: dict[str, Any]) -> dict[str, Any] | None:
+    artifacts = [
+        artifact
+        for artifact in entry.get("artifacts", []) or []
+        if isinstance(artifact, dict)
+        and artifact.get("kind") == "data_snapshot"
+        and artifact.get("format") == "parquet"
+        and artifact.get("path")
+    ]
+    return dict(artifacts[-1]) if artifacts else None
+
+
+def _artifact_path(workspace: Any | None, artifact: dict[str, Any]) -> Path:
+    path = Path(str(artifact.get("path") or ""))
+    if path.is_absolute():
+        return path
+    if workspace is not None:
+        if hasattr(workspace, "resolve_path"):
+            return workspace.resolve_path(path)
+        root = getattr(workspace, "root", None)
+        if root is not None:
+            return Path(root) / path
+    return path
 
 
 def _resolve_source_path(source: dict[str, Any], *, workspace: Any | None) -> Path | None:

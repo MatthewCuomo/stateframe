@@ -52,6 +52,54 @@ def test_function_data_source_query_starts_saved_tree(tmp_path):
     sf.sources.clear()
 
 
+def test_query_branch_pull_uses_saved_ancestor_snapshot(tmp_path):
+    sf.sources.clear()
+    sf.workspace.configure(root=tmp_path, name="query branch snapshot")
+    calls = 0
+
+    def run_query(query, params=None, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return pd.DataFrame(
+            {
+                "customer_id": [1, 2, 3],
+                "segment": ["A", "B", "A"],
+            }
+        )
+
+    sf.sources.register("warehouse", run_query, display_name="Warehouse")
+    scan = sf.query(
+        "warehouse",
+        "select * from customers",
+        name="customers",
+        save_tree=True,
+    )
+    root_entry = scan.ledger.root_entry_id
+    branch = scan.record_state(
+        scan.data[scan.data["segment"] == "A"],
+        title="Segment A",
+        operation="viewer.pull",
+        parent_id=root_entry,
+        viewer_summary={
+            "source": "interactive_dataframe_viewer",
+            "filters": {
+                "segment": {"kind": "text", "mode": "equals", "value": "A"}
+            },
+            "sorts": [],
+            "hidden_columns": [],
+            "column_order": ["customer_id", "segment"],
+            "global_search": "",
+        },
+    )
+    scan.save_tree()
+
+    sf.sources.clear()
+    pulled = sf.pull(branch.id, tree=scan.tree_id)
+
+    assert calls == 1
+    assert pulled["customer_id"].tolist() == [1, 3]
+
+
 def test_query_saved_tree_can_skip_result_snapshot(tmp_path):
     sf.sources.clear()
     sf.workspace.configure(root=tmp_path, name="query without snapshot")

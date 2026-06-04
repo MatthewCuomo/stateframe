@@ -3333,13 +3333,30 @@ def _ledger_entries(
             parent_id = by_id[parent_id].get("parent_id")
         return depth
 
+    def has_snapshot(entry: dict[str, Any]) -> bool:
+        return any(
+            isinstance(artifact, dict) and artifact.get("kind") == "data_snapshot"
+            for artifact in entry.get("artifacts", []) or []
+        )
+
+    def nearest_snapshot_entry_id(entry: dict[str, Any]) -> str | None:
+        current_id = entry.get("id")
+        seen: set[str] = set()
+        while current_id and current_id in by_id and current_id not in seen:
+            seen.add(str(current_id))
+            current = by_id[current_id]
+            if has_snapshot(current):
+                return str(current_id)
+            current_id = current.get("parent_id")
+        return None
+
     result = []
     for entry in entries:
         entry_id = entry.get("id")
         state_id = entry.get("state_id")
         state = states.get(state_id) if state_id else None
         child_ids = [child_id for child_id in children.get(entry_id, []) if child_id]
-        artifacts = entry.get("artifacts") or []
+        snapshot_entry_id = nearest_snapshot_entry_id(entry)
         enriched = {
             **entry,
             "depth": depth_for(entry),
@@ -3348,10 +3365,9 @@ def _ledger_entries(
             "is_leaf": len(child_ids) == 0,
             "is_active": entry_id == active_entry_id,
             "has_state": bool(state_id),
-            "has_snapshot": any(
-                isinstance(artifact, dict) and artifact.get("kind") == "data_snapshot"
-                for artifact in artifacts
-            ),
+            "has_snapshot": has_snapshot(entry),
+            "has_ancestor_snapshot": bool(snapshot_entry_id and snapshot_entry_id != entry_id),
+            "nearest_snapshot_entry_id": snapshot_entry_id,
             "state": state,
             "path": _ledger_path_from_entries(by_id, entry_id),
         }
@@ -3638,7 +3654,7 @@ def _missing_snapshot_message(
     title = entry.get("title") or entry.get("id")
     replay_note = f" Replay failed: {replay_error}" if replay_error else ""
     return (
-        f"Selected state {title!r} has no materialized data snapshot and could "
+        f"Selected state {title!r} has no materialized data snapshot on its lineage and could "
         "not be replayed from the tree metadata. "
         f"{source_note}{replay_note}"
     ).strip()

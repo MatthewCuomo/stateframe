@@ -23,6 +23,39 @@ def test_web_payload_lists_workspace_trees(tmp_path):
     assert initial_web_state(widget_payload)["saveMode"] is False
 
 
+def test_web_payload_marks_branch_with_saved_ancestor_snapshot(tmp_path):
+    sf.workspace.configure(root=tmp_path, name="web ancestor snapshot")
+    raw = pd.DataFrame({"x": [1, 2, 3], "segment": ["a", "b", "a"]})
+    scan = sf.scan(raw, name="events")
+    scan.save_data(name="root_snapshot", also_save_tree=True)
+    root_entry = scan.ledger.root_entry_id
+    branch = scan.record_state(
+        raw[raw["segment"] == "a"],
+        title="Segment a",
+        operation="viewer.pull",
+        parent_id=root_entry,
+        viewer_summary={
+            "source": "interactive_dataframe_viewer",
+            "filters": {
+                "segment": {"kind": "text", "mode": "equals", "value": "a"}
+            },
+            "sorts": [],
+            "hidden_columns": [],
+            "column_order": ["x", "segment"],
+            "global_search": "",
+        },
+    )
+    scan.save_tree()
+
+    payload = build_web_payload(sf.workspace.current(), height=500, title=None)
+    entries = payload["trees"][0]["tree_detail"]["entries"]
+    branch_payload = next(entry for entry in entries if entry["id"] == branch.id)
+
+    assert branch_payload["has_snapshot"] is False
+    assert branch_payload["has_ancestor_snapshot"] is True
+    assert branch_payload["nearest_snapshot_entry_id"] == root_entry
+
+
 def test_web_view_can_pull_selected_snapshot(tmp_path):
     pytest.importorskip("anywidget")
 

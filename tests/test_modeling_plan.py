@@ -90,6 +90,30 @@ def test_modeling_plan_suggests_optional_ratio_features():
     assert ratio_action.applies_by_default is False
 
 
+def test_modeling_plan_keeps_unique_continuous_usage_features():
+    df = pd.DataFrame(
+        {
+            "type_id": [f"type-{i:03d}" for i in range(60)],
+            "avg_daily_kwh": [25.25 + i * 0.37 for i in range(60)],
+            "p95_peak_kw": [4.1 + i * 0.11 for i in range(60)],
+            "avg_voltage": [238.5 + i * 0.03 for i in range(60)],
+            "population_rank": list(range(1, 61)),
+            "high_event_rate": ["Y" if i % 5 == 0 else "N" for i in range(60)],
+        }
+    )
+
+    scan = sf.scan(df, target="high_event_rate", goal="modeling")
+    plan = scan.modeling_plan()
+    dropped = {action.column for action in plan.actions if action.action == "modeling.drop_identifier"}
+
+    assert "type_id" in dropped
+    assert "avg_daily_kwh" not in dropped
+    assert "p95_peak_kw" not in dropped
+    assert "avg_voltage" not in dropped
+    assert scan.column("avg_daily_kwh").semantic_type == "numeric"
+    assert scan.column("population_rank").semantic_type != "geographic"
+
+
 def test_modeling_readiness_lens_and_recommendation_are_registered():
     scan = sf.scan(_modeling_frame(), target="sold", goal="modeling")
 

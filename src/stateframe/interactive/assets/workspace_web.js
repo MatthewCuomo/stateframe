@@ -1893,7 +1893,7 @@ function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStat
     note.replaceChildren(renderMarkdown(entry.note));
     wrap.appendChild(section("Note", note));
   }
-  if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", jsonBlock(entry.params)));
+  if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", renderEntryParams(entry.params)));
   if (entry.artifacts?.length) wrap.appendChild(section("Artifacts", renderArtifacts(entry.artifacts)));
   return wrap;
 }
@@ -1975,13 +1975,42 @@ function renderArtifacts(artifacts, { full = false } = {}) {
         placeholder.textContent = full ? "Plotly visual metadata is available, but no HTML preview was saved." : "Interactive Plotly visual. Open the leaf for the full render.";
         item.appendChild(placeholder);
       }
-      if (!full) item.appendChild(jsonBlock({ spec: artifact.spec, source_lens: artifact.source_lens }));
+      if (!full) item.appendChild(disclosureBlock("Plot spec", jsonBlock({ spec: artifact.spec, source_lens: artifact.source_lens })));
       list.appendChild(item);
+    } else if (artifact?.kind === "data_snapshot") {
+      list.appendChild(renderDataSnapshotArtifact(artifact));
     } else {
-      list.appendChild(jsonBlock(artifact));
+      list.appendChild(disclosureBlock(artifact?.kind || "Artifact", jsonBlock(artifact), { open: full }));
     }
   }
   return list;
+}
+
+function renderDataSnapshotArtifact(artifact) {
+  const item = document.createElement("div");
+  item.className = "stateframe-web-artifact-card";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-plot-artifact-title";
+  title.textContent = "Data snapshot";
+  item.appendChild(title);
+  item.appendChild(keyValueList({
+    Format: artifact.format || "",
+    Rows: artifact.row_count !== undefined ? formatInt(artifact.row_count) : "",
+    Columns: artifact.column_count !== undefined ? formatInt(artifact.column_count) : "",
+    Saved: formatDate(artifact.saved_at),
+    Path: displayPath(artifact.path || artifact.metadata_path || ""),
+  }));
+  item.appendChild(disclosureBlock("Raw artifact", jsonBlock(artifact)));
+  return item;
+}
+
+function displayPath(value) {
+  const text = String(value || "");
+  if (text.length <= 72) return text;
+  const normalized = text.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  const tail = parts.slice(-2).join("/");
+  return tail ? `.../${tail}` : text.slice(0, 20) + "..." + text.slice(-40);
 }
 
 function renderModelArtifact(artifact, { full = false } = {}) {
@@ -2110,8 +2139,8 @@ function renderLeafMetadata(entry) {
     Time: formatDate(entry.timestamp),
   }));
   if (entry.code) wrap.appendChild(section("Code", codeBlock(entry.code)));
-  if (entry.summary && Object.keys(entry.summary).length) wrap.appendChild(section("Summary", jsonBlock(entry.summary)));
-  if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", jsonBlock(entry.params)));
+  if (entry.summary && Object.keys(entry.summary).length) wrap.appendChild(section("Summary", renderLeafSummary(entry.summary)));
+  if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", renderEntryParams(entry.params)));
   return wrap;
 }
 
@@ -5015,12 +5044,20 @@ function renderViewerLineageBar(payload, viewerState, ui, setUi) {
   if (!lineage.length) {
     trail.appendChild(pill("current state"));
   } else {
-    for (const [index, entry] of lineage.entries()) {
+    for (const [index, entry] of compactLineage(lineage).entries()) {
       if (index > 0) {
         const sep = document.createElement("span");
         sep.className = "stateframe-web-lineage-separator";
         sep.textContent = ">";
         trail.appendChild(sep);
+      }
+      if (entry?.isEllipsis) {
+        const chip = document.createElement("span");
+        chip.className = "stateframe-web-lineage-chip is-muted";
+        chip.textContent = entry.label;
+        chip.title = "Earlier lineage entries are available in Lineage Details";
+        trail.appendChild(chip);
+        continue;
       }
       const chip = document.createElement("span");
       chip.className = "stateframe-web-lineage-chip";
@@ -5082,6 +5119,17 @@ function renderViewerLineageBar(payload, viewerState, ui, setUi) {
     bar.appendChild(expanded);
   }
   return bar;
+}
+
+function compactLineage(lineage, limit = 5) {
+  if (!Array.isArray(lineage) || lineage.length <= limit) return lineage || [];
+  const head = lineage.slice(0, 1);
+  const tail = lineage.slice(-(limit - 2));
+  return [
+    ...head,
+    { isEllipsis: true, label: `${lineage.length - head.length - tail.length} more` },
+    ...tail,
+  ];
 }
 
 function renderViewerDatasetStrip(payload, state, computed) {
@@ -6735,6 +6783,100 @@ function jsonBlock(value) {
   pre.className = "stateframe-web-json";
   pre.textContent = JSON.stringify(value, null, 2);
   return pre;
+}
+
+function disclosureBlock(title, child, { open = false } = {}) {
+  const details = document.createElement("details");
+  details.className = "stateframe-web-disclosure";
+  details.open = open;
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  details.append(summary, child);
+  return details;
+}
+
+function renderEntryParams(params) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-param-summary";
+  const summary = summarizeEntryParams(params);
+  if (summary && Object.keys(summary).length) wrap.appendChild(keyValueList(summary));
+  wrap.appendChild(disclosureBlock("Raw params", jsonBlock(params)));
+  return wrap;
+}
+
+function renderLeafSummary(summary) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-param-summary";
+  const rows = {};
+  if (summary.title) rows.Title = summary.title;
+  if (summary.visual_kind) rows.Visual = summary.visual_kind;
+  if (summary.engine) rows.Engine = summary.engine;
+  if (summary.row_count !== undefined) rows.Rows = formatInt(summary.row_count);
+  if (summary.column_count !== undefined) rows.Columns = formatInt(summary.column_count);
+  if (summary.fields && Object.keys(summary.fields).length) rows.Fields = fieldSummary(summary.fields);
+  if (summary.filter_count !== undefined) rows.Filters = formatInt(summary.filter_count);
+  if (Object.keys(rows).length) wrap.appendChild(keyValueList(rows));
+  wrap.appendChild(disclosureBlock("Raw summary", jsonBlock(summary)));
+  return wrap;
+}
+
+function summarizeEntryParams(params) {
+  const rows = {};
+  const viewer = params.viewer_summary;
+  if (viewer && typeof viewer === "object") {
+    if (viewer.output_name) rows.Output = viewer.output_name;
+    if (viewer.row_count !== undefined && viewer.source_row_count !== undefined) {
+      rows.Rows = `${formatInt(viewer.row_count)} of ${formatInt(viewer.source_row_count)}`;
+    }
+    if (viewer.filters && Object.keys(viewer.filters).length) rows.Filters = filterSummary(viewer.filters);
+    if (Array.isArray(viewer.sorts) && viewer.sorts.length) rows.Sorts = sortSummary(viewer.sorts);
+    if (Array.isArray(viewer.hidden_columns) && viewer.hidden_columns.length) rows.Hidden = viewer.hidden_columns.join(", ");
+    if (viewer.selected_column) rows.Selected = viewer.selected_column;
+    if (viewer.global_search) rows.Search = viewer.global_search;
+    if (viewer.message) rows.Message = viewer.message;
+    return rows;
+  }
+
+  const visual = params.visual_spec;
+  if (visual && typeof visual === "object") {
+    if (visual.title) rows.Title = visual.title;
+    if (visual.kind) rows.Visual = visual.kind;
+    if (visual.fields && Object.keys(visual.fields).length) rows.Fields = fieldSummary(visual.fields);
+    if (Array.isArray(visual.filters) && visual.filters.length) rows.Filters = `${visual.filters.length} filter${visual.filters.length === 1 ? "" : "s"}`;
+    if (visual.note) rows.Note = visual.note;
+    return rows;
+  }
+
+  if (params.output_name) rows.Output = params.output_name;
+  if (params.message) rows.Message = params.message;
+  return rows;
+}
+
+function filterSummary(filters) {
+  return Object.entries(filters)
+    .map(([column, filter]) => `${column} ${filter?.mode || filter?.kind || "filter"} ${filterValue(filter)}`.trim())
+    .join("; ");
+}
+
+function sortSummary(sorts) {
+  return sorts
+    .map((sort) => `${sort.column || sort.name || sort.id || "column"} ${sort.direction || (sort.desc ? "desc" : "asc")}`)
+    .join("; ");
+}
+
+function fieldSummary(fields) {
+  return Object.entries(fields)
+    .map(([slot, value]) => `${slot}: ${Array.isArray(value) ? value.join(", ") : value}`)
+    .join("; ");
+}
+
+function filterValue(filter) {
+  if (!filter || typeof filter !== "object") return "";
+  if (filter.value !== undefined && filter.value !== "") return String(filter.value);
+  const parts = [];
+  if (filter.min !== undefined && filter.min !== "") parts.push(`>= ${filter.min}`);
+  if (filter.max !== undefined && filter.max !== "") parts.push(`<= ${filter.max}`);
+  return parts.join(" ");
 }
 
 function filteredTrees(trees, state) {

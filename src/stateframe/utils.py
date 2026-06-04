@@ -28,7 +28,7 @@ OUTCOME_NAME_RE = re.compile(
 )
 POSTAL_NAME_RE = re.compile(r"(zip|zipcode|postal|postcode)", re.IGNORECASE)
 GEO_NAME_RE = re.compile(
-    r"(lat|latitude|lon|lng|longitude|geo|coord|city|state|country|county|tract)",
+    r"(^|[_\s-])(lat|latitude|lon|lng|longitude|geo|coord|city|state|country|county|tract)([_\s-]|$)",
     re.IGNORECASE,
 )
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")

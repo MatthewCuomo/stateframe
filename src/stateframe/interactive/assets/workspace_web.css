@@ -644,6 +644,32 @@
   padding: 9px;
 }
 
+.stateframe-web-param-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.stateframe-web-disclosure {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.stateframe-web-disclosure > summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 7px 9px;
+}
+
+.stateframe-web-disclosure > .stateframe-web-json {
+  max-height: 260px;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+  border-radius: 0 0 6px 6px;
+}
+
 .stateframe-web-snapshots {
   display: grid;
   gap: 6px;
@@ -1088,6 +1114,12 @@
   white-space: nowrap;
 }
 
+.stateframe-web-lineage-chip.is-muted {
+  border-style: dashed;
+  background: #f8fafc;
+  color: #64748b;
+}
+
 .stateframe-web-draft-pill {
   border-color: #fed7aa;
   background: #fff7ed;
@@ -1291,9 +1323,8 @@
   color: #111827;
   font-size: 12px;
   font-weight: 850;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .stateframe-web-column-type,
@@ -1616,7 +1647,8 @@
 
 .stateframe-web-plot-controls,
 .stateframe-web-artifacts,
-.stateframe-web-plot-artifact {
+.stateframe-web-plot-artifact,
+.stateframe-web-artifact-card {
   display: grid;
   gap: 8px;
 }
@@ -1627,7 +1659,8 @@
   font-weight: 700;
 }
 
-.stateframe-web-plot-artifact {
+.stateframe-web-plot-artifact,
+.stateframe-web-artifact-card {
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   background: #ffffff;
@@ -1942,12 +1975,11 @@
 .stateframe-web-cleaning-action-title,
 .stateframe-web-cleaning-detail-title {
   min-width: 0;
-  overflow: hidden;
   color: #111827;
   font-size: 12px;
   font-weight: 850;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .stateframe-web-cleaning-action-meta,

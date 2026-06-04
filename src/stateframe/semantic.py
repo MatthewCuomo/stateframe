@@ -150,6 +150,15 @@ def _numeric_hypotheses(
     hypotheses: list[SemanticTypeHypothesis] = []
     distinct_count = _safe_nunique(non_null)
 
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    integer_like = 0.0
+    min_value = None
+    max_value = None
+    if not numeric.empty:
+        integer_like = float(((numeric % 1) == 0).mean())
+        min_value = float(numeric.min())
+        max_value = float(numeric.max())
+
     if semantic_policy != "off" and is_identifier_name(name) and distinct_ratio > 0.75:
         hypotheses.append(
             SemanticTypeHypothesis(
@@ -160,12 +169,19 @@ def _numeric_hypotheses(
                 ["name looks identifier-like", f"distinct ratio is {distinct_ratio:.3f}"],
             )
         )
-    elif distinct_ratio > 0.995 and distinct_count >= 20:
+    elif (
+        integer_like > 0.98
+        and distinct_ratio > 0.995
+        and distinct_count >= 20
+        and not is_amount_name(name)
+        and not is_percentage_name(name)
+        and not is_geo_name(name)
+    ):
         hypotheses.append(
             SemanticTypeHypothesis(
                 "identifier",
                 0.74,
-                ["nearly every non-missing value is unique"],
+                ["integer-like values are nearly all unique"],
             )
         )
 
@@ -196,11 +212,7 @@ def _numeric_hypotheses(
             )
         )
 
-    numeric = pd.to_numeric(series, errors="coerce").dropna()
-    if not numeric.empty:
-        integer_like = float(((numeric % 1) == 0).mean())
-        min_value = float(numeric.min())
-        max_value = float(numeric.max())
+    if not numeric.empty and min_value is not None and max_value is not None:
         if integer_like > 0.98 and distinct_count <= 25 and distinct_ratio < 0.2:
             hypotheses.append(
                 SemanticTypeHypothesis(

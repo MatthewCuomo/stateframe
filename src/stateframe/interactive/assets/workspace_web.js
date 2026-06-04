@@ -5693,6 +5693,8 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   inspector.append(title, meta);
 
   inspector.appendChild(renderViewerStats(column));
+  const selectedCellPanel = renderSelectedCellPanel(payload, state, column, setViewerState);
+  if (selectedCellPanel) inspector.appendChild(section("Selected Cell", selectedCellPanel));
 
   const actions = document.createElement("div");
   actions.className = "stateframe-web-action-row";
@@ -5781,6 +5783,27 @@ function renderViewerStats(column) {
     stats.appendChild(card);
   }
   return stats;
+}
+
+function renderSelectedCellPanel(payload, state, column, setViewerState) {
+  const cell = state.selectedCell;
+  if (!cell || cell.columnId !== column.id) return null;
+  const value = valueFor(payload, cell.rowIndex, column);
+  const panel = document.createElement("div");
+  panel.className = "stateframe-web-selected-cell-panel";
+  panel.appendChild(keyValueList({
+    Row: payload.index?.[cell.rowIndex] ?? cell.rowIndex,
+    Value: formatCell(value),
+  }));
+  panel.appendChild(inlineControls(
+    button("Only This", () => setColumnFilter(column.id, valueFilterForColumn(column, value), state, setViewerState)),
+    button(
+      (state.pinnedRowIndices || []).map(Number).includes(Number(cell.rowIndex)) ? "Unpin Row" : "Pin Row",
+      () => setViewerState({ pinnedRowIndices: toggleNumberValue(state.pinnedRowIndices, cell.rowIndex) }),
+    ),
+    button("Copy", (event) => copyTextToClipboard(String(value ?? ""), event.currentTarget)),
+  ));
+  return panel;
 }
 
 function renderViewerFilter(column, state, setViewerState) {
@@ -5923,6 +5946,10 @@ function renderTopValues(column, state, setViewerState) {
 }
 
 function topValueFilter(column, value) {
+  return valueFilterForColumn(column, value);
+}
+
+function valueFilterForColumn(column, value) {
   if (value === null || value === undefined || value === "") return { kind: "empty" };
   const semantic = column.semantic_type || "";
   if (semantic.includes("numeric") || ["amount", "percentage", "proportion"].includes(semantic)) {

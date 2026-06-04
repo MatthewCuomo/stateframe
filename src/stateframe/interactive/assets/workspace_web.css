@@ -1600,6 +1600,15 @@
   overflow-wrap: anywhere;
 }
 
+.stateframe-web-selected-cell-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  padding: 8px;
+}
+
 .stateframe-web-histogram {
   display: flex;
   align-items: end;

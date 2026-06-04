@@ -1662,7 +1662,7 @@
 
 .stateframe-web-value-profile-row {
   display: grid;
-  grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr);
+  grid-template-columns: minmax(72px, 0.9fr) minmax(0, 1fr) auto;
   gap: 2px 8px;
   border-bottom: 1px solid #eef2f7;
   padding-bottom: 6px;
@@ -1689,12 +1689,38 @@
 }
 
 .stateframe-web-value-profile-detail {
-  grid-column: 2;
+  grid-column: 2 / 4;
   min-width: 0;
   color: #64748b;
   font-size: 11px;
   font-weight: 700;
   overflow-wrap: anywhere;
+}
+
+.stateframe-web-value-profile-signal {
+  align-self: start;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+.stateframe-web-value-profile-signal:empty {
+  display: none;
+}
+
+.stateframe-web-value-profile-signal.is-positive {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.stateframe-web-value-profile-signal.is-negative {
+  background: #ffedd5;
+  color: #c2410c;
 }
 
 .stateframe-web-histogram {

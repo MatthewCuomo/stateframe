@@ -5851,6 +5851,7 @@ function renderSelectedValueOverview(payload, state, column, setViewerState, com
       row.append(
         textSpan(item.label, "stateframe-web-value-profile-label"),
         textSpan(item.value, "stateframe-web-value-profile-value"),
+        textSpan(item.signal || "", `stateframe-web-value-profile-signal is-${item.tone || "neutral"}`),
         textSpan(item.detail, "stateframe-web-value-profile-detail"),
       );
       profileList.appendChild(row);
@@ -6066,68 +6067,73 @@ function selectedValueRows(payload, column, value) {
 }
 
 function selectedValueProfile(payload, state, selectedColumn, rowIndices) {
-  const limitedRows = rowIndices.slice(0, VALUE_OVERVIEW_ROW_LIMIT);
-  if (!limitedRows.length) return [];
+  const cohortRows = rowIndices.slice(0, VALUE_OVERVIEW_ROW_LIMIT);
+  if (!cohortRows.length) return [];
+  const restRows = complementRows(payload, rowIndices).slice(0, VALUE_OVERVIEW_ROW_LIMIT);
   return visibleViewerColumns(payload, state)
     .filter((column) => column.id !== selectedColumn.id)
-    .map((column) => profileColumnForRows(payload, column, limitedRows))
+    .map((column) => profileColumnForRows(payload, column, cohortRows, restRows))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
     .slice(0, VALUE_OVERVIEW_PROFILE_LIMIT);
 }
 
-function profileColumnForRows(payload, column, rowIndices) {
-  if (isNumericColumn(column)) return numericProfileColumnForRows(payload, column, rowIndices);
-  if (isDatetimeColumn(column)) return datetimeProfileColumnForRows(payload, column, rowIndices);
-  return categoricalProfileColumnForRows(payload, column, rowIndices);
+function profileColumnForRows(payload, column, rowIndices, restRows) {
+  if (isNumericColumn(column)) return numericProfileColumnForRows(payload, column, rowIndices, restRows);
+  if (isDatetimeColumn(column)) return datetimeProfileColumnForRows(payload, column, rowIndices, restRows);
+  return categoricalProfileColumnForRows(payload, column, rowIndices, restRows);
 }
 
-function categoricalProfileColumnForRows(payload, column, rowIndices) {
+function categoricalProfileColumnForRows(payload, column, rowIndices, restRows) {
   const counts = valueCountsForRows(payload, column, rowIndices);
   if (!counts.length) return null;
   const top = counts[0];
   const ratio = safeRatio(top.count, rowIndices.length);
-  const overallCount = valueCountAcrossPayload(payload, column, top.value);
-  const overallRatio = safeRatio(overallCount, (payload.rows || []).length);
+  const restCount = valueCountAcrossRows(payload, column, restRows, top.value);
+  const restRatio = safeRatio(restCount, restRows.length);
+  const lift = ratio - restRatio;
   return {
     label: column.display_name || column.source_name || column.id,
     value: formatCell(top.value),
-    detail: `${formatInt(top.count)} rows (${formatPercent(ratio) || "0.0%"}) / all ${formatPercent(overallRatio) || "0.0%"}`,
-    score: ratio + Math.max(0, ratio - overallRatio),
+    signal: formatSignedPercentPoints(lift),
+    tone: deltaTone(lift),
+    detail: `${formatInt(top.count)} rows (${formatPercent(ratio) || "0.0%"}) / rest ${formatPercent(restRatio) || "0.0%"}`,
+    score: ratio + Math.abs(lift),
     title: `Top value in selected cohort for ${column.source_name || column.id}`,
   };
 }
 
-function numericProfileColumnForRows(payload, column, rowIndices) {
-  const values = numericValuesForRows(payload, column, rowIndices);
-  if (!values.length) return null;
-  const allValues = numericValuesForColumn(payload, column);
-  const average = mean(values);
-  const allAverage = mean(allValues);
-  const delta = Number.isFinite(allAverage) ? average - allAverage : 0;
-  const detail = Number.isFinite(allAverage)
-    ? `all avg ${formatNumber(allAverage)}${delta ? ` / ${signedFormatNumber(delta)}` : ""}`
-    : `${formatInt(values.length)} numeric rows`;
+function numericProfileColumnForRows(payload, column, rowIndices, restRows) {
+  const stats = numericStatsForRows(payload, column, rowIndices);
+  if (!stats.count) return null;
+  const restStats = numericStatsForRows(payload, column, restRows);
+  const delta = Number.isFinite(restStats.average) ? stats.average - restStats.average : 0;
+  const detail = Number.isFinite(restStats.average)
+    ? `rest avg ${formatNumber(restStats.average)}`
+    : `${formatInt(stats.count)} numeric rows`;
   return {
     label: column.display_name || column.source_name || column.id,
-    value: `avg ${formatNumber(average)}`,
+    value: `avg ${formatNumber(stats.average)}`,
+    signal: Number.isFinite(restStats.average) ? signedFormatNumber(delta) : "",
+    tone: deltaTone(delta),
     detail,
-    score: 0.35 + Math.min(2, Math.abs(delta) / Math.max(1, Math.abs(allAverage || 0))),
+    score: 0.35 + Math.min(2, Math.abs(delta) / Math.max(1, Math.abs(restStats.average || 0))),
     title: `Numeric average in selected cohort for ${column.source_name || column.id}`,
   };
 }
 
-function datetimeProfileColumnForRows(payload, column, rowIndices) {
-  const times = rowIndices
-    .map((rowIndex) => new Date(valueFor(payload, rowIndex, column)).getTime())
-    .filter((value) => Number.isFinite(value));
-  if (!times.length) return null;
-  const min = Math.min(...times);
-  const max = Math.max(...times);
+function datetimeProfileColumnForRows(payload, column, rowIndices, restRows) {
+  const range = datetimeRangeForRows(payload, column, rowIndices);
+  if (!range) return null;
+  const restRange = datetimeRangeForRows(payload, column, restRows);
   return {
     label: column.display_name || column.source_name || column.id,
-    value: formatShortDate(min),
-    detail: min === max ? "single date" : `to ${formatShortDate(max)}`,
+    value: formatShortDate(range.min),
+    signal: "",
+    tone: "neutral",
+    detail: range.min === range.max
+      ? `single date${restRange ? ` / rest ${formatShortDate(restRange.min)}-${formatShortDate(restRange.max)}` : ""}`
+      : `to ${formatShortDate(range.max)}${restRange ? ` / rest ${formatShortDate(restRange.min)}-${formatShortDate(restRange.max)}` : ""}`,
     score: 0.25,
     title: `Date range in selected cohort for ${column.source_name || column.id}`,
   };
@@ -6153,10 +6159,34 @@ function valueCountAcrossPayload(payload, column, value) {
   return count;
 }
 
+function valueCountAcrossRows(payload, column, rowIndices, value) {
+  let count = 0;
+  for (const rowIndex of rowIndices || []) {
+    if (valueMatchesForColumn(column, valueFor(payload, rowIndex, column), value)) count += 1;
+  }
+  return count;
+}
+
 function numericValuesForRows(payload, column, rowIndices) {
   return rowIndices
     .map((rowIndex) => Number(valueFor(payload, rowIndex, column)))
     .filter((value) => Number.isFinite(value));
+}
+
+function numericStatsForRows(payload, column, rowIndices) {
+  let count = 0;
+  let sum = 0;
+  for (const rowIndex of rowIndices || []) {
+    const value = Number(valueFor(payload, rowIndex, column));
+    if (!Number.isFinite(value)) continue;
+    count += 1;
+    sum += value;
+  }
+  return {
+    count,
+    sum,
+    average: count ? sum / count : NaN,
+  };
 }
 
 function numericValuesForColumn(payload, column) {
@@ -6170,6 +6200,28 @@ function numericValuesForColumn(payload, column) {
   }
   cache.numericValuesByColumn.set(column.id, values);
   return values;
+}
+
+function datetimeRangeForRows(payload, column, rowIndices) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const rowIndex of rowIndices || []) {
+    const value = new Date(valueFor(payload, rowIndex, column)).getTime();
+    if (!Number.isFinite(value)) continue;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { min, max } : null;
+}
+
+function complementRows(payload, excludedRowIndices) {
+  const excluded = new Set((excludedRowIndices || []).map((value) => Number(value)));
+  const rows = payload.rows || [];
+  const result = [];
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    if (!excluded.has(rowIndex)) result.push(rowIndex);
+  }
+  return result;
 }
 
 function valueMatchesForColumn(column, left, right) {
@@ -6237,8 +6289,20 @@ function mean(values) {
 
 function signedFormatNumber(value) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number === 0) return "0";
+  if (!Number.isFinite(number) || Math.abs(number) < 0.0005) return "0";
   return `${number > 0 ? "+" : ""}${formatNumber(number)}`;
+}
+
+function formatSignedPercentPoints(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || Math.abs(number) < 0.0005) return "0.0 pts";
+  return `${number > 0 ? "+" : ""}${(number * 100).toFixed(1)} pts`;
+}
+
+function deltaTone(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || Math.abs(number) < 0.0005) return "neutral";
+  return number > 0 ? "positive" : "negative";
 }
 
 function filtersEqual(left, right) {

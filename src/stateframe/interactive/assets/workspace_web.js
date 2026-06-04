@@ -5706,6 +5706,8 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   inspector.appendChild(renderViewerStats(column));
   const selectedCellPanel = renderSelectedCellPanel(payload, state, column, setViewerState);
   if (selectedCellPanel) inspector.appendChild(section("Selected Cell", selectedCellPanel));
+  const selectedRowSnapshot = renderSelectedRowSnapshot(payload, state, column);
+  if (selectedRowSnapshot) inspector.appendChild(section("Row Snapshot", selectedRowSnapshot));
   const selectedValueOverview = renderSelectedValueOverview(payload, state, column, setViewerState, computed);
   if (selectedValueOverview) inspector.appendChild(section("Value Overview", selectedValueOverview));
 
@@ -5818,6 +5820,47 @@ function renderSelectedCellPanel(payload, state, column, setViewerState) {
     button("Copy", (event) => copyTextToClipboard(String(value ?? ""), event.currentTarget)),
   ));
   return panel;
+}
+
+function renderSelectedRowSnapshot(payload, state, column) {
+  const cell = state.selectedCell;
+  if (!cell || cell.columnId !== column.id) return null;
+  const visibleColumns = visibleViewerColumns(payload, state);
+  const shownColumns = visibleColumns.slice(0, 12);
+  const panel = document.createElement("div");
+  panel.className = "stateframe-web-row-snapshot";
+  panel.appendChild(renderRowSnapshotValues(payload, cell.rowIndex, shownColumns));
+  if (visibleColumns.length > shownColumns.length) {
+    const note = document.createElement("div");
+    note.className = "stateframe-web-row-snapshot-note";
+    note.textContent = `${formatInt(visibleColumns.length - shownColumns.length)} more visible columns hidden in this snapshot.`;
+    panel.appendChild(note);
+  }
+  panel.appendChild(inlineControls(
+    button("Copy Row", (event) => copyTextToClipboard(JSON.stringify(rowObjectForIndex(payload, cell.rowIndex), null, 2), event.currentTarget)),
+  ));
+  return panel;
+}
+
+function renderRowSnapshotValues(payload, rowIndex, columns) {
+  const list = document.createElement("div");
+  list.className = "stateframe-web-row-snapshot-list";
+  for (const column of columns) {
+    const label = column.display_name || column.source_name || column.id;
+    const value = formatCell(valueFor(payload, rowIndex, column));
+    if (value === "") continue;
+    const item = document.createElement("div");
+    item.className = "stateframe-web-row-snapshot-item";
+    const key = textSpan(label, "stateframe-web-row-snapshot-key");
+    key.title = label;
+    item.append(
+      key,
+      textSpan(value, "stateframe-web-row-snapshot-value"),
+    );
+    list.appendChild(item);
+  }
+  if (!list.childElementCount) list.appendChild(empty("No visible row values."));
+  return list;
 }
 
 function renderSelectedValueOverview(payload, state, column, setViewerState, computed) {
@@ -6261,6 +6304,14 @@ function valueOverviewStat(label, value, caption) {
     textSpan(caption, "stateframe-web-value-overview-caption"),
   );
   return item;
+}
+
+function rowObjectForIndex(payload, rowIndex) {
+  const result = {};
+  for (const column of payload.columns || []) {
+    result[column.source_name || column.display_name || column.id] = valueFor(payload, rowIndex, column);
+  }
+  return result;
 }
 
 function isNumericColumn(column) {

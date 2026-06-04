@@ -611,15 +611,23 @@
 
 .stateframe-web-kv {
   display: grid;
-  grid-template-columns: minmax(110px, 0.45fr) minmax(0, 1fr);
+  grid-template-columns: minmax(112px, 0.48fr) minmax(0, 1fr);
+  align-items: start;
   gap: 8px 12px;
   margin: 0;
 }
 
 .stateframe-web-kv dt {
+  min-width: 0;
   color: #64748b;
   font-size: 12px;
   font-weight: 750;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-kv dt::after {
+  content: ":";
 }
 
 .stateframe-web-kv dd {
@@ -628,6 +636,7 @@
   color: #111827;
   font-size: 12px;
   font-weight: 650;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -1264,9 +1273,9 @@
 
 .stateframe-web-viewer-column {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
-  align-items: center;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 7px;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   background: #ffffff;
@@ -1300,7 +1309,7 @@
 .stateframe-web-column-summary-main {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 6px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -1316,6 +1325,10 @@
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+}
+
+.stateframe-web-column-summary-stats {
+  min-height: 14px;
 }
 
 .stateframe-web-column-name {
@@ -1344,6 +1357,7 @@
 
 .stateframe-web-column-missing {
   height: 5px;
+  min-height: 5px;
   overflow: hidden;
   border-radius: 999px;
   background: #e5e7eb;
@@ -1360,6 +1374,8 @@
   align-items: end;
   gap: 2px;
   height: 24px;
+  min-height: 24px;
+  overflow: hidden;
 }
 
 .stateframe-web-column-spark span {
@@ -1373,6 +1389,9 @@
   display: grid;
   align-items: stretch;
   gap: 2px;
+  grid-template-rows: repeat(8, 3px);
+  height: 38px;
+  min-height: 38px;
 }
 
 .stateframe-web-column-spark.is-frequency span {
@@ -1385,6 +1404,14 @@
 .stateframe-web-column-spark.is-empty {
   border: 1px dashed #e5e7eb;
   border-radius: 4px;
+}
+
+.stateframe-web-column-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, max-content));
+  justify-content: end;
+  gap: 4px;
+  min-width: 0;
 }
 
 .stateframe-web-table {
@@ -2056,6 +2083,58 @@
 
 .stateframe-web-cleaning-preview-value {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-cleaning-preview-mini {
+  display: grid;
+  gap: 4px;
+}
+
+.stateframe-web-cleaning-preview-mini-row {
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.stateframe-web-cleaning-preview-mini-key,
+.stateframe-web-cleaning-preview-more {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.stateframe-web-cleaning-preview-mini-value {
+  min-width: 0;
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.stateframe-web-preview-table th,
+.stateframe-web-preview-table td {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 4px 5px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.stateframe-web-preview-table th {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.stateframe-web-preview-table td {
+  color: #111827;
+  font-size: 11px;
+  font-weight: 650;
   overflow-wrap: anywhere;
 }
 

@@ -1,5 +1,7 @@
 const VIEWER_PAYLOAD_CACHE = new WeakMap();
 const VIEWER_GRID_CELL_BUDGET = 12000;
+const VIEWER_MATCH_LIMIT = 1000;
+const VIEWER_MATCH_ROW_SCAN_LIMIT = 2500;
 
 function render({ model, el, signal }) {
   let payload = model.get("payload") || {};
@@ -33,6 +35,7 @@ function render({ model, el, signal }) {
     webSearchTimer: null,
   };
   let drawFrame = null;
+  let modelSaveFrame = null;
 
   el.classList.add("stateframe-web-host");
   el.style.setProperty("--stateframe-web-height", `${payload.view?.height || 640}px`);
@@ -57,11 +60,27 @@ function render({ model, el, signal }) {
     });
   }
 
+  function scheduleModelSaveChanges() {
+    if (modelSaveFrame !== null) return;
+    modelSaveFrame = requestAnimationFrame(() => {
+      modelSaveFrame = null;
+      model.save_changes();
+    });
+  }
+
+  function flushModelSaveChanges() {
+    if (modelSaveFrame !== null) {
+      cancelAnimationFrame(modelSaveFrame);
+      modelSaveFrame = null;
+    }
+    model.save_changes();
+  }
+
   function setState(patch) {
     captureFocus(root, ui);
     state = normalizeState({ ...state, ...patch }, payload);
     model.set("state", state);
-    model.save_changes();
+    scheduleModelSaveChanges();
     sendWidgetMessage({ type: "stateframe_state", state });
     scheduleDraw();
   }
@@ -74,7 +93,7 @@ function render({ model, el, signal }) {
       state: normalizeViewerState({ ...(viewer.state || {}), ...patch }, viewerPayload),
     });
     model.set("viewer_state", viewer.state);
-    model.save_changes();
+    scheduleModelSaveChanges();
     scheduleDraw();
   }
 
@@ -86,7 +105,7 @@ function render({ model, el, signal }) {
       state: normalizeVisualizerState({ ...(visualizer.state || {}), ...patch }, visualPayload),
     });
     model.set("visualizer_state", visualizer.state);
-    model.save_changes();
+    scheduleModelSaveChanges();
     scheduleDraw();
   }
 
@@ -98,7 +117,7 @@ function render({ model, el, signal }) {
       state: normalizeCleaningState({ ...(cleaning.state || {}), ...patch }, cleaningPayload),
     });
     model.set("cleaning_state", cleaning.state);
-    model.save_changes();
+    scheduleModelSaveChanges();
     scheduleDraw();
   }
 
@@ -110,7 +129,7 @@ function render({ model, el, signal }) {
       state: normalizeModelingState({ ...(modeling.state || {}), ...patch }, modelingPayload),
     });
     model.set("modeling_state", modeling.state);
-    model.save_changes();
+    scheduleModelSaveChanges();
     scheduleDraw();
   }
 
@@ -126,7 +145,7 @@ function render({ model, el, signal }) {
     const command = commandPayload(action, extra);
     commandStatus = pendingCommandStatus(action);
     model.set("command", command);
-    model.save_changes();
+    flushModelSaveChanges();
     sendWidgetMessage({ type: "stateframe_command", command, state });
     scheduleDraw();
   }
@@ -3708,10 +3727,76 @@ function renderPreviewObject(value) {
   for (const [key, item] of Object.entries(value)) {
     const row = document.createElement("div");
     row.className = "stateframe-web-cleaning-preview-row";
-    row.append(textSpan(key, "stateframe-web-cleaning-preview-key"), textSpan(cleaningPreviewText(item), "stateframe-web-cleaning-preview-value"));
+    row.append(textSpan(key, "stateframe-web-cleaning-preview-key"), renderPreviewValue(item));
     wrap.appendChild(row);
   }
   return wrap;
+}
+
+function renderPreviewValue(value) {
+  if (isPlainObjectArray(value)) return renderPreviewObjectTable(value);
+  if (isPlainObject(value)) return renderPreviewKeyValues(value);
+  return textSpan(cleaningPreviewText(value), "stateframe-web-cleaning-preview-value");
+}
+
+function renderPreviewKeyValues(value) {
+  const list = document.createElement("div");
+  list.className = "stateframe-web-cleaning-preview-value stateframe-web-cleaning-preview-mini";
+  for (const [key, item] of Object.entries(value).slice(0, 8)) {
+    const row = document.createElement("div");
+    row.className = "stateframe-web-cleaning-preview-mini-row";
+    row.append(
+      textSpan(key, "stateframe-web-cleaning-preview-mini-key"),
+      textSpan(cleaningPreviewText(item), "stateframe-web-cleaning-preview-mini-value"),
+    );
+    list.appendChild(row);
+  }
+  if (Object.keys(value).length > 8) {
+    list.appendChild(textSpan(`${formatInt(Object.keys(value).length - 8)} more`, "stateframe-web-cleaning-preview-more"));
+  }
+  return list;
+}
+
+function renderPreviewObjectTable(rows) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-cleaning-preview-value";
+  const table = document.createElement("table");
+  table.className = "stateframe-web-preview-table";
+  const columns = previewTableColumns(rows);
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  for (const column of columns) head.appendChild(th(column));
+  thead.appendChild(head);
+  const tbody = document.createElement("tbody");
+  for (const row of rows.slice(0, 8)) {
+    const tr = document.createElement("tr");
+    for (const column of columns) tr.appendChild(td(row?.[column]));
+    tbody.appendChild(tr);
+  }
+  table.append(thead, tbody);
+  wrap.appendChild(table);
+  if (rows.length > 8) {
+    wrap.appendChild(textSpan(`${formatInt(rows.length - 8)} more`, "stateframe-web-cleaning-preview-more"));
+  }
+  return wrap;
+}
+
+function previewTableColumns(rows) {
+  const preferred = ["value", "count", "ratio", "missing_ratio", "distinct_count", "min", "max"];
+  const keys = Array.from(new Set((rows || []).flatMap((row) => Object.keys(row || {}))));
+  const ordered = [
+    ...preferred.filter((key) => keys.includes(key)),
+    ...keys.filter((key) => !preferred.includes(key)),
+  ];
+  return ordered.slice(0, 4);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPlainObjectArray(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(isPlainObject);
 }
 
 function renderCleaningExamples(examples) {
@@ -5230,6 +5315,9 @@ function viewerStateFilterSummary(payload, state, computed) {
   const parts = [`${formatInt(shown)} of ${formatInt(total)} preview rows`];
   if (filters) parts.push(`${formatInt(filters)} filter${filters === 1 ? "" : "s"}`);
   if (sorts) parts.push(`${formatInt(sorts)} sort${sorts === 1 ? "" : "s"}`);
+  if (state.globalSearch && computed.matchStats?.capped) {
+    parts.push(`${formatInt(computed.matches.length)} highlighted`);
+  }
   return parts.join(" / ");
 }
 
@@ -5399,8 +5487,9 @@ function renderViewerColumns(payload, state, setViewerState) {
     main.append(topLine, renderColumnMissingBar(column), renderColumnSparkline(column), statLine);
     const actualIndex = orderedViewerColumns(payload, state).findIndex((item) => item.id === column.id);
     const originalSort = (state.columnSort || "original") === "original" && !(state.columnSearch || "").trim();
-    row.append(
-      main,
+    const actions = document.createElement("div");
+    actions.className = "stateframe-web-column-actions";
+    actions.append(
       tinyButton(pinned.has(column.id) ? "Unpin" : "Pin", () => {
         const nextPinned = pinned.has(column.id)
           ? state.pinnedColumnIds.filter((id) => id !== column.id)
@@ -5417,6 +5506,7 @@ function renderViewerColumns(payload, state, setViewerState) {
         setViewerState({ hiddenColumnIds: next, pinnedColumnIds: nextPinned });
       }, false, hidden.has(column.id) ? "Load column back into view" : "Offload column from view", true),
     );
+    row.append(main, actions);
     list.appendChild(row);
   });
   panel.appendChild(list);
@@ -6127,9 +6217,18 @@ function computeViewerRows(payload, state) {
   if (sorts.length) {
     indices.sort((a, b) => compareRows(payload, a, b, sorts));
   }
+  const matchResult = query
+    ? findViewerMatches(payload, visibleViewerColumns(payload, state), indices, query)
+    : { matches: [], scannedRows: 0, capped: false };
   const value = {
     indices,
-    matches: query ? findViewerMatches(payload, visibleViewerColumns(payload, state), indices, query) : [],
+    matches: matchResult.matches,
+    matchStats: {
+      scannedRows: matchResult.scannedRows,
+      capped: matchResult.capped,
+      limit: VIEWER_MATCH_LIMIT,
+      rowScanLimit: VIEWER_MATCH_ROW_SCAN_LIMIT,
+    },
   };
   cache.computedRows = { signature, value };
   return value;
@@ -6137,15 +6236,27 @@ function computeViewerRows(payload, state) {
 
 function findViewerMatches(payload, visibleColumns, indices, needle) {
   const matches = [];
+  let scannedRows = 0;
   for (let virtualIndex = 0; virtualIndex < indices.length; virtualIndex += 1) {
+    if (virtualIndex >= VIEWER_MATCH_ROW_SCAN_LIMIT) {
+      return { matches, scannedRows, capped: true };
+    }
     const rowIndex = indices[virtualIndex];
+    scannedRows += 1;
     for (const column of visibleColumns) {
       if (cellMatches(valueFor(payload, rowIndex, column), needle)) {
         matches.push({ rowIndex, virtualIndex, columnId: column.id });
+        if (matches.length >= VIEWER_MATCH_LIMIT) {
+          return {
+            matches,
+            scannedRows,
+            capped: virtualIndex < indices.length - 1,
+          };
+        }
       }
     }
   }
-  return matches;
+  return { matches, scannedRows, capped: false };
 }
 
 function navigateEmbeddedMatch(delta, computed, ui, setUi, setViewerState, viewerState) {
@@ -6750,6 +6861,7 @@ function keyValueList(values) {
   const list = document.createElement("dl");
   list.className = "stateframe-web-kv";
   for (const [key, value] of Object.entries(values)) {
+    if (value === null || value === undefined || value === "") continue;
     const dt = document.createElement("dt");
     dt.textContent = key;
     const dd = document.createElement("dd");

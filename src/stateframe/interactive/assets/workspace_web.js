@@ -1370,9 +1370,8 @@ function renderGuidanceCodeBranching(selectedEntry) {
     "    save=True,",
     ")",
   ].join("\n");
+  const loadMagicCode = "%load_ext stateframe";
   const magicCode = [
-    "%load_ext stateframe",
-    "",
     "%%sf_cell --name \"custom branch\" --save",
     `df = ${pull}`,
     "",
@@ -1393,6 +1392,7 @@ function renderGuidanceCodeBranching(selectedEntry) {
   grid.append(
     guidanceCodeRecipe("Commit the root dataframe", "Start a lineage from an in-memory dataframe and make the root easy to restore.", rootCode),
     guidanceCodeRecipe("Pull, work, push", "The shortest path: checkout a state, run any custom code, then push the output branch.", pushCode),
+    guidanceCodeRecipe("Enable cell capture", "Run once in a notebook session when you want %%sf_cell available.", loadMagicCode),
     guidanceCodeRecipe("Capture a whole cell", "Use the cell magic when you want the cell body itself stored with dependency edges.", magicCode),
     guidanceCodeRecipe("Explicit branch recorder", "Use a recorder when you want a clear parent, message, and code capture in ordinary Python.", recorderCode),
   );
@@ -2281,6 +2281,10 @@ function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStat
   actions.append(renderPullReference(entry));
   wrap.appendChild(actions);
 
+  if (canOpen && !isLeafOutput) {
+    wrap.appendChild(section("Notebook Branch", renderEntryNotebookBranchKit(entry)));
+  }
+
   wrap.appendChild(keyValueList({
     Entry: entry.id || "",
     Parent: entry.parent_id || "",
@@ -2310,6 +2314,91 @@ function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStat
   if (entry.params && Object.keys(entry.params).length) wrap.appendChild(section("Params", renderEntryParams(entry.params)));
   if (entry.artifacts?.length) wrap.appendChild(section("Artifacts", renderArtifacts(entry.artifacts)));
   return wrap;
+}
+
+function renderEntryNotebookBranchKit(entry) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-notebook-branch";
+  const steps = document.createElement("div");
+  steps.className = "stateframe-web-notebook-branch-steps";
+  for (const [label, value] of [
+    ["checkout", pullCode(entry)],
+    ["work", "output = df.copy()"],
+    ["commit", "sf.push(output, ...)"],
+  ]) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-notebook-branch-step";
+    item.append(textSpan(label, "stateframe-web-notebook-branch-step-label"), textSpan(value, "stateframe-web-notebook-branch-step-code"));
+    steps.appendChild(item);
+  }
+
+  const snippets = document.createElement("div");
+  snippets.className = "stateframe-web-notebook-branch-snippets";
+  snippets.append(
+    renderEntryNotebookSnippet("Checkout", entryCheckoutCode(entry), "Copy Checkout"),
+    renderEntryNotebookSnippet("Work + Push", entryWorkPushCode(entry), "Copy Work + Push"),
+    renderEntryNotebookSnippet("Cell Magic", entryCellMagicCode(entry), "Copy Cell Magic"),
+    renderEntryNotebookSnippet("Recorder", entryRecorderCode(entry), "Copy Recorder"),
+  );
+  wrap.append(steps, snippets);
+  return wrap;
+}
+
+function renderEntryNotebookSnippet(label, code, copyLabel) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-notebook-branch-card";
+  const header = document.createElement("div");
+  header.className = "stateframe-web-notebook-branch-card-header";
+  header.append(textSpan(label, "stateframe-web-notebook-branch-card-title"));
+  const copy = tinyButton("Copy", () => copyTextToClipboard(code, copy), false, `${copyLabel} code`);
+  header.appendChild(copy);
+  const pre = document.createElement("pre");
+  pre.className = "stateframe-web-notebook-branch-code";
+  pre.textContent = code;
+  card.append(header, pre);
+  return card;
+}
+
+function entryCheckoutCode(entry) {
+  return `df = ${pullCode(entry)}`;
+}
+
+function entryWorkPushCode(entry) {
+  return [
+    entryCheckoutCode(entry),
+    "",
+    "output = df.copy()",
+    "# Your custom pandas, sklearn, Plotly, or domain code here",
+    "",
+    "sf.push(",
+    "    output,",
+    "    name=\"branch name\",",
+    "    message=\"what changed and why\",",
+    "    save=True,",
+    ")",
+  ].join("\n");
+}
+
+function entryCellMagicCode(entry) {
+  return [
+    "%%sf_cell --name \"branch name\" --save",
+    entryCheckoutCode(entry),
+    "",
+    "output = df.copy()",
+    "# Your custom code here",
+  ].join("\n");
+}
+
+function entryRecorderCode(entry) {
+  return [
+    `custom = sf.branch(web, parent_id=${JSON.stringify(entry?.id || "")}, message=\"what changed and why\")`,
+    "df = custom.input()",
+    "",
+    "output = df.copy()",
+    "# Your custom code here",
+    "",
+    "custom.save_data(output, name=\"branch name\", code=True)",
+  ].join("\n");
 }
 
 function renderFlowControls(payload, entry, state, sendCommand, commandStatus) {

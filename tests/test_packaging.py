@@ -34,6 +34,10 @@ def test_interactive_assets_are_present():
     assert "Code Cell Branching" in workspace_js
     assert "sf.push(" in workspace_js
     assert "%%sf_cell" in workspace_js
+    assert "renderEntryNotebookBranchKit" in workspace_js
+    assert "Notebook Branch" in workspace_js
+    assert "Copy Work + Push" in workspace_js
+    assert '"%%sf_cell --name \\"branch name\\" --save"' in workspace_js
     assert "visualColumnMatchesQuery" in workspace_js
     assert "visual-column-query" in workspace_js
     assert "visualColumnQuickRecipes" in workspace_js
@@ -56,6 +60,8 @@ def test_interactive_assets_are_present():
     assert "stateframe-web-guidance-card-grid" in workspace_css
     assert "stateframe-web-guidance-code-grid" in workspace_css
     assert "stateframe-web-guidance-git-map" in workspace_css
+    assert "stateframe-web-notebook-branch-snippets" in workspace_css
+    assert "stateframe-web-notebook-branch-code" in workspace_css
     assert "stateframe-web-visual-column-tools" in workspace_css
     assert "stateframe-web-visual-column-quick-actions" in workspace_css
     assert "stateframe-web-visual-target-bar" in workspace_css

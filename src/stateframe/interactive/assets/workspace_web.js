@@ -861,16 +861,30 @@ function normalizeVisualizerState(raw, payload) {
       .filter((filter) => filter.column)
     : [];
   const fieldOptions = normalizeVisualFieldOptions(payload, definition, fields, raw?.fieldOptions || raw?.field_options || {}, raw?.options || {});
+  const targetColumns = [];
+  const seenTargets = new Set();
+  const rawTargets = Array.isArray(raw?.targetColumns)
+    ? raw.targetColumns
+    : raw?.targetColumn
+      ? [raw.targetColumn]
+      : [];
+  for (const target of rawTargets) {
+    const resolved = resolveVisualColumnId(target, lookup);
+    if (!resolved || seenTargets.has(resolved)) continue;
+    seenTargets.add(resolved);
+    targetColumns.push(resolved);
+  }
   return {
     kind,
     fields,
     fieldOptions,
     filters,
+    targetColumns,
     options: raw?.options || {},
     controlMode: ["basic", "advanced", "expert"].includes(raw?.controlMode) ? raw.controlMode : "basic",
     controlQuery: raw?.controlQuery || "",
     columnQuery: raw?.columnQuery || "",
-    columnTypeFilter: ["all", "numeric", "categorical", "date", "assigned", "available"].includes(raw?.columnTypeFilter) ? raw.columnTypeFilter : "all",
+    columnTypeFilter: ["all", "numeric", "categorical", "date", "targets", "assigned", "available"].includes(raw?.columnTypeFilter) ? raw.columnTypeFilter : "all",
     columnSort: ["original", "name", "type", "unique_desc", "missing_desc", "assigned_first"].includes(raw?.columnSort) ? raw.columnSort : "original",
     title: raw?.title || "",
     note: raw?.note || "",
@@ -4241,43 +4255,72 @@ function renderVisualLibrary(payload, visualState, setVisualizerState) {
 
 function renderVisualSuggestions(payload, visualState, setVisualizerState) {
   const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+  const targetSuggestions = visualTargetSuggestions(payload, visualState);
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-suggestions";
   const title = document.createElement("div");
   title.className = "stateframe-web-visual-family-title";
   title.textContent = "Suggested";
   wrap.appendChild(title);
-  if (!suggestions.length) {
+  if (!suggestions.length && !targetSuggestions.length) {
     const hint = document.createElement("div");
     hint.className = "stateframe-web-visual-type-description";
     hint.textContent = "No automatic suggestions for this state yet.";
     wrap.appendChild(hint);
     return wrap;
   }
+  if (targetSuggestions.length) {
+    const targetTitle = document.createElement("div");
+    targetTitle.className = "stateframe-web-visual-family-title";
+    targetTitle.textContent = "Against targets";
+    wrap.appendChild(targetTitle);
+    for (const suggestion of targetSuggestions.slice(0, 6)) {
+      wrap.appendChild(renderVisualSuggestionItem(payload, visualState, setVisualizerState, suggestion, "is-target-aware"));
+    }
+    if (suggestions.length) {
+      const autoTitle = document.createElement("div");
+      autoTitle.className = "stateframe-web-visual-family-title";
+      autoTitle.textContent = "Automatic";
+      wrap.appendChild(autoTitle);
+    }
+  }
   for (const suggestion of suggestions.slice(0, 8)) {
-    const spec = suggestion.spec || {};
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "stateframe-web-visual-suggestion";
-    if (spec.kind === visualState.kind && spec.title === visualState.title) item.classList.add("is-selected");
-    item.addEventListener("click", () => setVisualizerState({
-      kind: spec.kind || visualState.kind,
-      fields: spec.fields || {},
-      fieldOptions: spec.field_options || spec.fieldOptions || {},
-      filters: Array.isArray(spec.filters) ? spec.filters : [],
-      options: spec.options || {},
-      title: spec.title || suggestion.title || "",
-    }));
-    const itemTitle = document.createElement("div");
-    itemTitle.className = "stateframe-web-visual-type-title";
-    itemTitle.textContent = suggestion.title || spec.title || spec.kind || "Suggested visual";
-    const meta = document.createElement("div");
-    meta.className = "stateframe-web-visual-type-description";
-    meta.textContent = [spec.kind, suggestion.reason].filter(Boolean).join(" / ");
-    item.append(itemTitle, meta);
-    wrap.appendChild(item);
+    wrap.appendChild(renderVisualSuggestionItem(payload, visualState, setVisualizerState, suggestion));
   }
   return wrap;
+}
+
+function renderVisualSuggestionItem(payload, visualState, setVisualizerState, suggestion, extraClass = "") {
+  const spec = suggestion.spec || {};
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = "stateframe-web-visual-suggestion";
+  if (extraClass) item.classList.add(extraClass);
+  if (spec.kind === visualState.kind && (spec.title || suggestion.title || "") === visualState.title) item.classList.add("is-selected");
+  item.addEventListener("click", () => applyVisualSuggestion(payload, visualState, setVisualizerState, suggestion));
+  const itemTitle = document.createElement("div");
+  itemTitle.className = "stateframe-web-visual-type-title";
+  itemTitle.textContent = suggestion.title || spec.title || spec.kind || "Suggested visual";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-visual-type-description";
+  meta.textContent = [spec.kind, suggestion.reason].filter(Boolean).join(" / ");
+  item.append(itemTitle, meta);
+  return item;
+}
+
+function applyVisualSuggestion(payload, visualState, setVisualizerState, suggestion) {
+  const spec = suggestion.spec || {};
+  const kind = spec.kind || visualState.kind;
+  const definition = visualDefinition(payload, kind);
+  const fields = spec.fields || {};
+  setVisualizerState({
+    kind,
+    fields,
+    fieldOptions: spec.field_options || spec.fieldOptions || defaultFieldOptionsForVisual(payload, definition, fields),
+    filters: Array.isArray(spec.filters) ? spec.filters : [],
+    options: spec.options || {},
+    title: spec.title || suggestion.title || "",
+  });
 }
 
 function renderVisualPanelRail(label, title, onClick) {
@@ -5170,11 +5213,12 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
   const sortMode = visualState.columnSort || "original";
   const assignable = (definition.fields || []).slice(0, 4);
   const assignedSet = visualAssignedColumnIds(visualState);
+  const targetSet = visualTargetColumnIds(visualState);
   const acceptanceByColumn = visualColumnAcceptanceMap(payload, definition, visualState);
   const allEntries = (payload.columns || []).map((column, index) => ({ column, index }));
   const visibleEntries = visualSortColumnEntries(allEntries
     .filter(({ column }) => visualColumnMatchesQuery(column, queryValue))
-    .filter(({ column }) => visualColumnMatchesTypeFilter(column, filterMode, assignedSet, acceptanceByColumn)), sortMode, assignedSet);
+    .filter(({ column }) => visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn)), sortMode, assignedSet);
 
   const tools = document.createElement("div");
   tools.className = "stateframe-web-visual-column-tools";
@@ -5197,6 +5241,7 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     ["numeric", "Numeric"],
     ["categorical", "Categorical"],
     ["date", "Date"],
+    ["targets", "Targets"],
     ["assigned", "Assigned"],
     ["available", "Available"],
   ]) {
@@ -5237,6 +5282,8 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     }), false, "Clear column shelf search, filter, and sort"));
   }
   shell.appendChild(tools);
+  const targetBar = renderVisualTargetBar(payload, visualState, setVisualizerState);
+  if (targetBar) shell.appendChild(targetBar);
 
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-column-list";
@@ -5244,12 +5291,18 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     const assignedLabels = visualAssignedLabelsForColumn(definition, visualState, column.id);
     const acceptedFields = acceptanceByColumn.get(column.id) || [];
     const acceptedSlots = new Set(acceptedFields.map((field) => field.slot));
+    const isTarget = targetSet.has(column.id);
     const item = document.createElement("div");
     item.className = "stateframe-web-visual-column";
     if (assignedLabels.length) item.classList.add("is-assigned");
+    if (isTarget) item.classList.add("is-target");
     item.draggable = true;
     item.dataset.visualColumnId = column.id;
-    item.title = assignedLabels.length ? `Drag to a visual field / currently used by ${assignedLabels.join(", ")}` : "Drag to a visual field";
+    item.title = [
+      "Drag to a visual field",
+      assignedLabels.length ? `currently used by ${assignedLabels.join(", ")}` : "",
+      isTarget ? "marked as target for suggestions" : "",
+    ].filter(Boolean).join(" / ");
     item.addEventListener("dragstart", (event) => {
       item.classList.add("is-dragging");
       if (!event.dataTransfer) return;
@@ -5269,6 +5322,7 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     meta.textContent = visualColumnMetaText(column);
     const tags = document.createElement("div");
     tags.className = "stateframe-web-visual-column-tags";
+    if (isTarget) tags.appendChild(textSpan("Target", "stateframe-web-visual-column-tag is-target"));
     if (assignedLabels.length) tags.appendChild(textSpan(`Used: ${assignedLabels.join(", ")}`, "stateframe-web-visual-column-tag is-assigned"));
     if (acceptedFields.length) {
       const labels = acceptedFields.slice(0, 3).map((field) => field.label).join(", ");
@@ -5296,10 +5350,17 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
 }
 
 function renderVisualColumnQuickActions(payload, column, visualState, setVisualizerState) {
-  const recipes = visualColumnQuickRecipes(payload, column);
-  if (!recipes.length) return null;
+  if (!column?.id) return null;
+  const recipes = visualColumnQuickRecipes(payload, column, visualState);
+  const isTarget = visualTargetColumnIds(visualState).has(column.id);
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-column-quick-actions";
+  const target = tinyButton(isTarget ? "Targeted" : "Mark Target", () => {
+    toggleVisualTargetColumn(payload, column.id, visualState, setVisualizerState);
+  }, false, isTarget ? "Remove target marker" : "Mark as target for target-aware suggestions");
+  target.classList.add("is-target-marker");
+  if (isTarget) target.classList.add("is-active");
+  wrap.appendChild(target);
   for (const recipe of recipes.slice(0, 5)) {
     const action = tinyButton(recipe.label, () => {
       applyVisualColumnQuickRecipe(payload, recipe, visualState, setVisualizerState);
@@ -5310,7 +5371,7 @@ function renderVisualColumnQuickActions(payload, column, visualState, setVisuali
   return wrap;
 }
 
-function visualColumnQuickRecipes(payload, column) {
+function visualColumnQuickRecipes(payload, column, visualState = {}) {
   if (!column?.id) return [];
   const recipes = [];
   const name = visualColumnDisplayName(column);
@@ -5320,6 +5381,7 @@ function visualColumnQuickRecipes(payload, column) {
   const dateColumn = visualBestDateColumn(payload, column.id);
   const numericColumn = visualBestNumericColumn(payload, column.id);
   const categoricalColumn = visualBestCategoricalColumn(payload, column.id);
+  recipes.push(...visualColumnTargetRecipes(payload, column, visualState));
   if (isDate && numericColumn) {
     recipes.push(visualQuickRecipe(payload, {
       id: "trend",
@@ -5442,6 +5504,200 @@ function applyVisualColumnQuickRecipe(payload, recipe, visualState, setVisualize
   });
 }
 
+function renderVisualTargetBar(payload, visualState, setVisualizerState) {
+  const targets = visualTargetColumns(payload, visualState);
+  if (!targets.length) return null;
+  const bar = document.createElement("div");
+  bar.className = "stateframe-web-visual-target-bar";
+  bar.appendChild(textSpan("Targets", "stateframe-web-visual-target-label"));
+  for (const target of targets) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "stateframe-web-visual-target-chip";
+    chip.textContent = visualColumnDisplayName(target);
+    chip.title = "Remove target marker";
+    chip.setAttribute("aria-label", `Remove target ${visualColumnDisplayName(target)}`);
+    chip.addEventListener("click", () => toggleVisualTargetColumn(payload, target.id, visualState, setVisualizerState));
+    bar.appendChild(chip);
+  }
+  bar.appendChild(tinyButton("Clear Targets", () => setVisualizerState({ targetColumns: [] }), false, "Clear marked target columns"));
+  return bar;
+}
+
+function toggleVisualTargetColumn(payload, columnId, visualState, setVisualizerState) {
+  const validIds = new Set((payload.columns || []).map((column) => column.id));
+  if (!validIds.has(columnId)) return;
+  const current = (visualState.targetColumns || []).filter((id, index, items) => validIds.has(id) && items.indexOf(id) === index);
+  const next = current.includes(columnId)
+    ? current.filter((id) => id !== columnId)
+    : [...current, columnId];
+  setVisualizerState({ targetColumns: next });
+}
+
+function visualTargetColumnIds(visualState) {
+  return new Set((visualState.targetColumns || []).filter(Boolean).map((value) => String(value)));
+}
+
+function visualTargetColumns(payload, visualState) {
+  const byId = new Map((payload.columns || []).map((column) => [column.id, column]));
+  return (visualState.targetColumns || [])
+    .map((id) => byId.get(id))
+    .filter(Boolean);
+}
+
+function visualPrimaryTargetColumn(payload, visualState, excludeId = "") {
+  return visualTargetColumns(payload, visualState).find((column) => column.id !== excludeId) || null;
+}
+
+function visualColumnTargetRecipes(payload, column, visualState) {
+  const target = visualPrimaryTargetColumn(payload, visualState, column.id);
+  if (!target || visualTargetColumnIds(visualState).has(column.id)) return [];
+  return visualTargetRecipesForFeature(payload, target, column);
+}
+
+function visualTargetRecipesForFeature(payload, targetColumn, featureColumn) {
+  if (!targetColumn?.id || !featureColumn?.id || targetColumn.id === featureColumn.id) return [];
+  const recipes = [];
+  const trend = visualTargetTrendRecipe(payload, targetColumn, featureColumn);
+  if (trend) recipes.push(trend);
+  const scatter = visualTargetScatterRecipe(payload, targetColumn, featureColumn);
+  if (scatter) recipes.push(scatter);
+  const profile = visualTargetProfileRecipe(payload, targetColumn, featureColumn);
+  if (profile) recipes.push(profile);
+  const association = visualAssociationRecipeForTarget(payload, targetColumn, featureColumn);
+  if (association) recipes.push(association);
+  return recipes;
+}
+
+function visualTargetTrendRecipe(payload, targetColumn, featureColumn) {
+  if (!visualDefinitionById(payload, "line")) return null;
+  if (!visualColumnLooksNumeric(targetColumn) || !visualColumnLooksDate(featureColumn)) return null;
+  const targetName = visualColumnDisplayName(targetColumn);
+  const featureName = visualColumnDisplayName(featureColumn);
+  return visualQuickRecipe(payload, {
+    id: `target-trend:${targetColumn.id}:${featureColumn.id}`,
+    label: "Target Trend",
+    kind: "line",
+    fields: { x: featureColumn.id, y: targetColumn.id },
+    title: `${targetName} over ${featureName}`,
+    description: `Trend marked target ${targetName} by ${featureName}`,
+  });
+}
+
+function visualTargetScatterRecipe(payload, targetColumn, featureColumn) {
+  if (!visualDefinitionById(payload, "scatter")) return null;
+  if (!visualColumnLooksNumeric(targetColumn) || !visualColumnLooksNumeric(featureColumn) || visualColumnLooksIdentifier(featureColumn)) return null;
+  const targetName = visualColumnDisplayName(targetColumn);
+  const featureName = visualColumnDisplayName(featureColumn);
+  return visualQuickRecipe(payload, {
+    id: `target-scatter:${targetColumn.id}:${featureColumn.id}`,
+    label: "Vs Target",
+    kind: "scatter",
+    fields: { x: featureColumn.id, y: targetColumn.id },
+    title: `${targetName} vs ${featureName}`,
+    description: `Compare ${featureName} against marked target ${targetName}`,
+  });
+}
+
+function visualTargetProfileRecipe(payload, targetColumn, featureColumn) {
+  if (!visualDefinitionById(payload, "target_profile")) return null;
+  if (visualColumnLooksIdentifier(targetColumn) || visualColumnLooksIdentifier(featureColumn)) return null;
+  if (!visualColumnLooksNumeric(targetColumn) && !visualColumnLooksCategorical(targetColumn)) return null;
+  if (!visualColumnLooksNumeric(featureColumn) && !visualColumnLooksCategorical(featureColumn) && !visualColumnLooksDate(featureColumn)) return null;
+  const targetName = visualColumnDisplayName(targetColumn);
+  const featureName = visualColumnDisplayName(featureColumn);
+  return visualQuickRecipe(payload, {
+    id: `target-profile:${targetColumn.id}:${featureColumn.id}`,
+    label: "Target Profile",
+    kind: "target_profile",
+    fields: { target: targetColumn.id, feature: featureColumn.id },
+    title: `${targetName} by ${featureName}`,
+    description: `Profile marked target ${targetName} across ${featureName}`,
+  });
+}
+
+function visualAssociationRecipeForTarget(payload, targetColumn, featureColumn = null) {
+  const definition = visualDefinitionById(payload, "target_association");
+  if (!definition || !targetColumn?.id || visualColumnLooksIdentifier(targetColumn)) return null;
+  if (!visualColumnLooksNumeric(targetColumn) && !visualColumnLooksCategorical(targetColumn)) return null;
+  const featureField = (definition.fields || []).find((field) => field.slot === "features");
+  if (!featureField) return null;
+  const candidateIds = new Set(visualCandidateColumns(payload, definition, featureField).map((column) => column.id));
+  const used = new Set([targetColumn.id]);
+  const features = [];
+  if (featureColumn?.id && featureColumn.id !== targetColumn.id && candidateIds.has(featureColumn.id)) {
+    features.push(featureColumn.id);
+    used.add(featureColumn.id);
+  }
+  const defaults = defaultMultipleColumnsForVisual(payload, definition, featureField, used)
+    .filter((id) => id !== targetColumn.id && !features.includes(id));
+  features.push(...defaults);
+  if (!features.length) return null;
+  const targetName = visualColumnDisplayName(targetColumn);
+  return visualQuickRecipe(payload, {
+    id: `target-assoc:${targetColumn.id}${featureColumn?.id ? `:${featureColumn.id}` : ""}`,
+    label: "Assoc",
+    kind: "target_association",
+    fields: { target: targetColumn.id, features: features.slice(0, 12) },
+    title: `Associations with ${targetName}`,
+    description: `Rank columns associated with marked target ${targetName}`,
+  });
+}
+
+function visualTargetSuggestions(payload, visualState) {
+  const suggestions = [];
+  for (const target of visualTargetColumns(payload, visualState).slice(0, 3)) {
+    const association = visualAssociationRecipeForTarget(payload, target);
+    if (association) suggestions.push(visualSuggestionFromRecipe(association, `Marked target: ${visualColumnDisplayName(target)}`));
+    for (const feature of visualTargetFeatureCandidates(payload, target).slice(0, 3)) {
+      const recipe = visualTargetPreferredRecipe(payload, target, feature);
+      if (recipe) suggestions.push(visualSuggestionFromRecipe(recipe, `Against ${visualColumnDisplayName(target)}`));
+    }
+  }
+  const seen = new Set();
+  return suggestions.filter((suggestion) => {
+    const key = `${suggestion.spec?.kind || ""}:${suggestion.title || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 6);
+}
+
+function visualTargetFeatureCandidates(payload, targetColumn) {
+  const ordered = [
+    visualBestCategoricalColumn(payload, targetColumn.id),
+    visualBestDateColumn(payload, targetColumn.id),
+    visualBestNumericColumn(payload, targetColumn.id),
+    ...visualTopNumericColumns(payload, targetColumn.id).slice(0, 3),
+  ].filter(Boolean);
+  const seen = new Set();
+  return ordered.filter((column) => {
+    if (column.id === targetColumn.id || seen.has(column.id)) return false;
+    seen.add(column.id);
+    return true;
+  });
+}
+
+function visualTargetPreferredRecipe(payload, targetColumn, featureColumn) {
+  const recipes = visualTargetRecipesForFeature(payload, targetColumn, featureColumn);
+  if (visualColumnLooksDate(featureColumn)) return recipes.find((recipe) => recipe?.kind === "line") || recipes[0] || null;
+  if (visualColumnLooksNumeric(featureColumn) && visualColumnLooksNumeric(targetColumn)) return recipes.find((recipe) => recipe?.kind === "scatter") || recipes[0] || null;
+  return recipes.find((recipe) => recipe?.kind === "target_profile") || recipes[0] || null;
+}
+
+function visualSuggestionFromRecipe(recipe, reason) {
+  return {
+    title: recipe.title,
+    reason,
+    spec: {
+      kind: recipe.kind,
+      fields: recipe.fields,
+      options: recipe.options || {},
+      title: recipe.title,
+    },
+  };
+}
+
 function visualColumnAcceptanceMap(payload, definition, visualState) {
   const result = new Map();
   for (const field of definition.fields || []) {
@@ -5490,10 +5746,11 @@ function visualColumnMatchesQuery(column, query) {
   ].some((value) => String(value || "").toLowerCase().includes(needle));
 }
 
-function visualColumnMatchesTypeFilter(column, filterMode, assignedSet, acceptanceByColumn) {
+function visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn) {
   if (filterMode === "numeric") return visualColumnLooksNumeric(column);
   if (filterMode === "categorical") return visualColumnLooksCategorical(column);
   if (filterMode === "date") return visualColumnLooksDate(column);
+  if (filterMode === "targets") return targetSet.has(column.id);
   if (filterMode === "assigned") return assignedSet.has(column.id);
   if (filterMode === "available") return Boolean((acceptanceByColumn.get(column.id) || []).length);
   return true;

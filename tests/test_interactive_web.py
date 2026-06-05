@@ -367,7 +367,7 @@ def test_web_visualizer_renders_and_saves_plotly_leaf(tmp_path):
             "y": column_ids["amount"],
             "color": column_ids["segment"],
         },
-        "options": {"aggregation": "sum"},
+        "options": {"aggregation": "sum", "scroll_zoom": True, "display_modebar": "always"},
         "filters": [{"column": column_ids["amount"], "op": "greater_equal", "value": "18"}],
     }
     preview = web.render_visualizer(spec)
@@ -375,6 +375,8 @@ def test_web_visualizer_renders_and_saves_plotly_leaf(tmp_path):
     assert preview["engine"] == "plotly"
     assert "plotly" in preview["html"].lower()
     assert preview["plotly_json"]["data"]
+    assert preview["plotly_config"]["scrollZoom"] is True
+    assert preview["plotly_config"]["displayModeBar"] is True
     assert preview["preview_data_url"].startswith("data:image/png;base64,")
 
     average_spec = {

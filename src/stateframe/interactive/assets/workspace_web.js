@@ -4982,14 +4982,20 @@ function renderVisualOptionControl(control, visualState, setVisualizerState) {
   } else {
     input = document.createElement("input");
     input.className = "stateframe-web-input";
-    input.type = control.kind === "number" ? "number" : "text";
-    input.value = current ?? "";
+    input.type = control.kind === "number" ? "number" : control.kind === "color" ? "color" : "text";
+    if (control.kind === "number") input.step = "any";
+    input.value = control.kind === "color" ? validHexColor(current, control.default || "#000000") : current ?? "";
     input.addEventListener("input", () => setVisualizerState({ options: { ...(visualState.options || {}), [control.id]: input.value } }));
   }
   input.dataset.focusKey = `visual-option-${control.id}`;
   label.append(title, input);
   if (control.help) label.appendChild(textSpan(control.help, "stateframe-web-visual-help"));
   return label;
+}
+
+function validHexColor(value, fallback) {
+  const candidate = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate : fallback;
 }
 
 function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand, setState, ui, setUi) {

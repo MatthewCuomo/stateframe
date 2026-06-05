@@ -185,11 +185,12 @@ def build_visual_artifact(
     figure = _render_plotly(frame, spec_obj)
     resolved_title = title or spec_obj.title or _default_title(definition, spec_obj)
     figure.update_layout(title=resolved_title)
+    plotly_config = _plotly_config_from_options(_resolved_options(spec_obj))
 
     html = figure.to_html(
         include_plotlyjs=True,
         full_html=True,
-        config={"responsive": True, "displaylogo": False},
+        config=plotly_config,
     )
     artifact = {
         "kind": "plot",
@@ -203,6 +204,7 @@ def build_visual_artifact(
         "spec": spec_obj.to_dict(),
         "html": html,
         "plotly_json": json.loads(figure.to_json()),
+        "plotly_config": plotly_config,
         "preview_data_url": _matplotlib_preview_data_url(frame, spec_obj, resolved_title),
         "description": definition.get("description", ""),
         "interpretation_hints": list(definition.get("hints") or []),
@@ -223,6 +225,20 @@ def build_visual_artifact(
         "visual_recipe": _visual_recipe_summary(spec_obj),
     }
     return artifact, summary, _visual_code(spec_obj)
+
+
+def _plotly_config_from_options(options: dict[str, Any]) -> dict[str, Any]:
+    config: dict[str, Any] = {"responsive": True, "displaylogo": False}
+    if options.get("scroll_zoom"):
+        config["scrollZoom"] = True
+    display_modebar = str(options.get("display_modebar") or "")
+    if display_modebar == "always":
+        config["displayModeBar"] = True
+    elif display_modebar == "hidden":
+        config["displayModeBar"] = False
+    elif display_modebar == "hover":
+        config["displayModeBar"] = "hover"
+    return config
 
 
 def validate_visual_spec(
@@ -2617,6 +2633,34 @@ def _sort_visual_data(data: pd.DataFrame, *, x: str | None, y: str | None, optio
 
 
 def _apply_trace_options(fig: Any, options: dict[str, Any], *, kind: str) -> None:
+    trace_opacity = _optional_float(options.get("trace_opacity"))
+    if trace_opacity is not None:
+        _update_each_trace(fig, opacity=trace_opacity)
+    marker_size = _optional_float(options.get("marker_size"))
+    if marker_size and marker_size > 0:
+        _update_each_trace(fig, marker_size=marker_size)
+    marker_opacity = _optional_float(options.get("marker_opacity"))
+    if marker_opacity is not None:
+        _update_each_trace(fig, marker_opacity=marker_opacity)
+    marker_line_width = _optional_float(options.get("marker_line_width"))
+    if marker_line_width is not None:
+        _update_each_trace(fig, marker_line_width=marker_line_width)
+    if options.get("marker_line_color"):
+        _update_each_trace(fig, marker_line_color=str(options["marker_line_color"]))
+    line_width = _optional_float(options.get("line_width"))
+    if line_width is not None:
+        _update_each_trace(fig, line_width=line_width)
+    if options.get("line_dash"):
+        _update_each_trace(fig, line_dash=str(options["line_dash"]))
+    if options.get("line_color"):
+        _update_each_trace(fig, line_color=str(options["line_color"]))
+    if options.get("hover_template"):
+        _update_each_trace(fig, hovertemplate=str(options["hover_template"]))
+    if options.get("text_template"):
+        _update_each_trace(fig, texttemplate=str(options["text_template"]))
+    if options.get("text_position"):
+        _update_each_trace(fig, textposition=str(options["text_position"]))
+
     if not options.get("show_value_labels"):
         return
     position = str(options.get("label_position") or "auto")
@@ -2635,6 +2679,14 @@ def _apply_trace_options(fig: Any, options: dict[str, Any], *, kind: str) -> Non
             )
     except Exception:
         pass
+
+
+def _update_each_trace(fig: Any, **kwargs: Any) -> None:
+    for trace in getattr(fig, "data", []) or []:
+        try:
+            trace.update(**kwargs)
+        except Exception:
+            pass
 
 
 def _apply_value_transform(
@@ -2727,6 +2779,18 @@ def _apply_layout_options(
     hovermode = str(options.get("hovermode") or "")
     if hovermode:
         fig.update_layout(hovermode=hovermode)
+    dragmode = str(options.get("dragmode") or "")
+    if dragmode:
+        fig.update_layout(dragmode=dragmode)
+    font_size = _int_option(options.get("font_size"), 0)
+    if font_size > 0:
+        fig.update_layout(font={"size": font_size})
+    title_x = _optional_float(options.get("title_x"))
+    if title_x is not None:
+        fig.update_layout(title_x=title_x)
+    title_y = _optional_float(options.get("title_y"))
+    if title_y is not None:
+        fig.update_layout(title_y=title_y)
     fig.update_layout(
         showlegend=options.get("show_legend") is not False,
         margin={
@@ -2736,6 +2800,34 @@ def _apply_layout_options(
             "b": _int_option(options.get("margin_b"), 56),
         },
     )
+    legend_updates: dict[str, Any] = {}
+    if options.get("legend_title"):
+        fig.update_layout(legend_title_text=str(options["legend_title"]))
+    legend_orientation = str(options.get("legend_orientation") or "")
+    if legend_orientation:
+        legend_updates["orientation"] = legend_orientation
+    legend_x = _optional_float(options.get("legend_x"))
+    legend_y = _optional_float(options.get("legend_y"))
+    if legend_x is not None:
+        legend_updates["x"] = legend_x
+    if legend_y is not None:
+        legend_updates["y"] = legend_y
+    if legend_updates:
+        fig.update_layout(legend=legend_updates)
+    if options.get("colorbar_title"):
+        title = str(options["colorbar_title"])
+        try:
+            fig.update_layout(coloraxis_colorbar_title_text=title)
+        except Exception:
+            pass
+        _update_each_trace(fig, marker_colorbar_title_text=title)
+        _update_each_trace(fig, colorbar_title_text=title)
+    bargap = _optional_float(options.get("bar_gap"))
+    if bargap is not None:
+        fig.update_layout(bargap=bargap)
+    bargroupgap = _optional_float(options.get("bar_group_gap"))
+    if bargroupgap is not None:
+        fig.update_layout(bargroupgap=bargroupgap)
     if options.get("log_x"):
         fig.update_xaxes(type="log")
     if options.get("log_y"):
@@ -2761,10 +2853,36 @@ def _apply_layout_options(
     x_tick_angle = _int_option(options.get("x_tick_angle"), 0)
     if x_tick_angle:
         fig.update_xaxes(tickangle=x_tick_angle)
+    y_tick_angle = _int_option(options.get("y_tick_angle"), 0)
+    if y_tick_angle:
+        fig.update_yaxes(tickangle=y_tick_angle)
     if options.get("x_tick_format"):
         fig.update_xaxes(tickformat=str(options["x_tick_format"]))
     if options.get("y_tick_format"):
         fig.update_yaxes(tickformat=str(options["y_tick_format"]))
+    if "show_grid" in options:
+        grid_option = options.get("show_grid")
+        if isinstance(grid_option, bool):
+            show_grid = grid_option
+        else:
+            grid_mode = str(grid_option or "auto")
+            show_grid = None if grid_mode == "auto" else grid_mode == "show"
+        if show_grid is not None:
+            fig.update_xaxes(showgrid=show_grid)
+            fig.update_yaxes(showgrid=show_grid)
+    if options.get("axis_line"):
+        fig.update_xaxes(showline=True, linewidth=1, linecolor="#334155")
+        fig.update_yaxes(showline=True, linewidth=1, linecolor="#334155")
+    axis_ticks = str(options.get("axis_ticks") or "")
+    if axis_ticks in {"outside", "inside"}:
+        fig.update_xaxes(ticks=axis_ticks)
+        fig.update_yaxes(ticks=axis_ticks)
+    elif axis_ticks == "none":
+        fig.update_xaxes(ticks="")
+        fig.update_yaxes(ticks="")
+    if options.get("show_spikes"):
+        fig.update_xaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot")
+        fig.update_yaxes(showspikes=True, spikemode="across", spikesnap="cursor", spikedash="dot")
     if options.get("x_rangeslider"):
         fig.update_xaxes(rangeslider={"visible": True})
     if options.get("facet_shared_x") is False:
@@ -2777,11 +2895,44 @@ def _apply_layout_options(
     if zero_line in {"y", "both"}:
         fig.update_yaxes(zeroline=True, zerolinewidth=1, zerolinecolor="#64748b")
     _apply_reference_options(fig, options, data=data, x=x, y=y)
+    _apply_annotation_options(fig, options)
     if options.get("custom_kwargs"):
         try:
             fig.update_layout(**json.loads(str(options["custom_kwargs"])))
         except Exception:
             pass
+
+
+def _apply_annotation_options(fig: Any, options: dict[str, Any]) -> None:
+    text = options.get("annotation_text")
+    if text in {None, ""}:
+        return
+    xref = str(options.get("annotation_xref") or "paper")
+    yref = str(options.get("annotation_yref") or "paper")
+    raw_x = options.get("annotation_x")
+    raw_y = options.get("annotation_y")
+    x = _optional_float(raw_x) if xref == "paper" else _axis_bound(raw_x)
+    y = _optional_float(raw_y) if yref == "paper" else _axis_bound(raw_y)
+    if x is None:
+        x = 0.98 if xref == "paper" else raw_x
+    if y is None:
+        y = 0.98 if yref == "paper" else raw_y
+    try:
+        fig.add_annotation(
+            text=str(text),
+            x=x,
+            y=y,
+            xref=xref,
+            yref=yref,
+            showarrow=bool(options.get("annotation_arrow")),
+            arrowhead=2,
+            align=str(options.get("annotation_align") or "left"),
+            bgcolor=str(options.get("annotation_bgcolor") or "rgba(255,255,255,0.86)"),
+            bordercolor=str(options.get("annotation_border_color") or "rgba(100,116,139,0.45)"),
+            borderwidth=1,
+        )
+    except Exception:
+        pass
 
 
 def _axis_range(min_value: Any, max_value: Any, *, reversed_axis: bool = False) -> list[Any]:
@@ -2809,16 +2960,47 @@ def _apply_reference_options(
     x: str | None,
     y: str | None,
 ) -> None:
+    line_dash = str(options.get("reference_line_dash") or "dash")
     y_reference = _axis_bound(options.get("y_reference"))
     if y_reference is not None:
-        _add_hline(fig, y_reference, options.get("y_reference_label"))
+        _add_hline(
+            fig,
+            y_reference,
+            options.get("y_reference_label"),
+            color=str(options.get("y_reference_color") or "#dc2626"),
+            dash=line_dash,
+        )
     x_reference = _axis_bound(options.get("x_reference"))
     if x_reference is not None:
-        _add_vline(fig, x_reference, options.get("x_reference_label"))
+        _add_vline(
+            fig,
+            x_reference,
+            options.get("x_reference_label"),
+            color=str(options.get("x_reference_color") or "#2563eb"),
+            dash=line_dash,
+        )
     band_min = _axis_bound(options.get("y_band_min"))
     band_max = _axis_bound(options.get("y_band_max"))
     if band_min is not None and band_max is not None:
-        _add_hrect(fig, band_min, band_max, options.get("y_band_label"))
+        _add_hrect(
+            fig,
+            band_min,
+            band_max,
+            options.get("y_band_label"),
+            color=str(options.get("band_color") or "#f59e0b"),
+            opacity=_float_option(options.get("band_opacity"), 0.16),
+        )
+    x_band_min = _axis_bound(options.get("x_band_min"))
+    x_band_max = _axis_bound(options.get("x_band_max"))
+    if x_band_min is not None and x_band_max is not None:
+        _add_vrect(
+            fig,
+            x_band_min,
+            x_band_max,
+            options.get("x_band_label"),
+            color=str(options.get("band_color") or "#f59e0b"),
+            opacity=_float_option(options.get("band_opacity"), 0.16),
+        )
     stat = str(options.get("y_stat_reference") or "none")
     if stat != "none" and data is not None and y and y in data.columns:
         values = pd.to_numeric(data[y], errors="coerce").dropna()
@@ -2826,7 +3008,27 @@ def _apply_reference_options(
             statistic = _series_statistic(values, stat)
             if statistic is not None and np.isfinite(statistic):
                 label = str(options.get("y_stat_reference_label") or stat.replace("_", " ").title())
-                _add_hline(fig, float(statistic), label)
+                _add_hline(
+                    fig,
+                    float(statistic),
+                    label,
+                    color=str(options.get("y_reference_color") or "#dc2626"),
+                    dash=line_dash,
+                )
+    x_stat = str(options.get("x_stat_reference") or "none")
+    if x_stat != "none" and data is not None and x and x in data.columns:
+        values = pd.to_numeric(data[x], errors="coerce").dropna()
+        if not values.empty:
+            statistic = _series_statistic(values, x_stat)
+            if statistic is not None and np.isfinite(statistic):
+                label = str(options.get("x_stat_reference_label") or x_stat.replace("_", " ").title())
+                _add_vline(
+                    fig,
+                    float(statistic),
+                    label,
+                    color=str(options.get("x_reference_color") or "#2563eb"),
+                    dash=line_dash,
+                )
 
 
 def _series_statistic(values: pd.Series, stat: str) -> float | None:
@@ -2845,35 +3047,35 @@ def _series_statistic(values: pd.Series, stat: str) -> float | None:
     return None
 
 
-def _add_hline(fig: Any, value: Any, label: Any = None) -> None:
-    kwargs = {"y": value, "line_dash": "dash", "line_color": "#dc2626"}
+def _add_hline(fig: Any, value: Any, label: Any = None, *, color: str = "#dc2626", dash: str = "dash") -> None:
+    kwargs = {"y": value, "line_dash": dash, "line_color": color}
     if label not in {None, ""}:
         kwargs["annotation_text"] = str(label)
         kwargs["annotation_position"] = "top right"
     try:
         fig.add_hline(**kwargs)
     except Exception:
-        fig.add_shape(type="line", x0=0, x1=1, xref="paper", y0=value, y1=value, line={"dash": "dash", "color": "#dc2626"})
+        fig.add_shape(type="line", x0=0, x1=1, xref="paper", y0=value, y1=value, line={"dash": dash, "color": color})
 
 
-def _add_vline(fig: Any, value: Any, label: Any = None) -> None:
-    kwargs = {"x": value, "line_dash": "dash", "line_color": "#2563eb"}
+def _add_vline(fig: Any, value: Any, label: Any = None, *, color: str = "#2563eb", dash: str = "dash") -> None:
+    kwargs = {"x": value, "line_dash": dash, "line_color": color}
     if label not in {None, ""}:
         kwargs["annotation_text"] = str(label)
         kwargs["annotation_position"] = "top right"
     try:
         fig.add_vline(**kwargs)
     except Exception:
-        fig.add_shape(type="line", y0=0, y1=1, yref="paper", x0=value, x1=value, line={"dash": "dash", "color": "#2563eb"})
+        fig.add_shape(type="line", y0=0, y1=1, yref="paper", x0=value, x1=value, line={"dash": dash, "color": color})
 
 
-def _add_hrect(fig: Any, y0: Any, y1: Any, label: Any = None) -> None:
+def _add_hrect(fig: Any, y0: Any, y1: Any, label: Any = None, *, color: str = "#f59e0b", opacity: float = 0.16) -> None:
     kwargs = {
         "y0": y0,
         "y1": y1,
         "line_width": 0,
-        "fillcolor": "#f59e0b",
-        "opacity": 0.16,
+        "fillcolor": color,
+        "opacity": opacity,
     }
     if label not in {None, ""}:
         kwargs["annotation_text"] = str(label)
@@ -2881,7 +3083,24 @@ def _add_hrect(fig: Any, y0: Any, y1: Any, label: Any = None) -> None:
     try:
         fig.add_hrect(**kwargs)
     except Exception:
-        fig.add_shape(type="rect", x0=0, x1=1, xref="paper", y0=y0, y1=y1, line={"width": 0}, fillcolor="#f59e0b", opacity=0.16)
+        fig.add_shape(type="rect", x0=0, x1=1, xref="paper", y0=y0, y1=y1, line={"width": 0}, fillcolor=color, opacity=opacity)
+
+
+def _add_vrect(fig: Any, x0: Any, x1: Any, label: Any = None, *, color: str = "#f59e0b", opacity: float = 0.16) -> None:
+    kwargs = {
+        "x0": x0,
+        "x1": x1,
+        "line_width": 0,
+        "fillcolor": color,
+        "opacity": opacity,
+    }
+    if label not in {None, ""}:
+        kwargs["annotation_text"] = str(label)
+        kwargs["annotation_position"] = "top left"
+    try:
+        fig.add_vrect(**kwargs)
+    except Exception:
+        fig.add_shape(type="rect", y0=0, y1=1, yref="paper", x0=x0, x1=x1, line={"width": 0}, fillcolor=color, opacity=opacity)
 
 
 def _matplotlib_preview_data_url(frame: pd.DataFrame, spec: VisualSpec, title: str) -> str:
@@ -3526,6 +3745,7 @@ def _control_level(control_id: str) -> str:
         "y_max",
         "reverse_x",
         "reverse_y",
+        "show_grid",
         "show_value_labels",
         "height",
         "template",
@@ -3541,8 +3761,18 @@ def _control_level(control_id: str) -> str:
         "margin_b",
         "label_template",
         "hovermode",
+        "hover_template",
         "x_tick_format",
         "y_tick_format",
+        "annotation_text",
+        "annotation_x",
+        "annotation_y",
+        "annotation_xref",
+        "annotation_yref",
+        "annotation_arrow",
+        "annotation_align",
+        "annotation_bgcolor",
+        "annotation_border_color",
         "facet_shared_x",
         "facet_shared_y",
         "facet_col_wrap",
@@ -3689,6 +3919,18 @@ _COMMON_GROUPS = [
             _control("y_max", "Y max", "text"),
             _control("reverse_x", "Reverse X", "checkbox", default=False),
             _control("reverse_y", "Reverse Y", "checkbox", default=False),
+            _control("show_grid", "Grid lines", "select", default="auto", choices=[
+                ("auto", "Auto"),
+                ("show", "Show"),
+                ("hide", "Hide"),
+            ]),
+            _control("axis_line", "Axis lines", "checkbox", default=False),
+            _control("axis_ticks", "Axis ticks", "select", default="", choices=[
+                ("", "Default"),
+                ("outside", "Outside"),
+                ("inside", "Inside"),
+                ("none", "None"),
+            ]),
             _control("zero_line", "Zero line", "select", default="none", choices=[
                 ("none", "None"),
                 ("x", "X"),
@@ -3696,8 +3938,10 @@ _COMMON_GROUPS = [
                 ("both", "Both"),
             ]),
             _control("x_tick_angle", "X tick angle", "number", default=0),
+            _control("y_tick_angle", "Y tick angle", "number", default=0),
             _control("x_tick_format", "X tick format", "text"),
             _control("y_tick_format", "Y tick format", "text"),
+            _control("show_spikes", "Spike guides", "checkbox", default=False),
             _control("x_rangeslider", "X range slider", "checkbox", default=False),
         ],
     ),
@@ -3707,11 +3951,25 @@ _COMMON_GROUPS = [
         [
             _control("y_reference", "Y reference", "text"),
             _control("y_reference_label", "Y reference label", "text"),
+            _control("y_reference_color", "Y reference color", "color", default="#dc2626"),
             _control("x_reference", "X reference", "text"),
             _control("x_reference_label", "X reference label", "text"),
+            _control("x_reference_color", "X reference color", "color", default="#2563eb"),
+            _control("reference_line_dash", "Reference line", "select", default="dash", choices=[
+                ("solid", "Solid"),
+                ("dot", "Dot"),
+                ("dash", "Dash"),
+                ("longdash", "Long dash"),
+                ("dashdot", "Dash dot"),
+            ]),
             _control("y_band_min", "Y band min", "text"),
             _control("y_band_max", "Y band max", "text"),
             _control("y_band_label", "Y band label", "text"),
+            _control("x_band_min", "X band min", "text"),
+            _control("x_band_max", "X band max", "text"),
+            _control("x_band_label", "X band label", "text"),
+            _control("band_color", "Band color", "color", default="#f59e0b"),
+            _control("band_opacity", "Band opacity", "number", default=0.16),
             _control("y_stat_reference", "Y statistic line", "select", default="none", choices=[
                 ("none", "None"),
                 ("mean", "Mean"),
@@ -3722,6 +3980,16 @@ _COMMON_GROUPS = [
                 ("p95", "P95"),
             ]),
             _control("y_stat_reference_label", "Statistic label", "text"),
+            _control("x_stat_reference", "X statistic line", "select", default="none", choices=[
+                ("none", "None"),
+                ("mean", "Mean"),
+                ("median", "Median"),
+                ("min", "Min"),
+                ("max", "Max"),
+                ("p90", "P90"),
+                ("p95", "P95"),
+            ]),
+            _control("x_stat_reference_label", "X statistic label", "text"),
         ],
     ),
     _group(
@@ -3737,6 +4005,16 @@ _COMMON_GROUPS = [
                 ("outside", "Outside"),
             ]),
             _control("label_template", "Label template", "text"),
+            _control("text_template", "Trace text template", "text"),
+            _control("text_position", "Trace text position", "select", default="", choices=[
+                ("", "Default"),
+                ("auto", "Auto"),
+                ("top center", "Top center"),
+                ("middle center", "Middle center"),
+                ("bottom center", "Bottom center"),
+                ("inside", "Inside"),
+                ("outside", "Outside"),
+            ]),
             _control("hovermode", "Hover mode", "select", default="", choices=[
                 ("", "Default"),
                 ("closest", "Closest"),
@@ -3745,6 +4023,30 @@ _COMMON_GROUPS = [
                 ("y", "Y"),
                 ("y unified", "Y unified"),
             ]),
+            _control("hover_template", "Hover template", "textarea", help="Plotly hovertemplate text, for example %{x}<br>%{y:.2f}<extra></extra>."),
+        ],
+    ),
+    _group(
+        "style",
+        "Trace style",
+        [
+            _control("trace_opacity", "Trace opacity", "number"),
+            _control("marker_size", "Marker size", "number", default=0),
+            _control("marker_opacity", "Marker opacity", "number"),
+            _control("marker_line_width", "Marker outline width", "number"),
+            _control("marker_line_color", "Marker outline color", "color"),
+            _control("line_width", "Line width", "number"),
+            _control("line_dash", "Line dash", "select", default="", choices=[
+                ("", "Default"),
+                ("solid", "Solid"),
+                ("dot", "Dot"),
+                ("dash", "Dash"),
+                ("longdash", "Long dash"),
+                ("dashdot", "Dash dot"),
+            ]),
+            _control("line_color", "Line color", "color"),
+            _control("bar_gap", "Bar gap", "number"),
+            _control("bar_group_gap", "Bar group gap", "number"),
         ],
     ),
     _group(
@@ -3753,6 +4055,9 @@ _COMMON_GROUPS = [
         [
             _control("height", "Height", "number", default=520),
             _control("width", "Width", "number", default=0),
+            _control("font_size", "Font size", "number", default=0),
+            _control("title_x", "Title X", "number"),
+            _control("title_y", "Title Y", "number"),
             _control("template", "Template", "select", default="plotly_white", choices=[
                 ("plotly_white", "Plotly white"),
                 ("plotly", "Plotly"),
@@ -3781,10 +4086,59 @@ _COMMON_GROUPS = [
             _control("facet_shared_x", "Facet shared X", "checkbox", default=True),
             _control("facet_shared_y", "Facet shared Y", "checkbox", default=True),
             _control("show_legend", "Show legend", "checkbox", default=True),
+            _control("legend_title", "Legend title", "text"),
+            _control("legend_orientation", "Legend orientation", "select", default="", choices=[
+                ("", "Default"),
+                ("v", "Vertical"),
+                ("h", "Horizontal"),
+            ]),
+            _control("legend_x", "Legend X", "number"),
+            _control("legend_y", "Legend Y", "number"),
+            _control("colorbar_title", "Colorbar title", "text"),
+            _control("dragmode", "Drag mode", "select", default="", choices=[
+                ("", "Default"),
+                ("zoom", "Zoom"),
+                ("pan", "Pan"),
+                ("select", "Box select"),
+                ("lasso", "Lasso select"),
+                ("drawline", "Draw line"),
+                ("drawrect", "Draw rectangle"),
+            ]),
+            _control("scroll_zoom", "Scroll zoom", "checkbox", default=False),
+            _control("display_modebar", "Modebar", "select", default="hover", choices=[
+                ("hover", "On hover"),
+                ("always", "Always"),
+                ("hidden", "Hidden"),
+            ]),
             _control("margin_l", "Left margin", "number", default=60),
             _control("margin_r", "Right margin", "number", default=24),
             _control("margin_t", "Top margin", "number", default=70),
             _control("margin_b", "Bottom margin", "number", default=56),
+        ],
+    ),
+    _group(
+        "annotations",
+        "Annotations",
+        [
+            _control("annotation_text", "Annotation text", "textarea"),
+            _control("annotation_x", "Annotation X", "text", default="0.98"),
+            _control("annotation_y", "Annotation Y", "text", default="0.98"),
+            _control("annotation_xref", "Annotation X ref", "select", default="paper", choices=[
+                ("paper", "Paper"),
+                ("x", "X axis"),
+            ]),
+            _control("annotation_yref", "Annotation Y ref", "select", default="paper", choices=[
+                ("paper", "Paper"),
+                ("y", "Y axis"),
+            ]),
+            _control("annotation_arrow", "Annotation arrow", "checkbox", default=False),
+            _control("annotation_align", "Annotation align", "select", default="left", choices=[
+                ("left", "Left"),
+                ("center", "Center"),
+                ("right", "Right"),
+            ]),
+            _control("annotation_bgcolor", "Annotation background", "color", default="#ffffff"),
+            _control("annotation_border_color", "Annotation border", "color", default="#94a3b8"),
         ],
     ),
     _group(

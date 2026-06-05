@@ -208,7 +208,21 @@ def test_visual_catalog_surfaces_broad_control_groups():
     )
     aggregation_choices = {choice["value"] for choice in aggregation["choices"]}
 
-    assert {"value_transform", "sort_by", "y_reference", "reverse_y", "color_sequence", "show_value_labels", "x_rangeslider"} <= control_ids
+    assert {
+        "value_transform",
+        "sort_by",
+        "y_reference",
+        "reverse_y",
+        "color_sequence",
+        "show_value_labels",
+        "x_rangeslider",
+        "hover_template",
+        "legend_title",
+        "annotation_text",
+        "show_spikes",
+        "marker_size",
+        "x_band_min",
+    } <= control_ids
     assert {"weighted_mean", "p90", "p95"} <= aggregation_choices
 
 
@@ -405,6 +419,109 @@ def test_visualizer_supports_labels_range_slider_and_facet_axis_controls():
     assert figure.data[0].texttemplate == "%{y:.0f}"
     assert figure.layout.xaxis.rangeslider.visible is True
     assert figure.layout.yaxis.matches is None
+
+
+def test_visualizer_supports_rich_presentation_and_interaction_controls():
+    df = pd.DataFrame(
+        {
+            "x": [1, 2, 3, 4],
+            "y": [10, 15, 9, 22],
+            "score": [0.1, 0.4, 0.7, 0.9],
+        }
+    )
+
+    figure = sf.visualize(
+        df,
+        {
+            "kind": "scatter",
+            "title": "Styled scatter",
+            "fields": {"x": "x", "y": "y", "color": "score"},
+            "options": {
+                "show_grid": False,
+                "axis_line": True,
+                "axis_ticks": "outside",
+                "show_spikes": True,
+                "hovermode": "x unified",
+                "hover_template": "x=%{x}<br>y=%{y:.1f}<extra></extra>",
+                "dragmode": "pan",
+                "font_size": 14,
+                "title_x": 0.1,
+                "marker_size": 16,
+                "marker_line_width": 2,
+                "marker_line_color": "#111827",
+                "colorbar_title": "Risk score",
+            },
+        },
+    )
+
+    assert figure.layout.hovermode == "x unified"
+    assert figure.layout.dragmode == "pan"
+    assert figure.layout.font.size == 14
+    assert figure.layout.title.x == 0.1
+    assert figure.layout.xaxis.showgrid is False
+    assert figure.layout.xaxis.showline is True
+    assert figure.layout.xaxis.ticks == "outside"
+    assert figure.layout.xaxis.showspikes is True
+    assert figure.layout.coloraxis.colorbar.title.text == "Risk score"
+    assert figure.data[0].hovertemplate == "x=%{x}<br>y=%{y:.1f}<extra></extra>"
+    assert figure.data[0].marker.size == 16
+    assert figure.data[0].marker.line.width == 2
+    assert figure.data[0].marker.line.color == "#111827"
+
+
+def test_visualizer_supports_trace_style_legend_bands_and_annotations():
+    df = pd.DataFrame(
+        {
+            "segment": ["A", "B", "C", "D"],
+            "region": ["East", "East", "West", "West"],
+            "amount": [10, 40, 25, 30],
+        }
+    )
+
+    figure = sf.visualize(
+        df,
+        {
+            "kind": "bar",
+            "fields": {"x": "segment", "y": "amount", "color": "region"},
+            "options": {
+                "aggregation": "sum",
+                "text_template": "%{y:.0f}",
+                "text_position": "outside",
+                "trace_opacity": 0.72,
+                "marker_line_width": 1.5,
+                "marker_line_color": "#334155",
+                "bar_gap": 0.24,
+                "bar_group_gap": 0.08,
+                "legend_title": "Sales region",
+                "legend_orientation": "h",
+                "legend_x": 0,
+                "legend_y": -0.2,
+                "y_reference": 25,
+                "y_reference_color": "#16a34a",
+                "reference_line_dash": "dot",
+                "x_band_min": "B",
+                "x_band_max": "C",
+                "band_color": "#22c55e",
+                "band_opacity": 0.2,
+                "annotation_text": "Priority segment",
+                "annotation_x": "0.02",
+                "annotation_y": "0.96",
+            },
+        },
+    )
+
+    assert figure.data[0].texttemplate == "%{y:.0f}"
+    assert figure.data[0].textposition == "outside"
+    assert figure.data[0].opacity == 0.72
+    assert figure.data[0].marker.line.width == 1.5
+    assert figure.data[0].marker.line.color == "#334155"
+    assert figure.layout.bargap == 0.24
+    assert figure.layout.bargroupgap == 0.08
+    assert figure.layout.legend.title.text == "Sales region"
+    assert figure.layout.legend.orientation == "h"
+    assert any(shape.type == "rect" and shape.fillcolor == "#22c55e" for shape in figure.layout.shapes)
+    assert any(shape.type == "line" and shape.line.color == "#16a34a" and shape.line.dash == "dot" for shape in figure.layout.shapes)
+    assert any(annotation.text == "Priority segment" for annotation in figure.layout.annotations)
 
 
 def test_visualizer_supports_density_strip_and_hierarchy_families():

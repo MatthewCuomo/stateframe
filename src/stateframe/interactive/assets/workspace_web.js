@@ -5286,11 +5286,160 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     }
     item.append(name, meta);
     if (tags.children.length) item.appendChild(tags);
+    const quickActions = renderVisualColumnQuickActions(payload, column, visualState, setVisualizerState);
+    if (quickActions) item.appendChild(quickActions);
     item.appendChild(actions);
     wrap.appendChild(item);
   }
   shell.appendChild(wrap.children.length ? wrap : empty("No columns match the current shelf controls."));
   return shell;
+}
+
+function renderVisualColumnQuickActions(payload, column, visualState, setVisualizerState) {
+  const recipes = visualColumnQuickRecipes(payload, column);
+  if (!recipes.length) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-column-quick-actions";
+  for (const recipe of recipes.slice(0, 5)) {
+    const action = tinyButton(recipe.label, () => {
+      applyVisualColumnQuickRecipe(payload, recipe, visualState, setVisualizerState);
+    }, false, recipe.title || recipe.description || recipe.label);
+    action.classList.add("is-recipe");
+    wrap.appendChild(action);
+  }
+  return wrap;
+}
+
+function visualColumnQuickRecipes(payload, column) {
+  if (!column?.id) return [];
+  const recipes = [];
+  const name = visualColumnDisplayName(column);
+  const isNumeric = visualColumnLooksNumeric(column) && !visualColumnLooksIdentifier(column);
+  const isDate = visualColumnLooksDate(column);
+  const isCategorical = visualColumnLooksCategorical(column) && !visualColumnLooksIdentifier(column);
+  const dateColumn = visualBestDateColumn(payload, column.id);
+  const numericColumn = visualBestNumericColumn(payload, column.id);
+  const categoricalColumn = visualBestCategoricalColumn(payload, column.id);
+  if (isDate && numericColumn) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "trend",
+      label: "Trend",
+      kind: "line",
+      fields: { x: column.id, y: numericColumn.id },
+      title: `${visualColumnDisplayName(numericColumn)} over ${name}`,
+      description: `Trend ${visualColumnDisplayName(numericColumn)} by ${name}`,
+    }));
+  } else if (isNumeric) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "profile",
+      label: "Profile",
+      kind: "histogram",
+      fields: { x: column.id },
+      title: `Distribution of ${name}`,
+      description: `Profile the distribution of ${name}`,
+    }));
+  } else if (isCategorical) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "profile",
+      label: "Profile",
+      kind: "bar",
+      fields: { x: column.id },
+      title: `Count by ${name}`,
+      description: `Count records by ${name}`,
+    }));
+  } else if (isDate) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "profile",
+      label: "Profile",
+      kind: "histogram",
+      fields: { x: column.id },
+      title: `Records by ${name}`,
+      description: `Profile records by ${name}`,
+    }));
+  }
+  if (isNumeric && dateColumn) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "trend",
+      label: "Trend",
+      kind: "line",
+      fields: { x: dateColumn.id, y: column.id },
+      title: `${name} over ${visualColumnDisplayName(dateColumn)}`,
+      description: `Trend ${name} by ${visualColumnDisplayName(dateColumn)}`,
+    }));
+  }
+  if (isNumeric && categoricalColumn) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "compare",
+      label: "Compare",
+      kind: "bar",
+      fields: { x: categoricalColumn.id, y: column.id },
+      title: `${name} by ${visualColumnDisplayName(categoricalColumn)}`,
+      description: `Compare ${name} across ${visualColumnDisplayName(categoricalColumn)}`,
+    }));
+  } else if (isCategorical && numericColumn) {
+    recipes.push(visualQuickRecipe(payload, {
+      id: "compare",
+      label: "Compare",
+      kind: "bar",
+      fields: { x: column.id, y: numericColumn.id },
+      title: `${visualColumnDisplayName(numericColumn)} by ${name}`,
+      description: `Compare ${visualColumnDisplayName(numericColumn)} across ${name}`,
+    }));
+  }
+  if ((isNumeric || isCategorical) && visualDefinitionById(payload, "target_association")) {
+    const definition = visualDefinitionById(payload, "target_association");
+    const featureField = (definition.fields || []).find((field) => field.slot === "features");
+    const features = featureField
+      ? defaultMultipleColumnsForVisual(payload, definition, featureField, new Set([column.id])).filter((value) => value !== column.id)
+      : [];
+    if (features.length) {
+      recipes.push(visualQuickRecipe(payload, {
+        id: "assoc",
+        label: "Assoc",
+        kind: "target_association",
+        fields: { target: column.id, features },
+        title: `Associations with ${name}`,
+        description: `Rank columns associated with ${name}`,
+      }));
+    }
+  }
+  if (isNumeric && visualDefinitionById(payload, "correlation_heatmap")) {
+    const dimensions = [column.id, ...visualTopNumericColumns(payload, column.id).map((item) => item.id)].slice(0, 8);
+    if (dimensions.length >= 3) {
+      recipes.push(visualQuickRecipe(payload, {
+        id: "corr",
+        label: "Corr",
+        kind: "correlation_heatmap",
+        fields: { dimensions },
+        title: `${name} correlation matrix`,
+        description: `Correlate ${name} against nearby numeric measures`,
+      }));
+    }
+  }
+  const seen = new Set();
+  return recipes.filter((recipe) => {
+    if (!recipe || seen.has(recipe.id)) return false;
+    seen.add(recipe.id);
+    return true;
+  });
+}
+
+function visualQuickRecipe(payload, recipe) {
+  if (!visualDefinitionById(payload, recipe.kind)) return null;
+  return recipe;
+}
+
+function applyVisualColumnQuickRecipe(payload, recipe, visualState, setVisualizerState) {
+  const definition = visualDefinitionById(payload, recipe.kind);
+  if (!definition) return;
+  const fields = recipe.fields || {};
+  setVisualizerState({
+    kind: recipe.kind,
+    fields,
+    fieldOptions: defaultFieldOptionsForVisual(payload, definition, fields),
+    options: recipe.options || {},
+    title: recipe.title || "",
+  });
 }
 
 function visualColumnAcceptanceMap(payload, definition, visualState) {
@@ -5401,6 +5550,53 @@ function visualColumnMetaText(column) {
   if (Number.isFinite(missingRatio) && missingRatio > 0) parts.push(`${formatPercent(missingRatio)} missing`);
   else if (Number.isFinite(missingCount) && missingCount > 0) parts.push(`${formatInt(missingCount)} missing`);
   return parts.filter(Boolean).join(" / ");
+}
+
+function visualBestDateColumn(payload, excludeId = "") {
+  return (payload.columns || [])
+    .filter((column) => column.id !== excludeId && visualColumnLooksDate(column))
+    .sort((left, right) => visualDateColumnScore(right) - visualDateColumnScore(left))[0] || null;
+}
+
+function visualDateColumnScore(column) {
+  const name = String(column?.source_name || column?.display_name || column?.id || "").toLowerCase();
+  let score = 0;
+  if (/(^|_|\b)(date|time|timestamp|read_date|event_date)($|_|\b)/.test(name)) score += 8;
+  if (name.includes("created") || name.includes("updated")) score -= 2;
+  const distinct = visualColumnDistinctCount(column);
+  if (distinct >= 2) score += Math.min(6, Math.log10(distinct + 1) * 2);
+  return score;
+}
+
+function visualBestNumericColumn(payload, excludeId = "") {
+  return visualTopNumericColumns(payload, excludeId)[0] || null;
+}
+
+function visualTopNumericColumns(payload, excludeId = "") {
+  return (payload.columns || [])
+    .filter((column) => column.id !== excludeId && visualColumnLooksNumeric(column) && !visualColumnLooksIdentifier(column))
+    .sort((left, right) => visualNumericDimensionScore(right) - visualNumericDimensionScore(left));
+}
+
+function visualBestCategoricalColumn(payload, excludeId = "") {
+  return (payload.columns || [])
+    .filter((column) => column.id !== excludeId && visualColumnLooksCategorical(column) && !visualColumnLooksIdentifier(column))
+    .sort((left, right) => visualCategoricalCompareScore(right) - visualCategoricalCompareScore(left))[0] || null;
+}
+
+function visualCategoricalCompareScore(column) {
+  const name = String(column?.source_name || column?.display_name || column?.id || "").toLowerCase();
+  const distinct = visualColumnDistinctCount(column);
+  let score = 0;
+  if (Number.isFinite(distinct)) {
+    if (distinct >= 2 && distinct <= 16) score += 9;
+    else if (distinct <= 40) score += 6;
+    else if (distinct <= 80) score += 2;
+    else score -= 5;
+  }
+  if (/(^|_|\b)(type|class|segment|category|city|state|status|group)($|_|\b)/.test(name)) score += 5;
+  if (/(^|_|\b)(id|key|uuid|code)($|_|\b)/.test(name)) score -= 8;
+  return score;
 }
 
 function renderVisualFilters(payload, visualState, setVisualizerState) {
@@ -7220,9 +7416,14 @@ function buildVisualSpec(payload, state) {
   };
 }
 
+function visualDefinitionById(payload, kind) {
+  const plotTypes = payload?.catalog?.plot_types || [];
+  return plotTypes.find((item) => item.id === kind) || null;
+}
+
 function visualDefinition(payload, kind) {
   const plotTypes = payload?.catalog?.plot_types || [];
-  return plotTypes.find((item) => item.id === kind) || plotTypes[0] || { id: "histogram", fields: [], option_groups: [] };
+  return visualDefinitionById(payload, kind) || plotTypes[0] || { id: "histogram", fields: [], option_groups: [] };
 }
 
 function defaultFieldsForVisual(payload, definition) {

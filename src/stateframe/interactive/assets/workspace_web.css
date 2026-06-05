@@ -2813,6 +2813,24 @@
   min-width: 0;
 }
 
+.stateframe-web-visual-column-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-column-quick-actions .stateframe-web-button.is-recipe {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
+}
+
+.stateframe-web-visual-column-quick-actions .stateframe-web-button.is-recipe:hover {
+  border-color: #38bdf8;
+  background: #e0f2fe;
+}
+
 .stateframe-web-visual-column-tag {
   overflow: hidden;
   max-width: 100%;

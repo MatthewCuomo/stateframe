@@ -2571,6 +2571,7 @@
 }
 
 .stateframe-web-visual-fields,
+.stateframe-web-visual-column-shell,
 .stateframe-web-visual-column-list,
 .stateframe-web-visual-filters,
 .stateframe-web-visual-options,
@@ -2736,6 +2737,46 @@
   font-weight: 700;
 }
 
+.stateframe-web-visual-column-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-column-tools .stateframe-web-input.is-search {
+  grid-column: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.stateframe-web-visual-column-tools .stateframe-web-select.is-type {
+  grid-column: 2;
+  min-width: 86px;
+  width: auto;
+}
+
+.stateframe-web-visual-column-tools .stateframe-web-select.is-sort {
+  grid-column: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.stateframe-web-visual-column-count {
+  grid-column: 1 / -1;
+  justify-self: start;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.stateframe-web-visual-column-tools .stateframe-web-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .stateframe-web-visual-column {
   display: grid;
   gap: 6px;
@@ -2743,6 +2784,11 @@
   border-radius: 6px;
   background: #ffffff;
   padding: 8px;
+}
+
+.stateframe-web-visual-column.is-assigned {
+  border-color: #93c5fd;
+  background: #eff6ff;
 }
 
 .stateframe-web-visual-column[draggable="true"] {
@@ -2758,6 +2804,34 @@
 .stateframe-web-visual-column.is-dragging {
   border-color: #2563eb;
   opacity: 0.64;
+}
+
+.stateframe-web-visual-column-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-column-tag {
+  overflow: hidden;
+  max-width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateframe-web-visual-column-tag.is-assigned {
+  border-color: #93c5fd;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .stateframe-web-visual-filter {

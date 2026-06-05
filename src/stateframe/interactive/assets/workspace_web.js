@@ -869,6 +869,9 @@ function normalizeVisualizerState(raw, payload) {
     options: raw?.options || {},
     controlMode: ["basic", "advanced", "expert"].includes(raw?.controlMode) ? raw.controlMode : "basic",
     controlQuery: raw?.controlQuery || "",
+    columnQuery: raw?.columnQuery || "",
+    columnTypeFilter: ["all", "numeric", "categorical", "date", "assigned", "available"].includes(raw?.columnTypeFilter) ? raw.columnTypeFilter : "all",
+    columnSort: ["original", "name", "type", "unique_desc", "missing_desc", "assigned_first"].includes(raw?.columnSort) ? raw.columnSort : "original",
     title: raw?.title || "",
     note: raw?.note || "",
     collapsedPanels: {
@@ -5160,15 +5163,93 @@ function updateVisualFieldOption(slot, patch, visualState, setVisualizerState) {
 }
 
 function renderVisualColumns(payload, definition, visualState, setVisualizerState) {
+  const shell = document.createElement("div");
+  shell.className = "stateframe-web-visual-column-shell";
+  const queryValue = String(visualState.columnQuery || "");
+  const filterMode = visualState.columnTypeFilter || "all";
+  const sortMode = visualState.columnSort || "original";
+  const assignable = (definition.fields || []).slice(0, 4);
+  const assignedSet = visualAssignedColumnIds(visualState);
+  const acceptanceByColumn = visualColumnAcceptanceMap(payload, definition, visualState);
+  const allEntries = (payload.columns || []).map((column, index) => ({ column, index }));
+  const visibleEntries = visualSortColumnEntries(allEntries
+    .filter(({ column }) => visualColumnMatchesQuery(column, queryValue))
+    .filter(({ column }) => visualColumnMatchesTypeFilter(column, filterMode, assignedSet, acceptanceByColumn)), sortMode, assignedSet);
+
+  const tools = document.createElement("div");
+  tools.className = "stateframe-web-visual-column-tools";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "stateframe-web-input";
+  search.classList.add("is-search");
+  search.placeholder = "Find columns";
+  search.value = queryValue;
+  search.dataset.focusKey = "visual-column-query";
+  search.setAttribute("aria-label", "Find visualizer columns");
+  search.addEventListener("input", () => setVisualizerState({ columnQuery: search.value }));
+  const typeFilter = document.createElement("select");
+  typeFilter.className = "stateframe-web-select";
+  typeFilter.classList.add("is-type");
+  typeFilter.dataset.focusKey = "visual-column-type-filter";
+  typeFilter.setAttribute("aria-label", "Filter visualizer columns");
+  for (const [value, label] of [
+    ["all", "All"],
+    ["numeric", "Numeric"],
+    ["categorical", "Categorical"],
+    ["date", "Date"],
+    ["assigned", "Assigned"],
+    ["available", "Available"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    typeFilter.appendChild(option);
+  }
+  typeFilter.value = filterMode;
+  typeFilter.addEventListener("change", () => setVisualizerState({ columnTypeFilter: typeFilter.value }));
+  const sort = document.createElement("select");
+  sort.className = "stateframe-web-select";
+  sort.classList.add("is-sort");
+  sort.dataset.focusKey = "visual-column-sort";
+  sort.setAttribute("aria-label", "Sort visualizer columns");
+  for (const [value, label] of [
+    ["original", "Source order"],
+    ["name", "Name"],
+    ["type", "Type"],
+    ["unique_desc", "Unique high"],
+    ["missing_desc", "Missing high"],
+    ["assigned_first", "Assigned first"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    sort.appendChild(option);
+  }
+  sort.value = sortMode;
+  sort.addEventListener("change", () => setVisualizerState({ columnSort: sort.value }));
+  const count = textSpan(`${formatInt(visibleEntries.length)} / ${formatInt(allEntries.length)} columns`, "stateframe-web-visual-column-count");
+  tools.append(count, search, typeFilter, sort);
+  if (queryValue || filterMode !== "all" || sortMode !== "original") {
+    tools.appendChild(tinyButton("Clear", () => setVisualizerState({
+      columnQuery: "",
+      columnTypeFilter: "all",
+      columnSort: "original",
+    }), false, "Clear column shelf search, filter, and sort"));
+  }
+  shell.appendChild(tools);
+
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-column-list";
-  const assignable = (definition.fields || []).slice(0, 4);
-  for (const column of payload.columns || []) {
+  for (const { column } of visibleEntries) {
+    const assignedLabels = visualAssignedLabelsForColumn(definition, visualState, column.id);
+    const acceptedFields = acceptanceByColumn.get(column.id) || [];
+    const acceptedSlots = new Set(acceptedFields.map((field) => field.slot));
     const item = document.createElement("div");
     item.className = "stateframe-web-visual-column";
+    if (assignedLabels.length) item.classList.add("is-assigned");
     item.draggable = true;
     item.dataset.visualColumnId = column.id;
-    item.title = "Drag to a visual field";
+    item.title = assignedLabels.length ? `Drag to a visual field / currently used by ${assignedLabels.join(", ")}` : "Drag to a visual field";
     item.addEventListener("dragstart", (event) => {
       item.classList.add("is-dragging");
       if (!event.dataTransfer) return;
@@ -5182,23 +5263,144 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     wireVisualColumnPointerDrag(item, column, payload, definition, visualState, setVisualizerState);
     const name = document.createElement("div");
     name.className = "stateframe-web-visual-column-name";
-    name.textContent = column.display_name || column.source_name || column.id;
+    name.textContent = visualColumnDisplayName(column);
     const meta = document.createElement("div");
     meta.className = "stateframe-web-visual-column-meta";
-    meta.textContent = `${column.semantic_type || "unknown"} / ${column.dtype || ""}`;
+    meta.textContent = visualColumnMetaText(column);
+    const tags = document.createElement("div");
+    tags.className = "stateframe-web-visual-column-tags";
+    if (assignedLabels.length) tags.appendChild(textSpan(`Used: ${assignedLabels.join(", ")}`, "stateframe-web-visual-column-tag is-assigned"));
+    if (acceptedFields.length) {
+      const labels = acceptedFields.slice(0, 3).map((field) => field.label).join(", ");
+      const suffix = acceptedFields.length > 3 ? ` +${acceptedFields.length - 3}` : "";
+      tags.appendChild(textSpan(`Fits: ${labels}${suffix}`, "stateframe-web-visual-column-tag"));
+    }
     const actions = document.createElement("div");
     actions.className = "stateframe-web-action-row";
     for (const field of assignable) {
-      const canAssign = visualFieldAcceptsColumn(payload, definition, field, column.id, visualState);
+      const canAssign = acceptedSlots.has(field.slot);
       const assign = tinyButton(field.label, () => {
         assignVisualColumnToField(payload, definition, field, column.id, visualState, setVisualizerState);
       }, !canAssign, `Use as ${field.label}`);
       actions.appendChild(assign);
     }
-    item.append(name, meta, actions);
+    item.append(name, meta);
+    if (tags.children.length) item.appendChild(tags);
+    item.appendChild(actions);
     wrap.appendChild(item);
   }
-  return wrap;
+  shell.appendChild(wrap.children.length ? wrap : empty("No columns match the current shelf controls."));
+  return shell;
+}
+
+function visualColumnAcceptanceMap(payload, definition, visualState) {
+  const result = new Map();
+  for (const field of definition.fields || []) {
+    for (const column of visualCandidateColumnsForField(payload, definition, field, visualState)) {
+      const fields = result.get(column.id) || [];
+      fields.push(field);
+      result.set(column.id, fields);
+    }
+  }
+  return result;
+}
+
+function visualAssignedColumnIds(visualState) {
+  const ids = new Set();
+  for (const value of Object.values(visualState.fields || {})) {
+    if (Array.isArray(value)) {
+      value.filter(Boolean).forEach((item) => ids.add(String(item)));
+    } else if (value) {
+      ids.add(String(value));
+    }
+  }
+  return ids;
+}
+
+function visualAssignedLabelsForColumn(definition, visualState, columnId) {
+  const labels = [];
+  for (const field of definition.fields || []) {
+    const value = visualState.fields?.[field.slot];
+    if (Array.isArray(value) && value.includes(columnId)) labels.push(field.label);
+    else if (value === columnId) labels.push(field.label);
+  }
+  return labels;
+}
+
+function visualColumnMatchesQuery(column, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  return [
+    column?.id,
+    column?.display_name,
+    column?.source_name,
+    column?.name,
+    column?.label,
+    column?.semantic_type,
+    column?.dtype,
+  ].some((value) => String(value || "").toLowerCase().includes(needle));
+}
+
+function visualColumnMatchesTypeFilter(column, filterMode, assignedSet, acceptanceByColumn) {
+  if (filterMode === "numeric") return visualColumnLooksNumeric(column);
+  if (filterMode === "categorical") return visualColumnLooksCategorical(column);
+  if (filterMode === "date") return visualColumnLooksDate(column);
+  if (filterMode === "assigned") return assignedSet.has(column.id);
+  if (filterMode === "available") return Boolean((acceptanceByColumn.get(column.id) || []).length);
+  return true;
+}
+
+function visualSortColumnEntries(entries, sortMode, assignedSet) {
+  const sorted = [...entries];
+  sorted.sort((left, right) => {
+    if (sortMode === "name") return visualColumnDisplayName(left.column).localeCompare(visualColumnDisplayName(right.column)) || left.index - right.index;
+    if (sortMode === "type") {
+      const typeCompare = visualColumnTypeRank(left.column) - visualColumnTypeRank(right.column);
+      return typeCompare || String(left.column.semantic_type || "").localeCompare(String(right.column.semantic_type || "")) || visualColumnDisplayName(left.column).localeCompare(visualColumnDisplayName(right.column));
+    }
+    if (sortMode === "unique_desc") return compareNumbersDesc(visualColumnDistinctCount(left.column), visualColumnDistinctCount(right.column)) || visualColumnDisplayName(left.column).localeCompare(visualColumnDisplayName(right.column));
+    if (sortMode === "missing_desc") return compareNumbersDesc(visualColumnMissingRatio(left.column), visualColumnMissingRatio(right.column)) || compareNumbersDesc(visualColumnMissingCount(left.column), visualColumnMissingCount(right.column)) || visualColumnDisplayName(left.column).localeCompare(visualColumnDisplayName(right.column));
+    if (sortMode === "assigned_first") {
+      const assignedCompare = Number(assignedSet.has(right.column.id)) - Number(assignedSet.has(left.column.id));
+      return assignedCompare || left.index - right.index;
+    }
+    return left.index - right.index;
+  });
+  return sorted;
+}
+
+function visualColumnTypeRank(column) {
+  if (visualColumnLooksDate(column)) return 0;
+  if (visualColumnLooksNumeric(column)) return 1;
+  if (visualColumnLooksCategorical(column)) return 2;
+  return 3;
+}
+
+function compareNumbersDesc(leftValue, rightValue) {
+  const left = Number(leftValue);
+  const right = Number(rightValue);
+  const leftFinite = Number.isFinite(left);
+  const rightFinite = Number.isFinite(right);
+  if (leftFinite && rightFinite) return right - left;
+  if (leftFinite) return -1;
+  if (rightFinite) return 1;
+  return 0;
+}
+
+function visualColumnDisplayName(column) {
+  return column?.display_name || column?.source_name || column?.name || column?.label || column?.id || "";
+}
+
+function visualColumnMetaText(column) {
+  const typeText = [column?.semantic_type || "unknown", column?.dtype || ""].filter(Boolean).join(" / ");
+  const parts = [typeText];
+  const distinct = visualColumnDistinctCount(column);
+  if (Number.isFinite(distinct)) parts.push(`${formatInt(distinct)} unique`);
+  const missingRatio = visualColumnMissingRatio(column);
+  const missingCount = visualColumnMissingCount(column);
+  if (Number.isFinite(missingRatio) && missingRatio > 0) parts.push(`${formatPercent(missingRatio)} missing`);
+  else if (Number.isFinite(missingCount) && missingCount > 0) parts.push(`${formatInt(missingCount)} missing`);
+  return parts.filter(Boolean).join(" / ");
 }
 
 function renderVisualFilters(payload, visualState, setVisualizerState) {
@@ -7248,6 +7450,22 @@ function visualColumnLooksCategorical(column) {
 
 function visualColumnDistinctCount(column) {
   for (const value of [column?.distinct_count, column?.metrics?.distinct_count, column?.profile?.distinct_count]) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return NaN;
+}
+
+function visualColumnMissingRatio(column) {
+  for (const value of [column?.missing_ratio, column?.metrics?.missing_ratio, column?.profile?.missing_ratio]) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return NaN;
+}
+
+function visualColumnMissingCount(column) {
+  for (const value of [column?.missing_count, column?.metrics?.missing_count, column?.profile?.missing_count]) {
     const number = Number(value);
     if (Number.isFinite(number)) return number;
   }

@@ -19,9 +19,17 @@ def test_interactive_assets_are_present():
     assert (asset_dir / "workspace_web.css").exists()
 
     workspace_js = (asset_dir / "workspace_web.js").read_text(encoding="utf-8")
+    workspace_css = (asset_dir / "workspace_web.css").read_text(encoding="utf-8")
     assert "renderPlotlyHtmlFrame" in workspace_js
     assert "renderEntryThumbnail" in workspace_js
     assert "plotly_json" in workspace_js
+    assert "assignVisualColumnToField" in workspace_js
+    assert "wireVisualColumnPointerDrag" in workspace_js
+    assert "document.elementFromPoint" in workspace_js
+    assert "application/x-stateframe-column-id" in workspace_js
+    assert "stateframe-web-visual-field-dropzone" in workspace_js
+    assert "item.draggable = true" in workspace_js
+    assert "is-drop-target" in workspace_css
 
 
 def test_release_scaffolding_exists():

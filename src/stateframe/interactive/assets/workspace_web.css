@@ -2537,6 +2537,35 @@
   font-weight: 800;
 }
 
+.stateframe-web-visual-field-dropzone {
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 7px;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.stateframe-web-visual-field-dropzone.is-filled {
+  border-style: solid;
+  background: #ffffff;
+}
+
+.stateframe-web-visual-field-dropzone.is-drop-target {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1px #2563eb;
+}
+
+.stateframe-web-visual-field-dropzone.is-drop-applied {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.stateframe-web-visual-field-dropzone.is-drop-rejected {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
 .stateframe-web-visual-field-behavior {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
@@ -2630,6 +2659,21 @@
   border-radius: 6px;
   background: #ffffff;
   padding: 8px;
+}
+
+.stateframe-web-visual-column[draggable="true"] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.stateframe-web-visual-column[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.stateframe-web-visual-column.is-dragging {
+  border-color: #2563eb;
+  opacity: 0.64;
 }
 
 .stateframe-web-visual-filter {

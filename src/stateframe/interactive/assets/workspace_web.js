@@ -4539,11 +4539,15 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-fields";
   for (const field of definition.fields || []) {
+    const current = visualState.fields?.[field.slot];
+    const hasCurrent = field.multiple ? Array.isArray(current) && current.length : Boolean(current);
     const row = document.createElement(field.multiple ? "div" : "label");
     row.className = "stateframe-web-visual-field";
+    if (hasCurrent) row.classList.add("is-filled");
+    if (field.required) row.classList.add("is-required");
+    wireVisualFieldDropZone(row, payload, definition, field, visualState, setVisualizerState);
     const label = document.createElement("span");
     label.textContent = `${field.label}${field.required ? " *" : ""}`;
-    const current = visualState.fields?.[field.slot];
     if (field.multiple) {
       row.append(label, renderVisualMultiField(payload, definition, field, visualState, setVisualizerState));
       wrap.appendChild(row);
@@ -4556,11 +4560,7 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     blank.value = "";
     blank.textContent = field.multiple ? "Comma-select below or choose first" : "None";
     select.appendChild(blank);
-    const singleCandidates = visualCandidateColumns(payload, definition, field).filter((column) => {
-      if (definition.id === "target_profile" && field.slot === "feature") return column.id !== visualState.fields?.target;
-      if (definition.id === "target_profile" && field.slot === "color") return column.id !== visualState.fields?.target && column.id !== visualState.fields?.feature;
-      return true;
-    });
+    const singleCandidates = visualCandidateColumnsForField(payload, definition, field, visualState);
     for (const column of singleCandidates) {
       const option = document.createElement("option");
       option.value = column.id;
@@ -4569,27 +4569,14 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
     }
     select.value = current || "";
     select.addEventListener("change", () => {
+      if (select.value) {
+        assignVisualColumnToField(payload, definition, field, select.value, visualState, setVisualizerState);
+        return;
+      }
       const next = { ...(visualState.fields || {}) };
       const nextFieldOptions = { ...(visualState.fieldOptions || {}) };
-      if (select.value) {
-        next[field.slot] = select.value;
-        if (definition.id === "target_association" && field.slot === "target" && Array.isArray(next.features)) {
-          next.features = next.features.filter((value) => value !== select.value);
-        }
-        if (definition.id === "target_profile" && field.slot === "target") {
-          if (next.feature === select.value) delete next.feature;
-          if (next.color === select.value) delete next.color;
-        }
-        if (definition.id === "target_profile" && field.slot === "feature" && next.color === select.value) {
-          delete next.color;
-        }
-        const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, select.value);
-        if (Object.keys(defaults).length) nextFieldOptions[field.slot] = { ...defaults, ...(nextFieldOptions[field.slot] || {}) };
-        else delete nextFieldOptions[field.slot];
-      } else {
-        delete next[field.slot];
-        delete nextFieldOptions[field.slot];
-      }
+      delete next[field.slot];
+      delete nextFieldOptions[field.slot];
       setVisualizerState({ fields: next, fieldOptions: nextFieldOptions });
     });
     row.append(label, select);
@@ -4602,11 +4589,172 @@ function renderVisualFields(payload, definition, visualState, setVisualizerState
   return wrap.children.length ? wrap : empty("This visual does not require field bindings.");
 }
 
+function visualCandidateColumnsForField(payload, definition, field, visualState) {
+  const targetId = definition.id === "target_association" && field.slot === "features" ? visualState.fields?.target : null;
+  return visualCandidateColumns(payload, definition, field).filter((column) => {
+    if (targetId && column.id === targetId) return false;
+    if (definition.id === "target_profile" && field.slot === "feature") return column.id !== visualState.fields?.target;
+    if (definition.id === "target_profile" && field.slot === "color") return column.id !== visualState.fields?.target && column.id !== visualState.fields?.feature;
+    return true;
+  });
+}
+
+function visualFieldAcceptsColumn(payload, definition, field, columnId, visualState) {
+  if (!columnId) return false;
+  return visualCandidateColumnsForField(payload, definition, field, visualState).some((column) => column.id === columnId);
+}
+
+function assignVisualColumnToField(payload, definition, field, columnId, visualState, setVisualizerState) {
+  const value = String(columnId || "");
+  if (!visualFieldAcceptsColumn(payload, definition, field, value, visualState)) return false;
+  const next = { ...(visualState.fields || {}) };
+  if (field.multiple) {
+    const current = Array.isArray(next[field.slot]) ? next[field.slot] : [];
+    if (!current.includes(value)) next[field.slot] = [...current, value];
+    else next[field.slot] = current;
+    setVisualizerState({ fields: next });
+    return true;
+  }
+  const nextFieldOptions = { ...(visualState.fieldOptions || {}) };
+  next[field.slot] = value;
+  if (definition.id === "target_association" && field.slot === "target" && Array.isArray(next.features)) {
+    next.features = next.features.filter((item) => item !== value);
+  }
+  if (definition.id === "target_profile" && field.slot === "target") {
+    if (next.feature === value) delete next.feature;
+    if (next.color === value) delete next.color;
+  }
+  if (definition.id === "target_profile" && field.slot === "feature" && next.color === value) {
+    delete next.color;
+  }
+  const defaults = defaultFieldOptionForSlot(payload, definition, field.slot, value);
+  if (Object.keys(defaults).length) nextFieldOptions[field.slot] = { ...defaults, ...(nextFieldOptions[field.slot] || {}) };
+  else delete nextFieldOptions[field.slot];
+  setVisualizerState({ fields: next, fieldOptions: nextFieldOptions });
+  return true;
+}
+
+function wireVisualFieldDropZone(row, payload, definition, field, visualState, setVisualizerState) {
+  row.classList.add("stateframe-web-visual-field-dropzone");
+  row.dataset.visualSlot = field.slot;
+  row.title = `Drop a column onto ${field.label}`;
+  row.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    row.classList.add("is-drop-target");
+  });
+  row.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    row.classList.add("is-drop-target");
+  });
+  row.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget || !row.contains(event.relatedTarget)) row.classList.remove("is-drop-target");
+  });
+  row.addEventListener("drop", (event) => {
+    event.preventDefault();
+    row.classList.remove("is-drop-target");
+    const columnId = event.dataTransfer?.getData("application/x-stateframe-column-id") || event.dataTransfer?.getData("text/plain") || "";
+    if (!assignVisualColumnToField(payload, definition, field, columnId, visualState, setVisualizerState)) {
+      row.classList.add("is-drop-rejected");
+      window.setTimeout(() => row.classList.remove("is-drop-rejected"), 450);
+      return;
+    }
+    row.classList.add("is-drop-applied");
+    window.setTimeout(() => row.classList.remove("is-drop-applied"), 450);
+  });
+}
+
+let activeVisualPointerDropZone = null;
+
+function visualDropZoneFromPoint(x, y) {
+  const element = document.elementFromPoint(x, y);
+  return element?.closest?.(".stateframe-web-visual-field-dropzone") || null;
+}
+
+function setActiveVisualPointerDropZone(zone) {
+  if (activeVisualPointerDropZone === zone) return;
+  if (activeVisualPointerDropZone) activeVisualPointerDropZone.classList.remove("is-drop-target");
+  activeVisualPointerDropZone = zone;
+  if (activeVisualPointerDropZone) activeVisualPointerDropZone.classList.add("is-drop-target");
+}
+
+function pulseVisualDropZone(zone, className) {
+  if (!zone) return;
+  zone.classList.add(className);
+  window.setTimeout(() => zone.classList.remove(className), 450);
+}
+
+function applyVisualColumnDrop(payload, definition, columnId, zone, visualState, setVisualizerState) {
+  const slot = zone?.dataset?.visualSlot;
+  const field = (definition.fields || []).find((item) => item.slot === slot);
+  if (!field || !assignVisualColumnToField(payload, definition, field, columnId, visualState, setVisualizerState)) {
+    pulseVisualDropZone(zone, "is-drop-rejected");
+    return false;
+  }
+  pulseVisualDropZone(zone, "is-drop-applied");
+  return true;
+}
+
+function wireVisualColumnPointerDrag(item, column, payload, definition, visualState, setVisualizerState) {
+  item.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target?.closest?.("button,input,select,textarea,a")) return;
+    let start = { x: event.clientX, y: event.clientY, dragging: false };
+    const handleMove = (moveEvent) => {
+      if (!start) return;
+      const distance = Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y);
+      if (!start.dragging && distance < 6) return;
+      if (!start.dragging) {
+        start.dragging = true;
+        item.classList.add("is-dragging");
+      }
+      moveEvent.preventDefault();
+      setActiveVisualPointerDropZone(visualDropZoneFromPoint(moveEvent.clientX, moveEvent.clientY));
+    };
+    const finish = (upEvent) => {
+      document.removeEventListener("pointermove", handleMove);
+      document.removeEventListener("pointercancel", cancel);
+      const zone = start?.dragging ? visualDropZoneFromPoint(upEvent.clientX, upEvent.clientY) || activeVisualPointerDropZone : null;
+      if (start?.dragging) {
+        upEvent.preventDefault();
+        applyVisualColumnDrop(payload, definition, column.id, zone, visualState, setVisualizerState);
+      }
+      item.classList.remove("is-dragging");
+      setActiveVisualPointerDropZone(null);
+      start = null;
+      if (item.releasePointerCapture && upEvent.pointerId !== undefined) {
+        try {
+          item.releasePointerCapture(upEvent.pointerId);
+        } catch (_error) {
+          // Pointer capture can already be released when native drag starts.
+        }
+      }
+    };
+    const cancel = () => {
+      document.removeEventListener("pointermove", handleMove);
+      document.removeEventListener("pointerup", finish);
+      item.classList.remove("is-dragging");
+      setActiveVisualPointerDropZone(null);
+      start = null;
+    };
+    document.addEventListener("pointermove", handleMove);
+    document.addEventListener("pointerup", finish, { once: true });
+    document.addEventListener("pointercancel", cancel, { once: true });
+    if (item.setPointerCapture && event.pointerId !== undefined) {
+      try {
+        item.setPointerCapture(event.pointerId);
+      } catch (_error) {
+        // Some embedded notebook surfaces do not allow capture from output DOM.
+      }
+    }
+  });
+}
+
 function renderVisualMultiField(payload, definition, field, visualState, setVisualizerState) {
   const targetId = definition.id === "target_association" && field.slot === "features" ? visualState.fields?.target : null;
   const current = (Array.isArray(visualState.fields?.[field.slot]) ? visualState.fields[field.slot] : []).filter((value) => value !== targetId);
   const currentSet = new Set(current);
-  const candidates = visualCandidateColumns(payload, definition, field).filter((column) => column.id !== targetId);
+  const candidates = visualCandidateColumnsForField(payload, definition, field, visualState);
   const panel = document.createElement("div");
   panel.className = "stateframe-web-visual-multi";
   const toolbar = document.createElement("div");
@@ -4746,10 +4894,24 @@ function updateVisualFieldOption(slot, patch, visualState, setVisualizerState) {
 function renderVisualColumns(payload, definition, visualState, setVisualizerState) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-column-list";
-  const assignable = (definition.fields || []).filter((field) => !field.multiple).slice(0, 4);
+  const assignable = (definition.fields || []).slice(0, 4);
   for (const column of payload.columns || []) {
     const item = document.createElement("div");
     item.className = "stateframe-web-visual-column";
+    item.draggable = true;
+    item.dataset.visualColumnId = column.id;
+    item.title = "Drag to a visual field";
+    item.addEventListener("dragstart", (event) => {
+      item.classList.add("is-dragging");
+      if (!event.dataTransfer) return;
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("application/x-stateframe-column-id", column.id);
+      event.dataTransfer.setData("text/plain", column.id);
+    });
+    item.addEventListener("dragend", () => {
+      item.classList.remove("is-dragging");
+    });
+    wireVisualColumnPointerDrag(item, column, payload, definition, visualState, setVisualizerState);
     const name = document.createElement("div");
     name.className = "stateframe-web-visual-column-name";
     name.textContent = column.display_name || column.source_name || column.id;
@@ -4759,11 +4921,10 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     const actions = document.createElement("div");
     actions.className = "stateframe-web-action-row";
     for (const field of assignable) {
+      const canAssign = visualFieldAcceptsColumn(payload, definition, field, column.id, visualState);
       const assign = tinyButton(field.label, () => {
-        const next = { ...(visualState.fields || {}) };
-        next[field.slot] = column.id;
-        setVisualizerState({ fields: next });
-      }, false, `Use as ${field.label}`);
+        assignVisualColumnToField(payload, definition, field, column.id, visualState, setVisualizerState);
+      }, !canAssign, `Use as ${field.label}`);
       actions.appendChild(assign);
     }
     item.append(name, meta, actions);

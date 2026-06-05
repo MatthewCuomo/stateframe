@@ -2913,6 +2913,12 @@
   color: #0f766e;
 }
 
+.stateframe-web-visual-column-tag.is-target-ready {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
+}
+
 .stateframe-web-visual-filter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(100px, 0.8fr) minmax(0, 1fr) minmax(0, 1fr) auto;

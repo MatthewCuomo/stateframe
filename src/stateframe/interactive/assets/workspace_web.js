@@ -884,8 +884,8 @@ function normalizeVisualizerState(raw, payload) {
     controlMode: ["basic", "advanced", "expert"].includes(raw?.controlMode) ? raw.controlMode : "basic",
     controlQuery: raw?.controlQuery || "",
     columnQuery: raw?.columnQuery || "",
-    columnTypeFilter: ["all", "numeric", "categorical", "date", "targets", "assigned", "available"].includes(raw?.columnTypeFilter) ? raw.columnTypeFilter : "all",
-    columnSort: ["original", "name", "type", "unique_desc", "missing_desc", "assigned_first"].includes(raw?.columnSort) ? raw.columnSort : "original",
+    columnTypeFilter: ["all", "numeric", "categorical", "date", "targets", "target_ready", "assigned", "available"].includes(raw?.columnTypeFilter) ? raw.columnTypeFilter : "all",
+    columnSort: ["original", "name", "type", "unique_desc", "missing_desc", "assigned_first", "target_relevance"].includes(raw?.columnSort) ? raw.columnSort : "original",
     title: raw?.title || "",
     note: raw?.note || "",
     collapsedPanels: {
@@ -5215,10 +5215,11 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
   const assignedSet = visualAssignedColumnIds(visualState);
   const targetSet = visualTargetColumnIds(visualState);
   const acceptanceByColumn = visualColumnAcceptanceMap(payload, definition, visualState);
+  const targetScoreByColumn = visualTargetRelevanceScores(payload, visualState);
   const allEntries = (payload.columns || []).map((column, index) => ({ column, index }));
   const visibleEntries = visualSortColumnEntries(allEntries
     .filter(({ column }) => visualColumnMatchesQuery(column, queryValue))
-    .filter(({ column }) => visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn)), sortMode, assignedSet);
+    .filter(({ column }) => visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn, targetScoreByColumn)), sortMode, assignedSet, targetScoreByColumn);
 
   const tools = document.createElement("div");
   tools.className = "stateframe-web-visual-column-tools";
@@ -5242,6 +5243,7 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     ["categorical", "Categorical"],
     ["date", "Date"],
     ["targets", "Targets"],
+    ["target_ready", "Target-ready"],
     ["assigned", "Assigned"],
     ["available", "Available"],
   ]) {
@@ -5264,6 +5266,7 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     ["unique_desc", "Unique high"],
     ["missing_desc", "Missing high"],
     ["assigned_first", "Assigned first"],
+    ["target_relevance", "Target relevance"],
   ]) {
     const option = document.createElement("option");
     option.value = value;
@@ -5292,6 +5295,7 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     const acceptedFields = acceptanceByColumn.get(column.id) || [];
     const acceptedSlots = new Set(acceptedFields.map((field) => field.slot));
     const isTarget = targetSet.has(column.id);
+    const targetScore = targetScoreByColumn.get(column.id) || null;
     const item = document.createElement("div");
     item.className = "stateframe-web-visual-column";
     if (assignedLabels.length) item.classList.add("is-assigned");
@@ -5323,6 +5327,9 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     const tags = document.createElement("div");
     tags.className = "stateframe-web-visual-column-tags";
     if (isTarget) tags.appendChild(textSpan("Target", "stateframe-web-visual-column-tag is-target"));
+    if (targetScore && !isTarget) {
+      tags.appendChild(textSpan(`Against: ${targetScore.targetLabel}`, "stateframe-web-visual-column-tag is-target-ready"));
+    }
     if (assignedLabels.length) tags.appendChild(textSpan(`Used: ${assignedLabels.join(", ")}`, "stateframe-web-visual-column-tag is-assigned"));
     if (acceptedFields.length) {
       const labels = acceptedFields.slice(0, 3).map((field) => field.label).join(", ");
@@ -5345,7 +5352,12 @@ function renderVisualColumns(payload, definition, visualState, setVisualizerStat
     item.appendChild(actions);
     wrap.appendChild(item);
   }
-  shell.appendChild(wrap.children.length ? wrap : empty("No columns match the current shelf controls."));
+  const emptyMessage = filterMode === "target_ready" && !targetSet.size
+    ? "Mark a target column to see target-ready comparison fields."
+    : filterMode === "target_ready"
+      ? "No target-ready columns match the current shelf controls."
+      : "No columns match the current shelf controls.";
+  shell.appendChild(wrap.children.length ? wrap : empty(emptyMessage));
   return shell;
 }
 
@@ -5685,6 +5697,99 @@ function visualTargetPreferredRecipe(payload, targetColumn, featureColumn) {
   return recipes.find((recipe) => recipe?.kind === "target_profile") || recipes[0] || null;
 }
 
+function visualTargetRelevanceScores(payload, visualState) {
+  const scores = new Map();
+  const targets = visualTargetColumns(payload, visualState);
+  if (!targets.length) return scores;
+  const targetIds = new Set(targets.map((column) => column.id));
+  for (const column of payload.columns || []) {
+    if (!column?.id) continue;
+    if (targetIds.has(column.id)) {
+      scores.set(column.id, {
+        score: 1000,
+        targetId: column.id,
+        targetLabel: visualColumnDisplayName(column),
+        modeLabel: "target",
+        recipeCount: 0,
+      });
+      continue;
+    }
+    let best = null;
+    for (const target of targets) {
+      const relation = visualTargetRelationScore(payload, target, column);
+      if (!relation) continue;
+      const candidate = {
+        ...relation,
+        targetId: target.id,
+        targetLabel: visualColumnDisplayName(target),
+      };
+      if (!best || candidate.score > best.score) best = candidate;
+    }
+    if (best) scores.set(column.id, best);
+  }
+  return scores;
+}
+
+function visualTargetRelationScore(payload, targetColumn, featureColumn) {
+  if (!targetColumn?.id || !featureColumn?.id || targetColumn.id === featureColumn.id) return null;
+  if (visualColumnLooksIdentifier(targetColumn) || visualColumnLooksIdentifier(featureColumn)) return null;
+  const targetNumeric = visualColumnLooksNumeric(targetColumn);
+  const targetCategorical = visualColumnLooksCategorical(targetColumn);
+  const featureNumeric = visualColumnLooksNumeric(featureColumn);
+  const featureCategorical = visualColumnLooksCategorical(featureColumn);
+  const featureDate = visualColumnLooksDate(featureColumn);
+  const modes = [];
+  let score = 0;
+  if (targetNumeric && featureDate && visualDefinitionById(payload, "line")) {
+    score += 95;
+    modes.push("trend");
+  }
+  if (targetNumeric && featureNumeric && visualDefinitionById(payload, "scatter")) {
+    score += 85;
+    modes.push("compare");
+  }
+  if ((targetNumeric || targetCategorical)
+      && (featureNumeric || featureCategorical || featureDate)
+      && visualDefinitionById(payload, "target_profile")) {
+    score += 70;
+    modes.push("profile");
+  }
+  if ((targetNumeric || targetCategorical)
+      && (featureNumeric || featureCategorical)
+      && visualDefinitionById(payload, "target_association")) {
+    score += 45;
+    modes.push("association");
+  }
+  if (!modes.length) return null;
+  score += visualTargetFeatureQualityScore(featureColumn);
+  return {
+    score,
+    modeLabel: modes[0],
+    recipeCount: modes.length,
+  };
+}
+
+function visualTargetFeatureQualityScore(column) {
+  if (!column?.id || visualColumnLooksIdentifier(column)) return -100;
+  let score = 0;
+  const distinct = visualColumnDistinctCount(column);
+  if (visualColumnLooksDate(column)) score += 12;
+  if (visualColumnLooksNumeric(column)) score += 10 + clampNumber(visualNumericDimensionScore(column), 0, -8, 12);
+  if (visualColumnLooksCategorical(column)) {
+    if (Number.isFinite(distinct)) {
+      if (distinct >= 2 && distinct <= 16) score += 18;
+      else if (distinct <= 40) score += 12;
+      else if (distinct <= 80) score += 4;
+      else score -= 14;
+    } else {
+      score += 4;
+    }
+  }
+  const missingRatio = visualColumnMissingRatio(column);
+  if (Number.isFinite(missingRatio) && missingRatio > 0) score -= Math.min(20, missingRatio * 20);
+  return score;
+}
+
 function visualSuggestionFromRecipe(recipe, reason) {
   return {
     title: recipe.title,
@@ -5746,17 +5851,18 @@ function visualColumnMatchesQuery(column, query) {
   ].some((value) => String(value || "").toLowerCase().includes(needle));
 }
 
-function visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn) {
+function visualColumnMatchesTypeFilter(column, filterMode, assignedSet, targetSet, acceptanceByColumn, targetScoreByColumn = new Map()) {
   if (filterMode === "numeric") return visualColumnLooksNumeric(column);
   if (filterMode === "categorical") return visualColumnLooksCategorical(column);
   if (filterMode === "date") return visualColumnLooksDate(column);
   if (filterMode === "targets") return targetSet.has(column.id);
+  if (filterMode === "target_ready") return !targetSet.has(column.id) && Boolean(targetScoreByColumn.get(column.id));
   if (filterMode === "assigned") return assignedSet.has(column.id);
   if (filterMode === "available") return Boolean((acceptanceByColumn.get(column.id) || []).length);
   return true;
 }
 
-function visualSortColumnEntries(entries, sortMode, assignedSet) {
+function visualSortColumnEntries(entries, sortMode, assignedSet, targetScoreByColumn = new Map()) {
   const sorted = [...entries];
   sorted.sort((left, right) => {
     if (sortMode === "name") return visualColumnDisplayName(left.column).localeCompare(visualColumnDisplayName(right.column)) || left.index - right.index;
@@ -5770,9 +5876,21 @@ function visualSortColumnEntries(entries, sortMode, assignedSet) {
       const assignedCompare = Number(assignedSet.has(right.column.id)) - Number(assignedSet.has(left.column.id));
       return assignedCompare || left.index - right.index;
     }
+    if (sortMode === "target_relevance") {
+      const targetCompare = compareNumbersDesc(
+        visualTargetSortScore(left.column, assignedSet, targetScoreByColumn),
+        visualTargetSortScore(right.column, assignedSet, targetScoreByColumn),
+      );
+      return targetCompare || left.index - right.index;
+    }
     return left.index - right.index;
   });
   return sorted;
+}
+
+function visualTargetSortScore(column, assignedSet, targetScoreByColumn) {
+  const score = Number(targetScoreByColumn.get(column.id)?.score || 0);
+  return score + (assignedSet.has(column.id) ? 5 : 0);
 }
 
 function visualColumnTypeRank(column) {

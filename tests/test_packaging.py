@@ -32,6 +32,10 @@ def test_interactive_assets_are_present():
     assert "visual-column-query" in workspace_js
     assert "visualColumnQuickRecipes" in workspace_js
     assert "visualTargetColumnIds" in workspace_js
+    assert "visualTargetRelevanceScores" in workspace_js
+    assert "target_ready" in workspace_js
+    assert "Target relevance" in workspace_js
+    assert "Mark a target column to see target-ready comparison fields." in workspace_js
     assert "Mark Target" in workspace_js
     assert "Visual Health" in workspace_js
     assert "color_top_n" in workspace_js
@@ -45,6 +49,7 @@ def test_interactive_assets_are_present():
     assert "stateframe-web-visual-column-tools" in workspace_css
     assert "stateframe-web-visual-column-quick-actions" in workspace_css
     assert "stateframe-web-visual-target-bar" in workspace_css
+    assert "stateframe-web-visual-column-tag.is-target-ready" in workspace_css
 
 
 def test_release_scaffolding_exists():

@@ -28,6 +28,9 @@ def test_interactive_assets_are_present():
     assert "renderVisualChannelGuardrail" in workspace_js
     assert "renderVisualHealthPanel" in workspace_js
     assert "visualHealthChecks" in workspace_js
+    assert "renderGuidance" in workspace_js
+    assert "stateframe guidance" in workspace_js
+    assert "Guidance" in workspace_js
     assert "visualColumnMatchesQuery" in workspace_js
     assert "visual-column-query" in workspace_js
     assert "visualColumnQuickRecipes" in workspace_js
@@ -46,6 +49,8 @@ def test_interactive_assets_are_present():
     assert "item.draggable = true" in workspace_js
     assert "is-drop-target" in workspace_css
     assert "stateframe-web-visual-health" in workspace_css
+    assert "stateframe-web-guidance" in workspace_css
+    assert "stateframe-web-guidance-card-grid" in workspace_css
     assert "stateframe-web-visual-column-tools" in workspace_css
     assert "stateframe-web-visual-column-quick-actions" in workspace_css
     assert "stateframe-web-visual-target-bar" in workspace_css

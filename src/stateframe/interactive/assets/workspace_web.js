@@ -470,6 +470,24 @@ function render({ model, el, signal }) {
       return;
     }
 
+    if (state.viewMode === "guidance") {
+      root.appendChild(renderGuidance(
+        payload,
+        selected,
+        selectedEntry,
+        state,
+        setState,
+        sendCommand,
+        commandStatus,
+        openSelectedViewer,
+        openSelectedVisualizer,
+        openSelectedCleaning,
+        openSelectedModeling,
+      ));
+      queueRestoreUiState(root, ui);
+      return;
+    }
+
     root.appendChild(renderStats(payload));
     const body = document.createElement("div");
     body.className = "stateframe-web-body";
@@ -510,7 +528,7 @@ function normalizeState(raw, payload) {
     ? raw.deleteEntryIds.filter((id) => entryIds.has(id) && id !== (selectedTree?.tree_detail?.root_entry_id || selectedTree?.root_entry_id))
     : [];
   const sorts = new Set(["updated", "name", "entries", "states"]);
-  const modes = new Set(["web", "viewer", "visualizer", "cleaning", "modeling", "get_data", "files", "leaf"]);
+  const modes = new Set(["web", "viewer", "visualizer", "cleaning", "modeling", "get_data", "files", "leaf", "guidance"]);
   const tabs = new Set(["files", "query", "connections"]);
   const sourceIds = new Set((payload.sources || []).map((source) => source.id));
   const connectionIds = new Set((payload.source_connections || []).map((source) => source.id));
@@ -1022,7 +1040,9 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
             ? "stateframe get data"
             : state.viewMode === "leaf"
               ? "stateframe leaf"
-              : payload.title || "stateframe workspace web";
+              : state.viewMode === "guidance"
+                ? "stateframe guidance"
+                : payload.title || "stateframe workspace web";
   const subtitle = document.createElement("div");
   subtitle.className = "stateframe-web-subtitle";
   const workspaceName = payload.workspace?.name || payload.settings?.name || "workspace";
@@ -1035,8 +1055,10 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
         : state.viewMode === "modeling"
           ? statusText(commandStatus) || "Preview feature prep, encoding, imputation, and scaling as a branch"
           : state.viewMode === "get_data" || state.viewMode === "files"
-            ? statusText(commandStatus) || `${workspaceName} / ${files.current_path || "."}`
-            : statusText(commandStatus) || `${workspaceName} / ${payload.settings?.root || ""}`;
+          ? statusText(commandStatus) || `${workspaceName} / ${files.current_path || "."}`
+            : state.viewMode === "guidance"
+              ? statusText(commandStatus) || "Use the web workspace, viewer, visualizer, cleaning, modeling, and data intake surfaces"
+              : statusText(commandStatus) || `${workspaceName} / ${payload.settings?.root || ""}`;
   titleGroup.append(title, subtitle);
 
   const controls = document.createElement("div");
@@ -1097,6 +1119,13 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
       button("Back", () => setState({ viewMode: "web" })),
       up,
       button("Refresh", () => sendCommand("browse_files", { path: files.current_path || "." })),
+    );
+  } else if (state.viewMode === "guidance") {
+    controls.classList.add("is-viewer");
+    controls.append(
+      button("Back", () => setState({ viewMode: "web" })),
+      button("Get Data", () => sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" })),
+      button("Refresh", () => sendCommand("refresh")),
     );
   } else {
     const canDelete = payload.view?.launch_mode !== "single_profile";
@@ -1161,6 +1190,7 @@ function renderToolbar(payload, state, setState, sendCommand, commandStatus, set
         button("Model", () => sendCommand("open_modeling", { height: payload.view?.height || 640, maxRows: 500 })),
         button("Visualizer", () => sendCommand("open_visualizer", { height: payload.view?.height || 640, maxRows: 500 })),
         button("Get Data", () => sendCommand("browse_files", { path: files.current_path || ".", viewMode: "get_data" })),
+        button("Guidance", () => setState({ viewMode: "guidance" })),
       );
       if (canDelete) controls.append(button("Delete Mode", () => setState({ deleteMode: true, deleteTreeIds: [], deleteEntryIds: [] })));
       controls.append(button("Refresh", () => sendCommand("refresh")));
@@ -1207,6 +1237,249 @@ function statCard(label, value) {
   labelEl.textContent = label;
   card.append(valueEl, labelEl);
   return card;
+}
+
+function renderGuidance(payload, tree, selectedEntry, state, setState, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
+  const shell = document.createElement("main");
+  shell.className = "stateframe-web-guidance";
+  shell.dataset.scrollKey = "web-guidance";
+
+  const intro = document.createElement("div");
+  intro.className = "stateframe-web-guidance-intro";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-guidance-title";
+  title.textContent = "Use stateframe as a guided dataframe lab";
+  const body = document.createElement("div");
+  body.className = "stateframe-web-guidance-copy";
+  body.textContent = "Pick a state, inspect it, branch it when the dataframe changes, and save leaves when the output is an analysis artifact.";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-guidance-meta";
+  meta.append(
+    pill(`${formatInt(payload.trees?.length || 0)} trees`),
+    pill(`${formatInt(sum(payload.trees || [], "entry_count"))} entries`),
+    pill(`${formatInt(sum(payload.trees || [], "state_count"))} states`),
+  );
+  intro.append(title, body, meta);
+  shell.appendChild(intro);
+
+  shell.appendChild(section("Current Selection", renderGuidanceCurrentSelection(
+    tree,
+    selectedEntry,
+    state,
+    setState,
+    sendCommand,
+    commandStatus,
+    openSelectedViewer,
+    openSelectedVisualizer,
+    openSelectedCleaning,
+    openSelectedModeling,
+  )));
+  shell.appendChild(section("Core Workflow", renderGuidanceFlow()));
+  shell.appendChild(section("Choose The Right Surface", renderGuidanceDecisions(
+    tree,
+    selectedEntry,
+    setState,
+    sendCommand,
+    commandStatus,
+    openSelectedViewer,
+    openSelectedVisualizer,
+    openSelectedCleaning,
+    openSelectedModeling,
+  )));
+  shell.appendChild(section("Practice Loop", renderGuidancePracticeLoop()));
+  shell.appendChild(section("Vocabulary", renderGuidanceGlossary()));
+  shell.appendChild(section("Notebook Handles", renderGuidanceNotebookReference()));
+  return shell;
+}
+
+function renderGuidanceCurrentSelection(tree, selectedEntry, state, setState, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-guidance-current";
+  const canOpen = canOpenEntryState(tree, selectedEntry);
+  const outputArtifacts = entryOutputArtifacts(selectedEntry);
+  const entryType = !selectedEntry
+    ? "no entry"
+    : (isOutputEntry(selectedEntry) || outputArtifacts.length)
+      ? "output leaf"
+      : canOpen
+        ? "openable dataframe state"
+        : selectedEntry.has_state
+          ? "metadata dataframe state"
+          : "metadata entry";
+  const summary = document.createElement("div");
+  summary.className = "stateframe-web-guidance-current-main";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-guidance-current-title";
+  title.textContent = selectedEntry?.title || selectedEntry?.operation || selectedEntry?.id || "No state selected";
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-guidance-current-meta";
+  meta.textContent = tree
+    ? `${tree.tree_name || tree.dataset_name || tree.tree_id} / ${selectedEntry?.kind || "entry"} / ${entryType}`
+    : "Select or scan data to start a stateframe workflow.";
+  summary.append(title, meta);
+  const actions = document.createElement("div");
+  actions.className = "stateframe-web-guidance-actions";
+  actions.append(
+    guidanceButton("Open Workspace", () => setState({ viewMode: "web" })),
+    guidanceButton("Open Viewer", openSelectedViewer, !canOpen, "Select a dataframe state that can be pulled or replayed."),
+    guidanceButton("Visualize", openSelectedVisualizer, !canOpen, "Select a dataframe state that can be pulled or replayed."),
+    guidanceButton("Clean", openSelectedCleaning, !canOpen, "Select a dataframe state that can be pulled or replayed."),
+    guidanceButton("Model", openSelectedModeling, !canOpen, "Select a dataframe state that can be pulled or replayed."),
+    guidanceButton("Get Data", () => sendCommand("browse_files", { path: ".", viewMode: "get_data" }), commandStatus?.status === "loading"),
+  );
+  wrap.append(summary, actions);
+  return wrap;
+}
+
+function renderGuidanceFlow() {
+  const flow = document.createElement("div");
+  flow.className = "stateframe-web-guidance-flow";
+  for (const item of [
+    ["Source", "File, query, or dataframe enters the workspace."],
+    ["Scan", "stateframe profiles shape, columns, and source metadata."],
+    ["State", "A concrete dataframe point is available for inspection."],
+    ["Branch", "A saved dataframe change creates a new path."],
+    ["Leaf", "A saved visual, model, note, or report hangs from a state."],
+  ]) {
+    const step = document.createElement("div");
+    step.className = "stateframe-web-guidance-flow-step";
+    step.append(textSpan(item[0], "stateframe-web-guidance-flow-label"), textSpan(item[1], "stateframe-web-guidance-flow-copy"));
+    flow.appendChild(step);
+  }
+  return flow;
+}
+
+function renderGuidanceDecisions(tree, selectedEntry, setState, sendCommand, commandStatus, openSelectedViewer, openSelectedVisualizer, openSelectedCleaning, openSelectedModeling) {
+  const canOpen = canOpenEntryState(tree, selectedEntry);
+  const grid = document.createElement("div");
+  grid.className = "stateframe-web-guidance-card-grid";
+  for (const item of [
+    {
+      title: "I need to understand a table",
+      text: "Open Viewer, scan profiles, rename columns for the current branch, filter rows, then save a branch when the shape is meaningful.",
+      label: "Open Viewer",
+      onClick: openSelectedViewer,
+      disabled: !canOpen,
+    },
+    {
+      title: "I need a chart or saved analysis",
+      text: "Open Visualizer, assign columns, mark targets when you have an outcome, render, then save a leaf.",
+      label: "Visualize",
+      onClick: openSelectedVisualizer,
+      disabled: !canOpen,
+    },
+    {
+      title: "I need a cleaner branch",
+      text: "Open Clean, select the operations you trust, preview the effect, and apply the chosen actions as a new branch.",
+      label: "Clean",
+      onClick: openSelectedCleaning,
+      disabled: !canOpen,
+    },
+    {
+      title: "I need a predictive or explanatory model",
+      text: "Open Model, choose a target, keep feature prep explicit, compare candidates, and save the model leaf when results are worth preserving.",
+      label: "Model",
+      onClick: openSelectedModeling,
+      disabled: !canOpen,
+    },
+    {
+      title: "I need to bring in data",
+      text: "Use Get Data to scan local files or run saved query connections so the source becomes a tracked stateframe tree.",
+      label: "Get Data",
+      onClick: () => sendCommand("browse_files", { path: ".", viewMode: "get_data" }),
+      disabled: commandStatus?.status === "loading",
+    },
+    {
+      title: "I need to orient myself",
+      text: "Return to the workspace tree. Select a branch, read the state summary, then choose the next surface from the selected state.",
+      label: "Workspace",
+      onClick: () => setState({ viewMode: "web" }),
+      disabled: false,
+    },
+  ]) {
+    grid.appendChild(guidanceCard(item));
+  }
+  return grid;
+}
+
+function renderGuidancePracticeLoop() {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-guidance-list";
+  for (const [title, text] of [
+    ["1. Scan and profile", "Start with a raw source. Confirm row count, column count, missingness, distinct values, and obvious identifiers."],
+    ["2. Create a small branch", "Use Viewer or Clean to make one purposeful transformation. Save it with a name that says why it exists."],
+    ["3. Explore segments", "Use Visualizer to compare populations, mark target columns, and save the useful charts as leaves."],
+    ["4. Test an explanation", "Use Model or target-aware visualizations to see which fields explain a target, then compare against domain expectations."],
+    ["5. Preserve the story", "Keep branches for dataframe states and leaves for outputs. The tree should read like a reproducible analysis path."],
+  ]) {
+    wrap.appendChild(guidanceListItem(title, text));
+  }
+  return wrap;
+}
+
+function renderGuidanceGlossary() {
+  const grid = document.createElement("div");
+  grid.className = "stateframe-web-guidance-term-grid";
+  for (const [term, text] of [
+    ["Tree", "One tracked dataset lineage."],
+    ["Entry", "A point in the tree: scan, branch, plot, model, note, or report."],
+    ["State", "A dataframe snapshot or replayable dataframe point."],
+    ["Branch", "A saved transformation that produces a new dataframe state."],
+    ["Leaf", "A saved output artifact attached to a state."],
+    ["Pull", "Load the selected state into a notebook dataframe."],
+    ["Replay", "Rebuild a state from a source plus saved operations."],
+    ["Save Mode", "Keep edits as a branch instead of treating them as temporary viewer state."],
+  ]) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-guidance-term";
+    item.append(textSpan(term, "stateframe-web-guidance-term-name"), textSpan(text, "stateframe-web-guidance-term-copy"));
+    grid.appendChild(item);
+  }
+  return grid;
+}
+
+function renderGuidanceNotebookReference() {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-guidance-reference";
+  wrap.append(
+    codePill("sf.workspace.connect(...)"),
+    codePill("sf.web()"),
+    codePill("web.pull_selected()"),
+    codePill("display(web)"),
+  );
+  const copy = document.createElement("div");
+  copy.className = "stateframe-web-guidance-reference-copy";
+  copy.textContent = "Use the UI to select a state, then pull that state into the notebook when you need Python-level control.";
+  wrap.appendChild(copy);
+  return wrap;
+}
+
+function guidanceCard({ title, text, label, onClick, disabled }) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-guidance-card";
+  const cardTitle = document.createElement("div");
+  cardTitle.className = "stateframe-web-guidance-card-title";
+  cardTitle.textContent = title;
+  const cardText = document.createElement("div");
+  cardText.className = "stateframe-web-guidance-card-text";
+  cardText.textContent = text;
+  card.append(cardTitle, cardText, guidanceButton(label, onClick, disabled));
+  return card;
+}
+
+function guidanceListItem(title, text) {
+  const item = document.createElement("div");
+  item.className = "stateframe-web-guidance-list-item";
+  item.append(textSpan(title, "stateframe-web-guidance-list-title"), textSpan(text, "stateframe-web-guidance-list-copy"));
+  return item;
+}
+
+function guidanceButton(label, onClick, disabled = false, title = "") {
+  const action = button(label, onClick);
+  action.classList.add("is-guidance-action");
+  action.disabled = Boolean(disabled);
+  if (title) action.title = title;
+  return action;
 }
 
 function renderTreeList(trees, selected, state, setState) {
@@ -1892,7 +2165,7 @@ function renderEntryDetail(payload, tree, entry, state, sendCommand, commandStat
   actions.className = "stateframe-web-action-row";
   const outputArtifacts = entryOutputArtifacts(entry);
   const isLeafOutput = isOutputEntry(entry) || outputArtifacts.length > 0;
-  const canOpen = !isLeafOutput && entry.has_state && (entry.has_snapshot || entry.has_ancestor_snapshot || canReplayFromSource(tree, entry) || entry.state?.has_data);
+  const canOpen = canOpenEntryState(tree, entry, outputArtifacts);
   if (!isLeafOutput) {
     const open = button("Open Viewer", openSelectedViewer);
     open.disabled = !canOpen;
@@ -9113,6 +9386,11 @@ function entryKindClasses(entry, prefix) {
 function isOutputEntry(entry) {
   const kind = String(entry?.kind || "").toLowerCase();
   return kind === "plot" || kind === "artifact" || kind === "report" || hasOutputArtifact(entry);
+}
+
+function canOpenEntryState(tree, entry, outputArtifacts = entryOutputArtifacts(entry)) {
+  const isLeafOutput = isOutputEntry(entry) || outputArtifacts.length > 0;
+  return Boolean(!isLeafOutput && entry?.has_state && (entry.has_snapshot || entry.has_ancestor_snapshot || canReplayFromSource(tree, entry) || entry.state?.has_data));
 }
 
 function hasOutputArtifact(entry) {

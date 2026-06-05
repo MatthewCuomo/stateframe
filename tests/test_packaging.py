@@ -31,6 +31,9 @@ def test_interactive_assets_are_present():
     assert "renderGuidance" in workspace_js
     assert "stateframe guidance" in workspace_js
     assert "Guidance" in workspace_js
+    assert "Code Cell Branching" in workspace_js
+    assert "sf.push(" in workspace_js
+    assert "%%sf_cell" in workspace_js
     assert "visualColumnMatchesQuery" in workspace_js
     assert "visual-column-query" in workspace_js
     assert "visualColumnQuickRecipes" in workspace_js
@@ -51,6 +54,8 @@ def test_interactive_assets_are_present():
     assert "stateframe-web-visual-health" in workspace_css
     assert "stateframe-web-guidance" in workspace_css
     assert "stateframe-web-guidance-card-grid" in workspace_css
+    assert "stateframe-web-guidance-code-grid" in workspace_css
+    assert "stateframe-web-guidance-git-map" in workspace_css
     assert "stateframe-web-visual-column-tools" in workspace_css
     assert "stateframe-web-visual-column-quick-actions" in workspace_css
     assert "stateframe-web-visual-target-bar" in workspace_css

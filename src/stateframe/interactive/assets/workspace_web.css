@@ -233,7 +233,8 @@
 .stateframe-web-guidance-term-copy,
 .stateframe-web-guidance-reference-copy,
 .stateframe-web-guidance-current-meta,
-.stateframe-web-guidance-flow-copy {
+.stateframe-web-guidance-flow-copy,
+.stateframe-web-guidance-git-copy {
   color: #475569;
   font-size: 12px;
   font-weight: 650;
@@ -281,10 +282,45 @@
   gap: 8px;
 }
 
+.stateframe-web-guidance-code {
+  display: grid;
+  gap: 10px;
+}
+
+.stateframe-web-guidance-git-map {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stateframe-web-guidance-git-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  background: #eff6ff;
+  padding: 9px;
+}
+
+.stateframe-web-guidance-git-label {
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.stateframe-web-guidance-code-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .stateframe-web-guidance-flow-step,
 .stateframe-web-guidance-card,
 .stateframe-web-guidance-list-item,
-.stateframe-web-guidance-term {
+.stateframe-web-guidance-term,
+.stateframe-web-guidance-code-card {
   display: grid;
   gap: 6px;
   min-width: 0;
@@ -306,6 +342,28 @@
 
 .stateframe-web-guidance-card {
   align-content: start;
+}
+
+.stateframe-web-guidance-code-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.stateframe-web-guidance-code-block {
+  overflow: auto;
+  max-height: 220px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 9px;
+  white-space: pre;
 }
 
 .stateframe-web-button.is-guidance-action {
@@ -3710,6 +3768,8 @@
   .stateframe-web-cleaning-body,
   .stateframe-web-guidance-current,
   .stateframe-web-guidance-flow,
+  .stateframe-web-guidance-git-map,
+  .stateframe-web-guidance-code-grid,
   .stateframe-web-guidance-card-grid,
   .stateframe-web-guidance-list,
   .stateframe-web-guidance-term-grid {

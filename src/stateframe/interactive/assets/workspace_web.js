@@ -1248,10 +1248,10 @@ function renderGuidance(payload, tree, selectedEntry, state, setState, sendComma
   intro.className = "stateframe-web-guidance-intro";
   const title = document.createElement("div");
   title.className = "stateframe-web-guidance-title";
-  title.textContent = "Use stateframe as a guided dataframe lab";
+  title.textContent = "Git for data science, without leaving your notebook";
   const body = document.createElement("div");
   body.className = "stateframe-web-guidance-copy";
-  body.textContent = "Pick a state, inspect it, branch it when the dataframe changes, and save leaves when the output is an analysis artifact.";
+  body.textContent = "Treat every meaningful dataframe as a checkoutable state: scan the root, pull a state into a code cell, push the output, and watch the whole chain appear in the web tree.";
   const meta = document.createElement("div");
   meta.className = "stateframe-web-guidance-meta";
   meta.append(
@@ -1274,6 +1274,7 @@ function renderGuidance(payload, tree, selectedEntry, state, setState, sendComma
     openSelectedCleaning,
     openSelectedModeling,
   )));
+  shell.appendChild(section("Code Cell Branching", renderGuidanceCodeBranching(selectedEntry)));
   shell.appendChild(section("Core Workflow", renderGuidanceFlow()));
   shell.appendChild(section("Choose The Right Surface", renderGuidanceDecisions(
     tree,
@@ -1331,15 +1332,107 @@ function renderGuidanceCurrentSelection(tree, selectedEntry, state, setState, se
   return wrap;
 }
 
+function renderGuidanceCodeBranching(selectedEntry) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-guidance-code";
+  const map = document.createElement("div");
+  map.className = "stateframe-web-guidance-git-map";
+  for (const [label, text] of [
+    ["checkout", "sf.pull(...)"],
+    ["worktree", "ordinary Python cell"],
+    ["commit", "sf.push(...)"],
+    ["history", "web tree"],
+  ]) {
+    const item = document.createElement("div");
+    item.className = "stateframe-web-guidance-git-item";
+    item.append(textSpan(label, "stateframe-web-guidance-git-label"), textSpan(text, "stateframe-web-guidance-git-copy"));
+    map.appendChild(item);
+  }
+  const pull = guidanceSelectedPullCode(selectedEntry);
+  const rootCode = [
+    "scan = sf.scan(df, name=\"analysis root\")",
+    "scan.save_tree()",
+    "sf.save.data(scan, name=\"initial checkpoint\")",
+    "web = sf.web(height=820)",
+    "display(web)",
+  ].join("\n");
+  const pushCode = [
+    `df = ${pull}`,
+    "",
+    "output = df.copy()",
+    "# Your custom pandas code here",
+    "# output = output.assign(new_metric=...)",
+    "",
+    "sf.push(",
+    "    output,",
+    "    name=\"custom branch\",",
+    "    message=\"What changed and why.\",",
+    "    save=True,",
+    ")",
+  ].join("\n");
+  const magicCode = [
+    "%load_ext stateframe",
+    "",
+    "%%sf_cell --name \"custom branch\" --save",
+    `df = ${pull}`,
+    "",
+    "output = df.copy()",
+    "# Your custom code here; stateframe records output as a branch",
+  ].join("\n");
+  const recorderCode = [
+    "custom = sf.branch(web, message=\"What changed and why.\")",
+    "df = custom.input()",
+    "",
+    "output = df.copy()",
+    "# Your custom code here",
+    "",
+    "custom.save_data(output, name=\"custom branch\", code=True)",
+  ].join("\n");
+  const grid = document.createElement("div");
+  grid.className = "stateframe-web-guidance-code-grid";
+  grid.append(
+    guidanceCodeRecipe("Commit the root dataframe", "Start a lineage from an in-memory dataframe and make the root easy to restore.", rootCode),
+    guidanceCodeRecipe("Pull, work, push", "The shortest path: checkout a state, run any custom code, then push the output branch.", pushCode),
+    guidanceCodeRecipe("Capture a whole cell", "Use the cell magic when you want the cell body itself stored with dependency edges.", magicCode),
+    guidanceCodeRecipe("Explicit branch recorder", "Use a recorder when you want a clear parent, message, and code capture in ordinary Python.", recorderCode),
+  );
+  wrap.append(map, grid);
+  return wrap;
+}
+
+function guidanceCodeRecipe(title, description, code) {
+  const card = document.createElement("div");
+  card.className = "stateframe-web-guidance-code-card";
+  const header = document.createElement("div");
+  header.className = "stateframe-web-guidance-code-header";
+  const titleEl = document.createElement("div");
+  titleEl.className = "stateframe-web-guidance-card-title";
+  titleEl.textContent = title;
+  const copy = tinyButton("Copy", () => copyTextToClipboard(code, copy), false, `Copy ${title} code`);
+  header.append(titleEl, copy);
+  const text = document.createElement("div");
+  text.className = "stateframe-web-guidance-card-text";
+  text.textContent = description;
+  const pre = document.createElement("pre");
+  pre.className = "stateframe-web-guidance-code-block";
+  pre.textContent = code;
+  card.append(header, text, pre);
+  return card;
+}
+
+function guidanceSelectedPullCode(selectedEntry) {
+  return selectedEntry?.id ? pullCode(selectedEntry) : "sf.pull()";
+}
+
 function renderGuidanceFlow() {
   const flow = document.createElement("div");
   flow.className = "stateframe-web-guidance-flow";
   for (const item of [
     ["Source", "File, query, or dataframe enters the workspace."],
-    ["Scan", "stateframe profiles shape, columns, and source metadata."],
-    ["State", "A concrete dataframe point is available for inspection."],
-    ["Branch", "A saved dataframe change creates a new path."],
-    ["Leaf", "A saved visual, model, note, or report hangs from a state."],
+    ["Scan", "stateframe profiles shape, columns, source metadata, and the root checkpoint."],
+    ["Pull", "A selected state becomes a normal pandas dataframe in your code cell."],
+    ["Push", "Your custom output becomes the next saved dataframe branch."],
+    ["Leaf", "Plots, notes, models, and reports stay attached to the exact state that made them."],
   ]) {
     const step = document.createElement("div");
     step.className = "stateframe-web-guidance-flow-step";
@@ -1406,11 +1499,11 @@ function renderGuidancePracticeLoop() {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-guidance-list";
   for (const [title, text] of [
-    ["1. Scan and profile", "Start with a raw source. Confirm row count, column count, missingness, distinct values, and obvious identifiers."],
-    ["2. Create a small branch", "Use Viewer or Clean to make one purposeful transformation. Save it with a name that says why it exists."],
-    ["3. Explore segments", "Use Visualizer to compare populations, mark target columns, and save the useful charts as leaves."],
-    ["4. Test an explanation", "Use Model or target-aware visualizations to see which fields explain a target, then compare against domain expectations."],
-    ["5. Preserve the story", "Keep branches for dataframe states and leaves for outputs. The tree should read like a reproducible analysis path."],
+    ["1. Commit the root", "Scan the starting dataframe, save the tree, and optionally save a data checkpoint for fast restore."],
+    ["2. Checkout a state", "Use the web tree or sf.pull(\"entry_id\") to bring exactly one saved state into a code cell."],
+    ["3. Make your custom change", "Write normal pandas, sklearn, Plotly, or domain-specific Python. Keep the output variable explicit."],
+    ["4. Push the result", "Run sf.push(output, name=..., save=True) or use %%sf_cell so the output becomes the next branch."],
+    ["5. Keep the story readable", "Use names and messages like commit messages. The web tree should explain what changed and why."],
   ]) {
     wrap.appendChild(guidanceListItem(title, text));
   }
@@ -1423,10 +1516,11 @@ function renderGuidanceGlossary() {
   for (const [term, text] of [
     ["Tree", "One tracked dataset lineage."],
     ["Entry", "A point in the tree: scan, branch, plot, model, note, or report."],
-    ["State", "A dataframe snapshot or replayable dataframe point."],
-    ["Branch", "A saved transformation that produces a new dataframe state."],
+    ["State", "A dataframe snapshot or replayable dataframe point you can pull back into Python."],
+    ["Branch", "A saved transformation that produces a new dataframe state, like a notebook commit."],
     ["Leaf", "A saved output artifact attached to a state."],
-    ["Pull", "Load the selected state into a notebook dataframe."],
+    ["Pull", "Checkout a selected state into a notebook dataframe."],
+    ["Push", "Record a custom dataframe, plot, or report as the next tree entry."],
     ["Replay", "Rebuild a state from a source plus saved operations."],
     ["Save Mode", "Keep edits as a branch instead of treating them as temporary viewer state."],
   ]) {

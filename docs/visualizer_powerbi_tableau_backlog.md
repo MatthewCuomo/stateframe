@@ -8,6 +8,8 @@ This backlog tracks the gap between the current stateframe visualizer and the ki
 - Draggable columns: let users drag column cards into compatible visual roles.
 - Shared assignment behavior: use the same assignment rules for dropdowns, quick buttons, and drag/drop.
 - Compatibility gating: disable quick assignment actions when a column does not fit the target role.
+- Channel rollups: add Color and Facet top-N controls so overloaded legends or facet grids can be grouped or filtered without changing the X axis.
+- Field-well quick actions: expose clear, rollup, legend, and sampling actions directly where the field is assigned.
 
 ## Near-Term Product Improvements
 
@@ -23,13 +25,13 @@ This backlog tracks the gap between the current stateframe visualizer and the ki
 - Calculated fields: add UI for bins, date parts, ratios, percent of total, rolling metrics, and conditional groupings.
 - Parameter controls: expose user-adjustable thresholds, top N limits, measure selectors, and reference lines.
 - Visual themes: reusable presets for axes, labels, color palettes, gridlines, legends, and density.
-- Performance controls: show row counts, sampling mode, aggregation level, and render cost before expensive visuals run.
+- Performance controls: show row counts, sampling mode, aggregation level, and render cost before expensive visuals run. Basic sampling controls are now available in the field well, but pre-render cost estimates are still needed.
 - Query summary: display a compact trace of filters, grouping, aggregation, sampling, and visual encoding decisions.
 - Keyboard flow: add command palette actions for assign field, clear shelf, switch visual, save view, and open value overview.
 
 ## Deeper Analysis Gaps To Keep Testing
 
-- High-cardinality categories need better default rollups, search, bucketing, and "other" handling.
+- High-cardinality categories need search, reusable bucketing, and smarter automatic "other" recommendations.
 - Numeric fields need richer filter controls: range sliders, quantile brackets, null handling, outlier clipping, and relative comparisons.
 - Date fields need calendar-aware bucketing, missing-period handling, fiscal periods, and rolling windows.
 - Hierarchical fields need reusable drill-down paths and breadcrumb state.

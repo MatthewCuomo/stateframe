@@ -2572,6 +2572,39 @@
   gap: 6px;
 }
 
+.stateframe-web-visual-field-actions,
+.stateframe-web-visual-channel-guardrail {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-field-actions .stateframe-web-button {
+  justify-self: start;
+}
+
+.stateframe-web-visual-channel-guardrail {
+  grid-column: 1 / -1;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 6px;
+}
+
+.stateframe-web-visual-channel-guardrail.is-warning {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.stateframe-web-visual-channel-meta {
+  overflow: hidden;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .stateframe-web-visual-field-control {
   display: grid;
   gap: 4px;

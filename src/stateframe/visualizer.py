@@ -881,7 +881,7 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
     error_x = _field_value(fields.get("error_x"))
     error_y = _field_value(fields.get("error_y"))
     hover = _field_values(fields.get("hover"))
-    data = _apply_data_options(data, x=x, y=y, options=options)
+    data = _apply_data_options(data, x=x, y=y, color=color, facet=facet, facet_row=facet_row, options=options)
     layout_data = data
     layout_x = x
     layout_y = y
@@ -1314,6 +1314,9 @@ def _apply_data_options(
     x: str | None,
     y: str | None,
     options: dict[str, Any],
+    color: str | None = None,
+    facet: str | None = None,
+    facet_row: str | None = None,
 ) -> pd.DataFrame:
     result = data.copy()
     result = _filter_axis_range(
@@ -1334,6 +1337,9 @@ def _apply_data_options(
     result = _bin_numeric_axis(result, x, options)
     result = _label_missing_category(result, x, options)
     result = _group_top_categories(result, x, options)
+    result = _apply_channel_category_options(result, color, options, prefix="color")
+    result = _apply_channel_category_options(result, facet, options, prefix="facet")
+    result = _apply_channel_category_options(result, facet_row, options, prefix="facet")
     if options.get("dedupe_rows"):
         result = result.drop_duplicates()
     sample_rows = _int_option(options.get("sample_rows"), 0)
@@ -1343,6 +1349,30 @@ def _apply_data_options(
         else:
             result = result.sample(n=sample_rows, random_state=_int_option(options.get("sample_seed"), 42))
     return _sort_visual_data(result, x=x, y=y, options=options)
+
+
+def _apply_channel_category_options(
+    data: pd.DataFrame,
+    column: str | None,
+    options: dict[str, Any],
+    *,
+    prefix: str,
+) -> pd.DataFrame:
+    if not column or column not in data.columns:
+        return data
+    top_n = _int_option(options.get(f"{prefix}_top_n"), 0)
+    result = _label_missing_category(data, column, options)
+    if top_n <= 0:
+        return result
+    channel_options = {
+        **options,
+        "top_n": top_n,
+        "top_n_direction": options.get(f"{prefix}_top_n_direction") or options.get("top_n_direction") or "top",
+        "top_n_mode": options.get(f"{prefix}_top_n_mode") or "other",
+        "other_label": options.get(f"{prefix}_other_label") or options.get("other_label") or "Other",
+    }
+    result = _group_top_categories(result, column, channel_options)
+    return _top_n(result, column, channel_options)
 
 
 def _prepare_xy_aggregation(
@@ -3873,6 +3903,8 @@ def _control_level(control_id: str) -> str:
         "aggregation",
         "value_transform",
         "top_n",
+        "color_top_n",
+        "facet_top_n",
         "date_bucket",
         "sort_by",
         "sort_x",
@@ -4035,6 +4067,26 @@ _COMMON_GROUPS = [
                 ("other", "Group others"),
             ]),
             _control("other_label", "Other label", "text", default="Other"),
+            _control("color_top_n", "Color top N", "number", default=0),
+            _control("color_top_n_direction", "Color top/bottom", "select", default="top", choices=[
+                ("top", "Top"),
+                ("bottom", "Bottom"),
+            ]),
+            _control("color_top_n_mode", "Color top N mode", "select", default="other", choices=[
+                ("filter", "Filter others out"),
+                ("other", "Group others"),
+            ]),
+            _control("color_other_label", "Color other label", "text", default="Other"),
+            _control("facet_top_n", "Facet top N", "number", default=0),
+            _control("facet_top_n_direction", "Facet top/bottom", "select", default="top", choices=[
+                ("top", "Top"),
+                ("bottom", "Bottom"),
+            ]),
+            _control("facet_top_n_mode", "Facet top N mode", "select", default="other", choices=[
+                ("filter", "Filter others out"),
+                ("other", "Group others"),
+            ]),
+            _control("facet_other_label", "Facet other label", "text", default="Other"),
             _control("include_missing_category", "Show missing category", "checkbox", default=False),
             _control("missing_category_label", "Missing label", "text", default="Missing"),
             _control("dedupe_rows", "Dedupe rows", "checkbox", default=False),

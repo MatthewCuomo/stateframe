@@ -25,6 +25,9 @@ def test_interactive_assets_are_present():
     assert "plotly_json" in workspace_js
     assert "assignVisualColumnToField" in workspace_js
     assert "wireVisualColumnPointerDrag" in workspace_js
+    assert "renderVisualChannelGuardrail" in workspace_js
+    assert "color_top_n" in workspace_js
+    assert "Sample 10k" in workspace_js
     assert "document.elementFromPoint" in workspace_js
     assert "application/x-stateframe-column-id" in workspace_js
     assert "stateframe-web-visual-field-dropzone" in workspace_js

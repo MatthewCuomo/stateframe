@@ -4356,6 +4356,9 @@ function renderVisualRecipe(payload, visualState) {
   }
   const bucketSlot = ["x", "date"].find((slot) => fieldOptions[slot]?.bucket && fieldOptions[slot].bucket !== "none");
   rows.Bucket = bucketSlot ? `${bucketSlot}: ${fieldOptions[bucketSlot].bucket}` : "";
+  if (Number(visualState.options?.sample_rows || 0) > 0) {
+    rows.Sample = `${formatInt(visualState.options.sample_rows)} ${visualState.options.sample_method || "random"}`;
+  }
   rows.Rows = formatInt(payload.view?.row_count || 0);
   return keyValueList(rows);
 }
@@ -4822,6 +4825,7 @@ function renderVisualFieldBehavior(payload, definition, field, visualState, setV
     ...((visualState.fieldOptions || {})[field.slot] || {}),
   };
   const controls = [];
+  controls.push(renderVisualFieldQuickActions(field, visualState, setVisualizerState));
   if (visualSlotSupportsStat(definition.id, field.slot)) {
     controls.push(visualFieldSelect("Summary", current.stat || "mean", visualStatChoices(definition.id, field.slot), (value) => {
       updateVisualFieldOption(field.slot, { stat: value }, visualState, setVisualizerState);
@@ -4838,10 +4842,103 @@ function renderVisualFieldBehavior(payload, definition, field, visualState, setV
       ["year", "Year"],
     ], (value) => updateVisualFieldOption(field.slot, { bucket: value }, visualState, setVisualizerState), `visual-field-${field.slot}-bucket`));
   }
+  const guardrail = renderVisualChannelGuardrail(payload, field, column, visualState, setVisualizerState);
+  if (guardrail) controls.push(guardrail);
   if (!controls.length) return null;
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-visual-field-behavior";
   wrap.append(...controls);
+  return wrap;
+}
+
+function renderVisualFieldQuickActions(field, visualState, setVisualizerState) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-field-actions";
+  const clear = tinyButton("Clear", () => {
+    const fields = { ...(visualState.fields || {}) };
+    const fieldOptions = { ...(visualState.fieldOptions || {}) };
+    delete fields[field.slot];
+    delete fieldOptions[field.slot];
+    setVisualizerState({ fields, fieldOptions });
+  }, false, `Clear ${field.label}`);
+  wrap.appendChild(clear);
+  return wrap;
+}
+
+function renderVisualChannelGuardrail(payload, field, column, visualState, setVisualizerState) {
+  const prefix = field.slot === "color" ? "color" : ["facet", "facet_row"].includes(field.slot) ? "facet" : "";
+  if (!prefix || !column) return null;
+  const distinct = visualColumnDistinctCount(column);
+  const currentTop = Number((visualState.options || {})[`${prefix}_top_n`] || 0);
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-channel-guardrail";
+  if (distinct >= 16) wrap.classList.add("is-warning");
+  const meta = document.createElement("div");
+  meta.className = "stateframe-web-visual-channel-meta";
+  meta.textContent = Number.isFinite(distinct) ? `${formatInt(distinct)} distinct values` : "Distinct value count unavailable";
+  const actions = document.createElement("div");
+  actions.className = "stateframe-web-action-row";
+  const sourceRows = Number(payload?.view?.row_count || 0);
+  const currentSample = Number((visualState.options || {}).sample_rows || 0);
+  const roll12 = tinyButton("Top 12 + Other", () => {
+    setVisualizerState({
+      options: {
+        ...(visualState.options || {}),
+        [`${prefix}_top_n`]: 12,
+        [`${prefix}_top_n_mode`]: "other",
+        [`${prefix}_top_n_direction`]: "top",
+        [`${prefix}_other_label`]: "Other",
+      },
+    });
+  }, false, `Group ${field.label.toLowerCase()} into top 12 plus Other`);
+  const roll24 = tinyButton("Top 24", () => {
+    setVisualizerState({
+      options: {
+        ...(visualState.options || {}),
+        [`${prefix}_top_n`]: 24,
+        [`${prefix}_top_n_mode`]: "filter",
+        [`${prefix}_top_n_direction`]: "top",
+      },
+    });
+  }, false, `Filter ${field.label.toLowerCase()} to top 24`);
+  actions.append(roll12, roll24);
+  if (currentTop > 0) {
+    actions.appendChild(tinyButton("Clear Rollup", () => {
+      const options = { ...(visualState.options || {}) };
+      delete options[`${prefix}_top_n`];
+      delete options[`${prefix}_top_n_mode`];
+      delete options[`${prefix}_top_n_direction`];
+      delete options[`${prefix}_other_label`];
+      setVisualizerState({ options });
+    }, false, `Clear ${field.label.toLowerCase()} rollup`));
+  }
+  if (field.slot === "color") {
+    const legendVisible = (visualState.options || {}).show_legend !== false;
+    actions.appendChild(tinyButton(legendVisible ? "Hide Legend" : "Show Legend", () => {
+      setVisualizerState({ options: { ...(visualState.options || {}), show_legend: !legendVisible } });
+    }, false, legendVisible ? "Hide legend" : "Show legend"));
+  }
+  if (sourceRows > 15000 && !currentSample) {
+    actions.appendChild(tinyButton("Sample 10k", () => {
+      setVisualizerState({
+        options: {
+          ...(visualState.options || {}),
+          sample_rows: 10000,
+          sample_method: "random",
+          sample_seed: 42,
+        },
+      });
+    }, false, "Sample rows for faster rendering"));
+  } else if (currentSample) {
+    actions.appendChild(tinyButton("Full Rows", () => {
+      const options = { ...(visualState.options || {}) };
+      delete options.sample_rows;
+      delete options.sample_method;
+      delete options.sample_seed;
+      setVisualizerState({ options });
+    }, false, "Render all rows"));
+  }
+  wrap.append(meta, actions);
   return wrap;
 }
 
@@ -5078,6 +5175,12 @@ function visualControlApplies(control, group, definition, visualState, payload) 
   }
   if (["color_sequence", "continuous_color_scale", "show_legend"].includes(id)) {
     return Boolean(fields.color || slots.has("color") || definition.family === "Geographic" || definition.family === "Matrix");
+  }
+  if (id.startsWith("color_top_n") || id === "color_other_label") {
+    return Boolean(fields.color);
+  }
+  if (id.startsWith("facet_top_n") || id === "facet_other_label") {
+    return Boolean(fields.facet || fields.facet_row);
   }
   if (["date_bucket", "rolling_window", "rolling_stat", "cumulative"].includes(id)) {
     if (id === "date_bucket" && fields.x) return false;
@@ -6970,6 +7073,14 @@ function visualColumnLooksCategorical(column) {
     || dtype.includes("object")
     || dtype.includes("string")
     || dtype.includes("bool");
+}
+
+function visualColumnDistinctCount(column) {
+  for (const value of [column?.distinct_count, column?.metrics?.distinct_count, column?.profile?.distinct_count]) {
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return NaN;
 }
 
 function visualColumnLooksIdentifier(column) {

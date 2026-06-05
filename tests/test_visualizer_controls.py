@@ -70,6 +70,35 @@ def test_visualizer_supports_histogram_quantile_bins_and_grouped_other():
     assert list(pie.data[0].values) == [5, 4, 6]
 
 
+def test_visualizer_supports_channel_top_n_rollups():
+    df = pd.DataFrame(
+        {
+            "value": list(range(16)),
+            "region": ["A"] * 5 + ["B"] * 4 + ["C"] * 3 + ["D"] * 2 + ["E"] * 2,
+        }
+    )
+
+    grouped = sf.visualize(
+        df,
+        {
+            "kind": "histogram",
+            "fields": {"x": "value", "color": "region"},
+            "options": {"color_top_n": 2, "color_top_n_mode": "other"},
+        },
+    )
+    assert {trace.name for trace in grouped.data} == {"A", "B", "Other"}
+
+    filtered = sf.visualize(
+        df,
+        {
+            "kind": "histogram",
+            "fields": {"x": "value", "color": "region"},
+            "options": {"color_top_n": 2, "color_top_n_mode": "filter"},
+        },
+    )
+    assert {trace.name for trace in filtered.data} == {"A", "B"}
+
+
 def test_visualizer_supports_binning_numeric_x_for_distribution_comparison():
     df = pd.DataFrame({"age": range(20, 60), "price": [value * 1000 for value in range(40)]})
 
@@ -211,6 +240,8 @@ def test_visual_catalog_surfaces_broad_control_groups():
     assert {
         "value_transform",
         "sort_by",
+        "color_top_n",
+        "facet_top_n",
         "y_reference",
         "reverse_y",
         "color_sequence",

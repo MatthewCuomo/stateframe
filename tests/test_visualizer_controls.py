@@ -634,6 +634,7 @@ def test_visual_catalog_surfaces_new_visual_families_and_bindings():
         "concentration_curve",
         "pareto",
         "lollipop",
+        "combo",
         "slope",
         "bump_chart",
         "waterfall",
@@ -656,6 +657,59 @@ def test_visual_catalog_surfaces_new_visual_families_and_bindings():
     custom = next(control for group in bar["option_groups"] for control in group["controls"] if control["id"] == "custom_kwargs")
     assert aggregation["level"] == "basic"
     assert custom["level"] == "expert"
+
+
+def test_visualizer_supports_combo_secondary_axis_chart():
+    df = pd.DataFrame(
+        {
+            "segment": ["A", "A", "B", "B"],
+            "event_count": [5, 7, 10, 4],
+            "avg_daily_kwh": [100, 120, 80, 90],
+        }
+    )
+
+    figure = sf.visualize(
+        df,
+        {
+            "kind": "combo",
+            "fields": {"x": "segment", "y": "event_count", "y2": "avg_daily_kwh"},
+            "field_options": {"y": {"stat": "sum"}, "y2": {"stat": "mean"}},
+            "options": {"combo_y_mark": "bar", "combo_y2_mark": "line", "sort_by": "x_ascending"},
+        },
+    )
+
+    assert [trace.type for trace in figure.data] == ["bar", "scatter"]
+    assert list(figure.data[0].y) == [12, 14]
+    assert list(figure.data[1].y) == [110, 85]
+    assert figure.layout.yaxis.title.text == "Sum of event_count"
+    assert figure.layout.yaxis2.title.text == "Mean of avg_daily_kwh"
+
+
+def test_visualizer_combo_supports_color_groups_and_mark_choices():
+    df = pd.DataFrame(
+        {
+            "day": pd.to_datetime(["2025-01-01", "2025-01-01", "2025-01-02", "2025-01-02"]),
+            "region": ["East", "West", "East", "West"],
+            "events": [10, 5, 20, 8],
+            "voltage_std": [2.0, 3.0, 4.0, 5.0],
+        }
+    )
+
+    figure = sf.visualize(
+        df,
+        {
+            "kind": "combo",
+            "fields": {"x": "day", "y": "events", "y2": "voltage_std", "color": "region"},
+            "field_options": {"x": {"bucket": "day"}, "y": {"stat": "sum"}, "y2": {"stat": "mean"}},
+            "options": {"combo_y_mark": "area", "combo_y2_mark": "points", "combo_y2_title": "Voltage spread"},
+        },
+    )
+
+    assert len(figure.data) == 4
+    assert {trace.type for trace in figure.data} == {"scatter"}
+    assert any(trace.fill == "tozeroy" for trace in figure.data)
+    assert any(trace.mode == "markers" for trace in figure.data)
+    assert figure.layout.yaxis2.title.text == "Voltage spread"
 
 
 def test_visualizer_supports_concentration_pareto_and_process_charts():
@@ -862,11 +916,11 @@ def test_visualizer_suggests_replayable_specs_from_profile():
     )
     scan = sf.scan(df, time="sold_date")
 
-    suggestions = scan.visual_recommendations(limit=20)
+    suggestions = scan.visual_recommendations(limit=30)
     kinds = {item.spec.kind for item in suggestions}
     specs = [item.to_dict()["spec"] for item in suggestions]
 
-    assert {"missingness", "missingness_matrix", "line", "bar", "scatter", "geo_scatter", "association_heatmap", "target_association", "target_profile"} <= kinds
+    assert {"missingness", "missingness_matrix", "line", "combo", "bar", "scatter", "geo_scatter", "association_heatmap", "target_association", "target_profile"} <= kinds
     assert all(spec["kind"] and isinstance(spec["fields"], dict) for spec in specs)
     assert suggestions == sorted(suggestions, key=lambda item: item.score, reverse=True)
 

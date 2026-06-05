@@ -458,7 +458,7 @@ class _VisualRecommendationBuilder:
         if not self.datetime:
             return
         time = self.profile.time or self.datetime[0].name
-        measures = self._preferred_measures()[:4] or self.numeric[:4]
+        measures = self._analysis_measures(limit=4)
         for measure in measures:
             bucket = _date_bucket_for_profile(self.profile.data, time)
             stat = _default_measure_stat(measure)
@@ -482,6 +482,25 @@ class _VisualRecommendationBuilder:
                 field_options={"date": {"bucket": "day"}, "values": {"stat": stat}},
                 family="Time and sequence",
                 columns=[time, measure.name],
+            )
+        if len(measures) >= 2:
+            left, right = measures[0], measures[1]
+            left_stat = _default_measure_stat(left)
+            right_stat = _default_measure_stat(right)
+            self._add(
+                kind="combo",
+                title=f"{_stat_title(left_stat)} {left.name} and {_stat_title(right_stat)} {right.name} over {time}",
+                reason="Two measures over the same date-like axis support a dual-axis combo view for comparing volume and behavior.",
+                score=0.87,
+                fields={"x": time, "y": left.name, "y2": right.name},
+                field_options={
+                    "x": {"bucket": _date_bucket_for_profile(self.profile.data, time)},
+                    "y": {"stat": left_stat},
+                    "y2": {"stat": right_stat},
+                },
+                options={"combo_y_mark": "bar", "combo_y2_mark": "line"},
+                family="Comparison",
+                columns=[time, left.name, right.name],
             )
         if self.categorical and measures:
             category = self._low_cardinality_categories(max_unique=12)[:1]
@@ -511,7 +530,23 @@ class _VisualRecommendationBuilder:
 
     def _category_numeric(self) -> None:
         categories = self._low_cardinality_categories(max_unique=40)[:5]
-        measures = self._preferred_measures()[:5] or self.numeric[:5]
+        measures = self._analysis_measures(limit=5)
+        if categories and len(measures) >= 2:
+            left, right = measures[0], measures[1]
+            left_stat = _default_measure_stat(left)
+            right_stat = _default_measure_stat(right)
+            category = categories[0]
+            self._add(
+                kind="combo",
+                title=f"{_stat_title(left_stat)} {left.name} and {_stat_title(right_stat)} {right.name} by {category.name}",
+                reason="A category and two measures support a dual-axis comparison without flattening one scale into the other.",
+                score=0.82,
+                fields={"x": category.name, "y": left.name, "y2": right.name},
+                field_options={"y": {"stat": left_stat}, "y2": {"stat": right_stat}},
+                options={"combo_y_mark": "bar", "combo_y2_mark": "line", "top_n": 20, "top_n_mode": "other", "sort_by": "y_descending"},
+                family="Comparison",
+                columns=[category.name, left.name, right.name],
+            )
         for category in categories:
             for measure in measures[:2]:
                 if category.name == measure.name:
@@ -809,6 +844,15 @@ class _VisualRecommendationBuilder:
         ]
         return measures or self.numeric
 
+    def _analysis_measures(self, *, limit: int) -> list[Any]:
+        preferred = self._preferred_measures()
+        names = {column.name for column in preferred}
+        combined = [
+            *preferred,
+            *[column for column in self.numeric if column.name not in names and not _is_identifier_like_name(column.name)],
+        ]
+        return combined[:limit]
+
     def _low_cardinality_categories(self, *, max_unique: int) -> list[Any]:
         return [
             column
@@ -826,6 +870,7 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
     data = _apply_filters(frame, spec.filters)
     x = _field_value(fields.get("x"))
     y = _field_value(fields.get("y"))
+    y2 = _field_value(fields.get("y2"))
     color = _field_value(fields.get("color"))
     size = _field_value(fields.get("size"))
     symbol = _field_value(fields.get("symbol"))
@@ -975,6 +1020,20 @@ def _render_plotly(frame: pd.DataFrame, spec: VisualSpec):
             error_y=error_y,
             **common,
         )
+    elif kind == "combo":
+        fig, plot_data, resolved_y, resolved_y2 = _combo_figure(
+            data,
+            x=x,
+            y=y,
+            y2=y2,
+            color=color,
+            weight=weight,
+            options=options,
+            title=title,
+            common=common,
+        )
+        layout_data = plot_data
+        layout_y = resolved_y
     elif kind == "lollipop":
         fig, plot_data, resolved_y = _lollipop_figure(data, x=x, y=y, color=color, weight=weight, options=options, title=title, common=common)
         layout_data = plot_data
@@ -2240,6 +2299,114 @@ def _pca_scatter_figure(
     return fig, plot_data
 
 
+def _combo_figure(
+    data: pd.DataFrame,
+    *,
+    x: str | None,
+    y: str | None,
+    y2: str | None,
+    color: str | None,
+    weight: str | None,
+    options: dict[str, Any],
+    title: str,
+    common: dict[str, Any],
+) -> tuple[Any, pd.DataFrame, str, str]:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    if not x or x not in data.columns or not y or y not in data.columns or not y2 or y2 not in data.columns:
+        return px.line(pd.DataFrame(), title=title), pd.DataFrame(), "_combo_left_value", "_combo_right_value"
+    group_cols = list(dict.fromkeys(column for column in [x, color] if column and column in data.columns))
+    left_stat = _aggregation_option(options, default="mean")
+    right_stat = _normalize_aggregation(options.get("y2_aggregation")) or "mean"
+    if left_stat == "none":
+        left_stat = "mean"
+    if right_stat == "none":
+        right_stat = "mean"
+    left_value = "_combo_left_value"
+    right_value = "_combo_right_value"
+    left = _combo_measure_data(data, group_cols=group_cols, value=y, weight=weight, aggregation=left_stat, output=left_value)
+    right = _combo_measure_data(data, group_cols=group_cols, value=y2, weight=weight, aggregation=right_stat, output=right_value)
+    plot_data = pd.merge(left, right, on=group_cols, how="outer")
+    plot_data = _sort_visual_data(plot_data, x=x, y=left_value, options=options)
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    palette = common.get("color_discrete_sequence") or list(px.colors.qualitative.Plotly)
+    left_mark = str(options.get("combo_y_mark") or "bar")
+    right_mark = str(options.get("combo_y2_mark") or "line")
+    left_label = str(options.get("combo_y_title") or _measure_label(y, left_stat))
+    right_label = str(options.get("combo_y2_title") or _measure_label(y2, right_stat))
+    if color and color in plot_data.columns:
+        for index, (group, part) in enumerate(plot_data.groupby(color, dropna=False, sort=False)):
+            label = "Missing" if pd.isna(group) else str(group)
+            trace_color = palette[index % len(palette)]
+            _add_combo_trace(fig, go, part, x=x, y=left_value, name=f"{left_label} / {label}", mark=left_mark, secondary_y=False, color=trace_color)
+            _add_combo_trace(fig, go, part, x=x, y=right_value, name=f"{right_label} / {label}", mark=right_mark, secondary_y=True, color=trace_color, dash="dash")
+    else:
+        _add_combo_trace(fig, go, plot_data, x=x, y=left_value, name=left_label, mark=left_mark, secondary_y=False, color=palette[0])
+        _add_combo_trace(fig, go, plot_data, x=x, y=right_value, name=right_label, mark=right_mark, secondary_y=True, color=palette[1 % len(palette)], dash="dash")
+    fig.update_layout(
+        title=title,
+        template=common.get("template"),
+        height=common.get("height"),
+        barmode=options.get("combo_barmode") or options.get("barmode") or "group",
+    )
+    fig.update_xaxes(title=x)
+    fig.update_yaxes(title_text=left_label, secondary_y=False)
+    fig.update_yaxes(title_text=right_label, secondary_y=True)
+    return fig, plot_data, left_value, right_value
+
+
+def _combo_measure_data(
+    data: pd.DataFrame,
+    *,
+    group_cols: list[str],
+    value: str,
+    weight: str | None,
+    aggregation: str,
+    output: str,
+) -> pd.DataFrame:
+    if aggregation == "none":
+        return data[[*group_cols, value]].rename(columns={value: output})
+    if aggregation == "count":
+        return data.groupby(group_cols, dropna=False).size().reset_index(name=output)
+    if aggregation == "weighted_mean" and weight and weight in data.columns:
+        result = _weighted_mean(data, group_cols=group_cols, y=value, weight=weight)
+        return result.rename(columns={value: output})
+    result = _aggregate_grouped_values(data, group_cols=group_cols, value=value, aggregation=aggregation)
+    return result.rename(columns={value: output})
+
+
+def _add_combo_trace(
+    fig: Any,
+    go: Any,
+    data: pd.DataFrame,
+    *,
+    x: str,
+    y: str,
+    name: str,
+    mark: str,
+    secondary_y: bool,
+    color: str,
+    dash: str = "solid",
+) -> None:
+    if mark == "bar":
+        trace = go.Bar(x=data[x], y=data[y], name=name, marker_color=color, opacity=0.78)
+    else:
+        mode = "markers" if mark == "points" else "lines+markers"
+        trace = go.Scatter(
+            x=data[x],
+            y=data[y],
+            name=name,
+            mode=mode,
+            line={"color": color, "dash": dash},
+            marker={"color": color},
+            fill="tozeroy" if mark == "area" else None,
+        )
+    fig.add_trace(trace, secondary_y=secondary_y)
+
+
 def _pareto_figure(
     data: pd.DataFrame,
     *,
@@ -3228,12 +3395,14 @@ def _apply_field_options(spec: VisualSpec, options: dict[str, Any]) -> None:
     date_bucket = field_options.get("date", {}).get("bucket")
     if date_bucket not in {None, "", "none"}:
         options["calendar_bucket"] = date_bucket
-    for slot in ("y", "values", "r", "z", "size"):
+    for slot in ("y", "y2", "values", "r", "z", "size"):
         stat = _normalize_aggregation(field_options.get(slot, {}).get("stat"))
         if stat is None:
             continue
         if spec.kind == "calendar_heatmap" and slot == "values":
             options["calendar_aggregation"] = stat
+        elif spec.kind == "combo" and slot == "y2":
+            options["y2_aggregation"] = stat
         elif slot in {"y", "values", "r", "z", "size"}:
             options["aggregation"] = stat
         options[f"_{slot}_stat"] = stat
@@ -3615,12 +3784,28 @@ def _visual_recipe_summary(spec: VisualSpec) -> dict[str, Any]:
         for slot, values in (spec.field_options or {}).items()
         if isinstance(values, dict)
     }
-    measure_slot = next((slot for slot in ["y", "values", "r", "z", "size"] if fields.get(slot)), "")
+    measure_slots = [slot for slot in ["y", "y2", "values", "r", "z", "size"] if fields.get(slot)]
+    measure_slot = measure_slots[0] if measure_slots else ""
     stat = (
         _normalize_aggregation(field_options.get(measure_slot, {}).get("stat"))
         or _normalize_aggregation(options.get("aggregation"))
         or "none"
     )
+    measures = []
+    for slot in measure_slots:
+        slot_stat = (
+            _normalize_aggregation(field_options.get(slot, {}).get("stat"))
+            or (_normalize_aggregation(options.get("y2_aggregation")) if slot == "y2" else _normalize_aggregation(options.get("aggregation")))
+            or "none"
+        )
+        measures.append(
+            {
+                "slot": slot,
+                "measure": fields.get(slot),
+                "stat": slot_stat,
+                "stat_label": _measure_label(str(fields.get(slot) or "value"), slot_stat),
+            }
+        )
     group_slots = [
         slot
         for slot in ["x", "names", "locations", "path", "color", "facet", "facet_row", "theta"]
@@ -3632,6 +3817,7 @@ def _visual_recipe_summary(spec: VisualSpec) -> dict[str, Any]:
         "measure": fields.get(measure_slot) if measure_slot else "",
         "stat": stat,
         "stat_label": _measure_label(str(fields.get(measure_slot) or "value"), stat) if measure_slot else "",
+        "measures": _json_safe(measures),
         "group_slots": group_slots,
         "groups": {slot: fields.get(slot) for slot in group_slots},
         "field_options": _json_safe(field_options),
@@ -3698,6 +3884,9 @@ def _control_level(control_id: str) -> str:
         "marginal",
         "barmode",
         "orientation",
+        "combo_y_mark",
+        "combo_y2_mark",
+        "combo_barmode",
         "points",
         "box",
         "stripmode",
@@ -4279,6 +4468,45 @@ _VISUAL_DEFINITIONS: list[dict[str, Any]] = [
         "description": "Counts or aggregated values by category.",
         "fields": [_ENCODING_FIELDS["x"], _ENCODING_FIELDS["y"], _ENCODING_FIELDS["color"], _ENCODING_FIELDS["weight"], _ENCODING_FIELDS["facet"], _ENCODING_FIELDS["facet_row"], _ENCODING_FIELDS["text"], _ENCODING_FIELDS["error_x"], _ENCODING_FIELDS["error_y"], _ENCODING_FIELDS["hover"]],
         "option_groups": [_group("marks", "Marks", [_control("barmode", "Bar mode", "select", default="group", choices=[("group", "Group"), ("stack", "Stack"), ("relative", "Relative")]), _control("orientation", "Orientation", "select", default="v", choices=[("v", "Vertical"), ("h", "Horizontal")])]), *_COMMON_GROUPS],
+    },
+    {
+        "id": "combo",
+        "title": "Combo",
+        "family": "Comparison",
+        "description": "Combine two aggregated measures on shared X with an optional secondary Y axis.",
+        "fields": [
+            _ENCODING_FIELDS["x"],
+            {**_ENCODING_FIELDS["y"], "required": True},
+            _field("y2", "Y2", required=True, semantic=_NUMERIC_FIELD_SEMANTICS),
+            _ENCODING_FIELDS["color"],
+            _ENCODING_FIELDS["weight"],
+        ],
+        "option_groups": [
+            _group("combo", "Combo", [
+                _control("combo_y_mark", "Y mark", "select", default="bar", choices=[
+                    ("bar", "Bar"),
+                    ("line", "Line"),
+                    ("area", "Area"),
+                    ("points", "Points"),
+                ]),
+                _control("combo_y2_mark", "Y2 mark", "select", default="line", choices=[
+                    ("line", "Line"),
+                    ("bar", "Bar"),
+                    ("area", "Area"),
+                    ("points", "Points"),
+                ]),
+                _control("combo_barmode", "Bar mode", "select", default="group", choices=[
+                    ("group", "Group"),
+                    ("stack", "Stack"),
+                    ("relative", "Relative"),
+                    ("overlay", "Overlay"),
+                ]),
+                _control("combo_y_title", "Y title", "text"),
+                _control("combo_y2_title", "Y2 title", "text"),
+            ]),
+            *_COMMON_GROUPS,
+        ],
+        "hints": ["Use combo charts to compare volume and rate/usage measures without losing scale context."],
     },
     {
         "id": "lollipop",

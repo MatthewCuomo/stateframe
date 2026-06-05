@@ -4342,10 +4342,13 @@ function renderVisualRecipe(payload, visualState) {
     groupParts.push(`${slot}: ${visualFieldLabel(payload, value)}`);
   }
   rows.Grouping = groupParts.join(" / ") || "None";
-  const measureSlot = ["y", "values", "r", "z", "size"].find((slot) => fields[slot]);
-  if (measureSlot) {
-    const stat = fieldOptions[measureSlot]?.stat || defaultFieldOptionForSlot(payload, definition, measureSlot, fields[measureSlot]).stat || "raw";
-    rows.Measure = `${visualStatLabel(stat)} ${visualFieldLabel(payload, fields[measureSlot])}`;
+  const measureSlots = ["y", "y2", "values", "r", "z", "size"].filter((slot) => fields[slot]);
+  if (measureSlots.length) {
+    rows.Measure = measureSlots.map((slot) => {
+      const stat = fieldOptions[slot]?.stat || defaultFieldOptionForSlot(payload, definition, slot, fields[slot]).stat || "raw";
+      const prefix = slot === "y2" ? "Y2: " : "";
+      return `${prefix}${visualStatLabel(stat)} ${visualFieldLabel(payload, fields[slot])}`;
+    }).join(" / ");
   } else if (Array.isArray(fields.dimensions) && fields.dimensions.length) {
     rows.Measure = "Not used";
   } else {
@@ -4931,16 +4934,16 @@ function visualControlApplies(control, group, definition, visualState, payload) 
     return false;
   }
   if (["aggregation", "value_transform", "sort_by"].includes(id)) {
-    return Boolean(fields.x || fields.y || fields.values || fields.names || fields.path || definition.id === "missingness");
+    return Boolean(fields.x || fields.y || fields.y2 || fields.values || fields.names || fields.path || definition.id === "missingness");
   }
   if (group.id === "references") {
-    return Boolean(fields.x || fields.y || fields.values || fields.r);
+    return Boolean(fields.x || fields.y || fields.y2 || fields.values || fields.r);
   }
   return true;
 }
 
 function visualHasMeasureBehavior(definition, fields) {
-  return ["y", "values", "r", "z"].some((slot) => fields?.[slot] && visualSlotSupportsStat(definition.id, slot));
+  return ["y", "y2", "values", "r", "z"].some((slot) => fields?.[slot] && visualSlotSupportsStat(definition.id, slot));
 }
 
 function visualOptionGroupDefaultOpen(group, visualState) {
@@ -6714,7 +6717,8 @@ function defaultVisualColumn(payload, definition, field = null, used = new Set()
   if (field?.slot === "color" && definition?.id === "target_profile" && categorical) return categorical.id;
   if (field?.slot === "path" && categorical) return categorical.id;
   if (field?.slot === "values" && numeric) return numeric.id;
-  if (field?.slot === "y" && numeric) return numeric.id;
+  if (["y", "y2"].includes(field?.slot) && numeric) return numeric.id;
+  if (field?.slot === "x" && definition?.id === "combo") return categorical?.id || datetime?.id || numeric?.id || pool[0].id;
   if (field?.slot === "x" && definition?.id === "line" && datetime) return datetime.id;
   if (["histogram", "box", "violin", "strip", "ecdf", "scatter", "density_heatmap", "density_contour", "line", "area"].includes(definition?.id) && numeric) return numeric.id;
   if (["bar", "pie", "treemap", "sunburst", "parallel_categories"].includes(definition?.id) && categorical) return categorical.id;
@@ -6758,10 +6762,10 @@ function defaultFieldOptionForSlot(payload, definition, slot, columnId) {
   const options = {};
   const column = (payload?.columns || []).find((item) => item.id === columnId);
   const kind = definition?.id || "";
-  if (["y", "values", "r", "z"].includes(slot) && visualSlotSupportsStat(kind, slot)) {
+  if (["y", "y2", "values", "r", "z"].includes(slot) && visualSlotSupportsStat(kind, slot)) {
     options.stat = defaultVisualStat(column, kind, slot);
   }
-  if (["x", "date"].includes(slot) && visualColumnLooksDate(column) && ["line", "area", "bar"].includes(kind)) {
+  if (["x", "date"].includes(slot) && visualColumnLooksDate(column) && ["line", "area", "bar", "combo"].includes(kind)) {
     options.bucket = "none";
   }
   return options;
@@ -6774,7 +6778,8 @@ function visualSlotSupportsStat(kind, slot) {
   if (slot === "z") return kind === "heatmap";
   if (slot === "values") return ["pie", "treemap", "sunburst", "choropleth", "calendar_heatmap"].includes(kind);
   if (slot === "r") return kind === "radar";
-  if (slot === "y") return ["line", "area", "bar", "lollipop", "slope", "bump_chart", "pareto", "waterfall", "funnel"].includes(kind);
+  if (slot === "y") return ["line", "area", "bar", "combo", "lollipop", "slope", "bump_chart", "pareto", "waterfall", "funnel"].includes(kind);
+  if (slot === "y2") return kind === "combo";
   return false;
 }
 

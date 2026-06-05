@@ -10,6 +10,38 @@ This project follows semantic versioning while the API is stabilizing:
 
 ## Unreleased
 
+## 0.4.0 - 2026-06-05
+
+- Expanded the workspace web into a more complete data-science workbench with
+  faster-feeling tree browsing, denser selected-state summaries, clearer
+  lineage affordances, and replay fallback from ancestor data snapshots.
+- Added a dedicated **Guidance** page that explains stateframe concepts,
+  workflows, notebook handles, surface selection, and the "git for data
+  science" loop directly inside the UI.
+- Added selected-state notebook branching snippets in the web detail panel:
+  checkout, work-and-push, `%%sf_cell`, and explicit branch-recorder recipes now
+  copy stable code for the currently selected state.
+- Improved notebook provenance flows around `sf.pull(...)`, `sf.push(...)`,
+  `sf.cell(...)`, and `%%sf_cell`, making custom code-cell work easier to save
+  as checkoutable dataframe branches with dependency metadata.
+- Expanded viewer filtering beyond simple min/max controls with richer numeric
+  filter operators, filter chips, selected-cell actions, selected-row
+  snapshots, pinned rows/columns, and better filter/sort summaries.
+- Added deeper selected-value review in the viewer, including value overview
+  panels, filtered value distributions, and selected-value-vs-rest comparisons.
+- Improved viewer column naming workflows with click-to-rename behavior,
+  branch-scoped rename state, rename markers, and revert affordances.
+- Expanded the visualizer toward a Power BI/Tableau-style builder with a richer
+  control surface, field wells, drag-and-drop column assignment, combo charts,
+  visual channel guardrails, visual health checks, column search, quick recipes,
+  and target-aware suggestion scoring.
+- Added target marking in the visualizer so recommendations can prioritize
+  fields and charts that explain a selected outcome without taking over the
+  whole visual workflow.
+- Added a visualizer backlog document for future Power BI/Tableau-style
+  improvements and strengthened packaging tests so the web assets ship with the
+  new guidance, viewer, and visualizer affordances.
+
 ## 0.3.0 - 2026-05-27
 
 - Added the first shared operation registry for UI- and replay-readable

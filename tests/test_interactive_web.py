@@ -206,6 +206,122 @@ def test_web_embedded_viewer_has_lineage_and_can_save_plot_leaf(tmp_path):
     assert next(item for item in saved_entries if item["id"] == plot_entry.id)["note"] == note
 
 
+def test_web_embedded_viewer_branch_materializes_column_renames(tmp_path):
+    pytest.importorskip("anywidget")
+
+    source = tmp_path / "meters.csv"
+    pd.DataFrame(
+        {
+            "meter_id": ["m1", "m2", "m3"],
+            "score": [10, 20, 30],
+            "segment": ["res", "com", "res"],
+        }
+    ).to_csv(source, index=False)
+
+    sf.workspace.configure(root=tmp_path, name="web viewer renames")
+    sf.scan_path("meters.csv", name="meters").save_data(name="root_snapshot", also_save_tree=True)
+
+    web = sf.web()
+    viewer = web.open_selected_viewer()
+    column_ids = {column["source_name"]: column["id"] for column in viewer["payload"]["columns"]}
+    state = {
+        **viewer["state"],
+        "columnRenames": {
+            column_ids["score"]: "meter_score",
+            column_ids["segment"]: "meter_segment",
+        },
+    }
+
+    saved = web.save_embedded_viewer_branch(viewer_state=state, title="Renamed meter view")
+    result = web._embedded_record_profile.checkout(saved.id)
+
+    assert result.columns.tolist() == ["meter_id", "meter_score", "meter_segment"]
+    assert saved.summary["columns"] == ["meter_id", "meter_score", "meter_segment"]
+    assert saved.params["viewer_summary"]["column_renames"] == {
+        "score": "meter_score",
+        "segment": "meter_segment",
+    }
+
+    reopened = web.open_selected_viewer()
+    assert reopened["state"]["columnRenames"] == {}
+    assert [column["source_name"] for column in reopened["payload"]["columns"]] == [
+        "meter_id",
+        "meter_score",
+        "meter_segment",
+    ]
+
+
+def test_web_embedded_viewer_can_save_value_overview_leaf(tmp_path):
+    pytest.importorskip("anywidget")
+
+    source = tmp_path / "meters.csv"
+    pd.DataFrame(
+        {
+            "meter_id": ["m1", "m2", "m3", "m4"],
+            "score": [10, 20, 30, 40],
+            "segment": ["res", "com", "res", "res"],
+        }
+    ).to_csv(source, index=False)
+
+    sf.workspace.configure(root=tmp_path, name="web value overview")
+    sf.scan_path("meters.csv", name="meters").save_data(name="root_snapshot", also_save_tree=True)
+
+    web = sf.web()
+    viewer = web.open_selected_viewer()
+    root_entry = web.payload["trees"][0]["root_entry_id"]
+    column_ids = {column["source_name"]: column["id"] for column in viewer["payload"]["columns"]}
+    state = {
+        **viewer["state"],
+        "selectedColumnId": column_ids["segment"],
+        "selectedCell": {"rowIndex": 0, "columnId": column_ids["segment"]},
+    }
+    overview = {
+        "kind": "selected_value_overview",
+        "column": "segment",
+        "column_id": column_ids["segment"],
+        "label": "segment",
+        "value": "res",
+        "formatted_value": "res",
+        "row_index": 0,
+        "selected_row_label": "0",
+        "current_match_count": 3,
+        "current_row_count": 4,
+        "loaded_match_count": 3,
+        "loaded_row_count": 4,
+        "profile": [
+            {
+                "label": "score",
+                "value": "avg 26.7",
+                "signal": "+6.7",
+                "tone": "positive",
+                "detail": "rest avg 20",
+                "score": 0.7,
+            }
+        ],
+    }
+
+    entry = web.save_embedded_value_overview_leaf(
+        overview=overview,
+        viewer_state=state,
+        title="segment res overview",
+    )
+
+    assert entry.kind == "analysis"
+    assert entry.operation == "viewer.value_overview"
+    assert entry.parent_id == root_entry
+    assert entry.artifacts[0]["kind"] == "value_overview"
+    assert entry.artifacts[0]["overview"]["formatted_value"] == "res"
+    assert entry.summary["profile_count"] == 1
+    assert entry.summary["viewer_summary"]["selected_column"] == "segment"
+    assert entry.params["viewer_state"]["selectedCell"] == {"rowIndex": 0, "columnId": column_ids["segment"]}
+
+    entries = web.payload["trees"][0]["tree_detail"]["entries"]
+    parent_payload = next(item for item in entries if item["id"] == root_entry)
+    leaf_payload = next(item for item in entries if item["id"] == entry.id)
+    assert entry.id in parent_payload["children_ids"]
+    assert leaf_payload["kind"] == "analysis"
+
+
 def test_web_visualizer_renders_and_saves_plotly_leaf(tmp_path):
     pytest.importorskip("anywidget")
 

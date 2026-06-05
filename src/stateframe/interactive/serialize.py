@@ -183,6 +183,7 @@ def initial_view_state(payload: dict[str, Any]) -> dict[str, Any]:
     }
     return {
         "columnOrder": column_order,
+        "columnRenames": {},
         "hiddenColumnIds": [],
         "pinnedColumnIds": [],
         "pinnedRowIndices": [],
@@ -278,6 +279,9 @@ def apply_view_state(
     ]
     if ordered_names:
         result = result[[name for name in ordered_names if name in result]]
+    rename_map = _column_rename_mapping(payload, state)
+    if rename_map:
+        result = result.rename(columns=rename_map)
     return result
 
 
@@ -290,6 +294,7 @@ def view_state_signature(
     normalized = _normalized_view_state(payload, state)
     data_affecting = {
         "column_order": normalized["column_order"],
+        "column_renames": normalized["column_renames"],
         "hidden_columns": normalized["hidden_columns"],
         "sorts": normalized["sorts"],
         "filters": normalized["filters"],
@@ -317,6 +322,7 @@ def summarize_view_state(
             "source_column_count": source_columns,
             "row_ratio": (int(result.shape[0]) / source_rows) if source_rows else 0.0,
             "column_order": normalized["column_order"],
+            "column_renames": normalized["column_renames"],
             "hidden_columns": normalized["hidden_columns"],
             "sorts": normalized["sorts"],
             "filters": normalized["filters"],
@@ -376,6 +382,15 @@ def summarize_draft_state(
                 "kind": "column_order",
                 "label": "reordered columns",
                 "details": normalized["column_order"],
+            }
+        )
+    if normalized["column_renames"]:
+        count = len(normalized["column_renames"])
+        pills.append(
+            {
+                "kind": "column_renames",
+                "label": f"{count} renamed",
+                "details": normalized["column_renames"],
             }
         )
     return _json_safe(
@@ -453,6 +468,7 @@ def _normalized_view_state(
         for column_id in state.get("hiddenColumnIds", [])
         if column_id in id_to_name
     ]
+    column_renames = _column_rename_mapping(payload, state)
     selected_id = state.get("selectedColumnId")
     filters = {
         str(id_to_name[column_id]): dict(filter_spec)
@@ -471,6 +487,7 @@ def _normalized_view_state(
     ]
     return {
         "column_order": [str(id_to_name[column_id]) for column_id in ordered_ids],
+        "column_renames": column_renames,
         "hidden_columns": [str(id_to_name[column_id]) for column_id in hidden_ids],
         "sorts": sorts,
         "filters": filters,
@@ -479,6 +496,28 @@ def _normalized_view_state(
             str(id_to_name[selected_id]) if selected_id in id_to_name else None
         ),
     }
+
+
+def _column_rename_mapping(
+    payload: dict[str, Any],
+    state: dict[str, Any] | None,
+) -> dict[str, str]:
+    state = state or {}
+    raw = state.get("columnRenames") or {}
+    if not isinstance(raw, dict):
+        return {}
+    id_to_name = {
+        column.get("id"): str(column.get("source_name"))
+        for column in payload.get("columns", [])
+        if column.get("id") is not None and column.get("source_name") is not None
+    }
+    result: dict[str, str] = {}
+    for column_id, requested in raw.items():
+        source_name = id_to_name.get(column_id)
+        new_name = str(requested or "").strip()
+        if source_name and new_name and new_name != source_name:
+            result[source_name] = new_name
+    return result
 
 
 def _ledger_path(

@@ -235,6 +235,14 @@ def apply_viewer_summary(
         ]
         result = result[column_order + remaining]
 
+    column_renames = {
+        str(source): str(target).strip()
+        for source, target in (summary.get("column_renames") or {}).items()
+        if source in result.columns and str(target).strip()
+    }
+    if column_renames:
+        result = result.rename(columns=column_renames)
+
     return result
 
 

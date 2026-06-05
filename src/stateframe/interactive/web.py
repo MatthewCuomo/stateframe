@@ -1614,6 +1614,69 @@ if anywidget is not None and traitlets is not None:
             }
             return artifact_entry
 
+        def save_embedded_value_overview_leaf(
+            self,
+            *,
+            overview: dict[str, Any] | None = None,
+            title: str | None = None,
+            note: str | None = None,
+            viewer_state: dict[str, Any] | None = None,
+        ):
+            """Save a selected-value overview as an artifact leaf."""
+
+            if self._embedded_view_profile is None or self._embedded_record_profile is None:
+                self.open_selected_viewer()
+            if self._embedded_view_profile is None or self._embedded_record_profile is None:
+                raise ValueError("No embedded viewer state is available for value overview output.")
+
+            current_viewer = dict(self.viewer or {})
+            viewer_payload = current_viewer.get("payload") or {}
+            state = viewer_state or dict(self.viewer_state or {}) or current_viewer.get("state") or initial_view_state(viewer_payload)
+            self.viewer_state = dict(state)
+            result = apply_view_state(self._embedded_view_profile.data, viewer_payload, state)
+            clean_overview = _json_safe(dict(overview or {}))
+            column_label = str(clean_overview.get("label") or clean_overview.get("column") or "selected value")
+            value_label = str(clean_overview.get("formatted_value") or clean_overview.get("value") or "")
+            leaf_title = title or f"{column_label}: {value_label}"
+            artifact = {
+                "kind": "value_overview",
+                "format": "json",
+                "title": leaf_title,
+                "overview": clean_overview,
+            }
+            profile = clean_overview.get("profile") if isinstance(clean_overview.get("profile"), list) else []
+            artifact_entry = self._embedded_record_profile.record_artifact(
+                title=leaf_title,
+                kind="analysis",
+                operation="viewer.value_overview",
+                parent_id=self._embedded_parent_id,
+                artifact=artifact,
+                summary={
+                    "source": "interactive_dataframe_viewer",
+                    "kind": "value_overview",
+                    "column": clean_overview.get("column"),
+                    "label": clean_overview.get("label"),
+                    "value": clean_overview.get("formatted_value") or clean_overview.get("value"),
+                    "current_match_count": clean_overview.get("current_match_count"),
+                    "loaded_match_count": clean_overview.get("loaded_match_count"),
+                    "profile_count": len(profile),
+                    "viewer_summary": summarize_view_state(viewer_payload, state, result),
+                    "draft": summarize_draft_state(viewer_payload, state),
+                },
+                note=note or "",
+                viewer_state=dict(state),
+            )
+            self._embedded_record_profile.save_tree()
+            self._refresh_after_embedded_save(artifact_entry.id)
+            self.command_status = {
+                "status": "saved",
+                "action": "save_value_overview_leaf",
+                "entry_id": artifact_entry.id,
+                "title": artifact_entry.title,
+                "message": "Overview leaf saved",
+            }
+            return artifact_entry
+
         def set_selected_tree_source_path(
             self,
             path: str | Path,
@@ -1945,6 +2008,21 @@ if anywidget is not None and traitlets is not None:
                         ),
                         save=bool(request.get("saveMode")),
                         save_path=request.get("savePath") or None,
+                    )
+                elif action == "save_value_overview_leaf":
+                    self.save_embedded_value_overview_leaf(
+                        overview=(
+                            request.get("overview")
+                            if isinstance(request.get("overview"), dict)
+                            else None
+                        ),
+                        title=request.get("title") or None,
+                        note=request.get("note") or None,
+                        viewer_state=(
+                            request.get("viewerState")
+                            if isinstance(request.get("viewerState"), dict)
+                            else None
+                        ),
                     )
                 elif action == "save_entry_note":
                     updated = self.save_selected_entry_note(
@@ -3563,6 +3641,13 @@ def _viewer_state_for_payload(
             *preserved_order,
             *[column_id for column_id in state["columnOrder"] if column_id not in preserved_order],
         ]
+    raw_renames = initial_state.get("columnRenames") or {}
+    if isinstance(raw_renames, dict):
+        state["columnRenames"] = {
+            column_id: str(value).strip()
+            for column_id, value in raw_renames.items()
+            if column_id in column_ids and str(value or "").strip()
+        }
     state["hiddenColumnIds"] = [
         column_id
         for column_id in initial_state.get("hiddenColumnIds", [])

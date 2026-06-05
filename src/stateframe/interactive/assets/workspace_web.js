@@ -217,6 +217,7 @@ function render({ model, el, signal }) {
       open_viewer: "Loading selected state",
       save_viewer_branch: "Saving branch",
       save_plot_leaf: "Saving plot leaf",
+      save_value_overview_leaf: "Saving overview leaf",
       save_entry_note: "Saving notes",
       save_source_connection: "Saving source connection",
       delete_source_connection: "Deleting source connection",
@@ -891,6 +892,13 @@ function normalizeViewerState(raw, payload) {
     ...rawOrder.filter((id) => allIdSet.has(id)),
     ...allIds.filter((id) => !rawOrderSet.has(id)),
   ];
+  const columnRenames = {};
+  if (raw?.columnRenames && typeof raw.columnRenames === "object" && !Array.isArray(raw.columnRenames)) {
+    for (const [id, value] of Object.entries(raw.columnRenames)) {
+      const name = String(value || "").trim();
+      if (allIdSet.has(id) && name) columnRenames[id] = name;
+    }
+  }
   const hiddenColumnIds = Array.isArray(raw?.hiddenColumnIds)
     ? raw.hiddenColumnIds.filter((id) => allIdSet.has(id))
     : [];
@@ -927,6 +935,7 @@ function normalizeViewerState(raw, payload) {
     : null;
   return {
     columnOrder,
+    columnRenames,
     hiddenColumnIds,
     pinnedColumnIds,
     pinnedRowIndices,
@@ -1998,6 +2007,8 @@ function renderArtifacts(artifacts, { full = false } = {}) {
       }
       if (!full) item.appendChild(disclosureBlock("Plot spec", jsonBlock({ spec: artifact.spec, source_lens: artifact.source_lens })));
       list.appendChild(item);
+    } else if (artifact?.kind === "value_overview") {
+      list.appendChild(renderValueOverviewArtifact(artifact, { full }));
     } else if (artifact?.kind === "data_snapshot") {
       list.appendChild(renderDataSnapshotArtifact(artifact));
     } else {
@@ -2005,6 +2016,43 @@ function renderArtifacts(artifacts, { full = false } = {}) {
     }
   }
   return list;
+}
+
+function renderValueOverviewArtifact(artifact, { full = false } = {}) {
+  const overview = artifact.overview || {};
+  const item = document.createElement("div");
+  item.className = "stateframe-web-artifact-card stateframe-web-value-overview-artifact";
+  const title = document.createElement("div");
+  title.className = "stateframe-web-plot-artifact-title";
+  title.textContent = artifact.title || "Selected value overview";
+  item.appendChild(title);
+  item.appendChild(keyValueList({
+    Column: overview.label || overview.column || "",
+    Value: overview.formatted_value || formatCell(overview.value),
+    "Current view": `${formatInt(overview.current_match_count)} of ${formatInt(overview.current_row_count)}`,
+    "Loaded preview": `${formatInt(overview.loaded_match_count)} of ${formatInt(overview.loaded_row_count)}`,
+    Row: overview.selected_row_label || (overview.row_index ?? ""),
+  }));
+  const profile = Array.isArray(overview.profile) ? overview.profile.slice(0, full ? 16 : 6) : [];
+  if (profile.length) {
+    const profileList = document.createElement("div");
+    profileList.className = "stateframe-web-value-profile";
+    for (const row of profile) {
+      const profileRow = document.createElement("div");
+      profileRow.className = "stateframe-web-value-profile-row";
+      profileRow.title = row.title || "";
+      profileRow.append(
+        textSpan(row.label || "", "stateframe-web-value-profile-label"),
+        textSpan(row.value || "", "stateframe-web-value-profile-value"),
+        textSpan(row.signal || "", `stateframe-web-value-profile-signal is-${row.tone || "neutral"}`),
+        textSpan(row.detail || "", "stateframe-web-value-profile-detail"),
+      );
+      profileList.appendChild(profileRow);
+    }
+    item.appendChild(section("Profile", profileList));
+  }
+  if (full) item.appendChild(disclosureBlock("Raw overview", jsonBlock(artifact), { open: false }));
+  return item;
 }
 
 function renderDataSnapshotArtifact(artifact) {
@@ -5021,6 +5069,7 @@ function renderEmbeddedViewer(viewer, commandStatus, setViewerState, sendCommand
     globalSearch: "",
     sorts: [],
     selectedCell: null,
+    columnRenames: {},
   }));
   const loadFull = button("Load Full", () => {
     sendCommand("open_viewer", {
@@ -5267,7 +5316,7 @@ function renderViewerFilterBar(payload, state, computed, setViewerState) {
     if (!filter || !Object.keys(filter).length) continue;
     const column = getViewerColumn(payload, columnId);
     if (!column) continue;
-    chips.appendChild(removableChip(`${column.display_name || column.source_name}: ${filterLabel(filter)}`, () => {
+    chips.appendChild(removableChip(`${effectiveColumnName(column, state)}: ${filterLabel(filter)}`, () => {
       const next = { ...(state.filters || {}) };
       delete next[columnId];
       setViewerState({ filters: next });
@@ -5276,7 +5325,7 @@ function renderViewerFilterBar(payload, state, computed, setViewerState) {
   for (const [index, sort] of (state.sorts || []).entries()) {
     const column = getViewerColumn(payload, sort.id);
     if (!column) continue;
-    chips.appendChild(removableChip(`${index + 1}. ${column.display_name || column.source_name} ${sort.direction}`, () => {
+    chips.appendChild(removableChip(`${index + 1}. ${effectiveColumnName(column, state)} ${sort.direction}`, () => {
       setViewerState({ sorts: (state.sorts || []).filter((_, sortIndex) => sortIndex !== index) });
     }));
   }
@@ -5327,6 +5376,7 @@ function hasViewerViewState(state) {
   return Boolean(
     state.globalSearch
     || Object.keys(state.filters || {}).length
+    || Object.keys(state.columnRenames || {}).length
     || (state.sorts || []).length
     || (state.pinnedColumnIds || []).length
     || (state.pinnedRowIndices || []).length
@@ -5441,6 +5491,16 @@ function viewerCodeForState(payload, state, frameName = "df") {
     .filter((column) => !hidden.has(column.id))
     .map((column) => column.source_name);
   if (visible.length) lines.push(`view = view[${JSON.stringify(visible)}]`);
+  const renameEntries = Object.entries(state.columnRenames || {})
+    .map(([id, name]) => {
+      const column = getViewerColumn(payload, id);
+      const requested = String(name || "").trim();
+      return column && requested && requested !== originalColumnName(column)
+        ? [column.source_name, requested]
+        : null;
+    })
+    .filter(Boolean);
+  if (renameEntries.length) lines.push(`view = view.rename(columns=${JSON.stringify(Object.fromEntries(renameEntries))})`);
   return lines.join("\n");
 }
 
@@ -5450,9 +5510,14 @@ function renderViewerHeaderCell(column, state, setViewerState) {
   const sort = sortIndex >= 0 ? state.sorts[sortIndex] : null;
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-table-header-cell";
-  const name = textSpan(column.display_name || column.source_name || column.id, "stateframe-web-table-header-name");
+  const nameWrap = document.createElement("div");
+  nameWrap.className = "stateframe-web-table-header-name-row";
+  const name = textSpan(effectiveColumnName(column, state), "stateframe-web-table-header-name");
+  const renameBadge = renderRenameBadge(column, state);
+  nameWrap.append(name);
+  if (renameBadge) nameWrap.appendChild(renameBadge);
   const dtype = textSpan(column.dtype || column.semantic_type || "", "stateframe-web-table-header-type");
-  wrap.append(name, dtype);
+  wrap.append(nameWrap, dtype);
   if (sort) {
     wrap.appendChild(textSpan(`${sort.direction === "desc" ? "Down" : "Up"} ${sortIndex + 1}`, "stateframe-web-sort-badge"));
   }
@@ -5528,10 +5593,12 @@ function renderViewerColumns(payload, state, setViewerState) {
     main.addEventListener("click", () => setViewerState({ selectedColumnId: column.id }));
     const topLine = document.createElement("div");
     topLine.className = "stateframe-web-column-summary-top";
-    topLine.append(
-      textSpan(column.display_name || column.source_name || column.id, "stateframe-web-column-name"),
-      textSpan(column.semantic_type || column.dtype || "unknown", "stateframe-web-column-type"),
-    );
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "stateframe-web-column-name-row";
+    nameWrap.appendChild(textSpan(effectiveColumnName(column, state), "stateframe-web-column-name"));
+    const renameBadge = renderRenameBadge(column, state);
+    if (renameBadge) nameWrap.appendChild(renameBadge);
+    topLine.append(nameWrap, textSpan(column.semantic_type || column.dtype || "unknown", "stateframe-web-column-type"));
     const statLine = document.createElement("div");
     statLine.className = "stateframe-web-column-summary-stats";
     statLine.append(
@@ -5695,12 +5762,12 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
     return inspector;
   }
 
-  const title = document.createElement("div");
-  title.className = "stateframe-web-viewer-inspector-title";
-  title.textContent = column.display_name || column.source_name || column.id;
+  const title = renderColumnRenameEditor(column, state, setViewerState);
   const meta = document.createElement("div");
   meta.className = "stateframe-web-viewer-meta";
-  meta.textContent = `${column.semantic_type || "unknown"} / ${column.dtype || ""}`;
+  const metaParts = [`${column.semantic_type || "unknown"} / ${column.dtype || ""}`];
+  if (columnIsRenamed(column, state)) metaParts.push(`source ${originalColumnName(column)}`);
+  meta.textContent = metaParts.join(" / ");
   inspector.append(title, meta);
 
   inspector.appendChild(renderViewerStats(column));
@@ -5708,7 +5775,7 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   if (selectedCellPanel) inspector.appendChild(section("Selected Cell", selectedCellPanel));
   const selectedRowSnapshot = renderSelectedRowSnapshot(payload, state, column);
   if (selectedRowSnapshot) inspector.appendChild(section("Row Snapshot", selectedRowSnapshot));
-  const selectedValueOverview = renderSelectedValueOverview(payload, state, column, setViewerState, computed);
+  const selectedValueOverview = renderSelectedValueOverview(payload, state, column, setViewerState, sendCommand, computed);
   if (selectedValueOverview) inspector.appendChild(section("Value Overview", selectedValueOverview));
 
   const actions = document.createElement("div");
@@ -5741,21 +5808,45 @@ function renderViewerInspector(payload, state, column, setViewerState, sendComma
   return inspector;
 }
 
+function renderColumnRenameEditor(column, state, setViewerState) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-column-name-editor";
+  const row = document.createElement("div");
+  row.className = "stateframe-web-column-name-editor-row";
+  const input = document.createElement("input");
+  input.className = "stateframe-web-input stateframe-web-column-name-input";
+  input.value = effectiveColumnName(column, state);
+  input.placeholder = originalColumnName(column);
+  input.dataset.focusKey = `rename-${column.id}`;
+  input.setAttribute("aria-label", `Rename column ${originalColumnName(column)}`);
+  input.title = `Rename ${originalColumnName(column)} for this branch draft`;
+  input.addEventListener("input", () => setColumnRename(column, input.value, state, setViewerState));
+  row.appendChild(input);
+  const renameBadge = renderRenameBadge(column, state);
+  if (renameBadge) row.appendChild(renameBadge);
+  if (columnIsRenamed(column, state)) {
+    row.appendChild(tinyButton("Revert", () => clearColumnRename(column, state, setViewerState), false, `Revert to ${originalColumnName(column)}`));
+  }
+  wrap.appendChild(row);
+  return wrap;
+}
+
 function renderViewerPlotControls(column, state, sendCommand) {
   const wrap = document.createElement("div");
   wrap.className = "stateframe-web-plot-controls";
   if (!column) return empty("Select a column to build a plot leaf.");
   const kind = plotKindForColumn(column);
+  const label = effectiveColumnName(column, state);
   const save = button("Save Plot Leaf", () => sendCommand("save_plot_leaf", {
     plotKind: kind,
     columnName: column.source_name,
-    title: `${column.display_name || column.source_name} plot`,
+    title: `${label} plot`,
     viewerState: state,
   }));
   const auto = button("Auto Plot", () => sendCommand("save_plot_leaf", {
     plotKind: "column",
     columnName: column.source_name,
-    title: `${column.display_name || column.source_name} auto plot`,
+    title: `${label} auto plot`,
     viewerState: state,
   }));
   wrap.append(
@@ -5829,7 +5920,7 @@ function renderSelectedRowSnapshot(payload, state, column) {
   const shownColumns = visibleColumns.slice(0, 12);
   const panel = document.createElement("div");
   panel.className = "stateframe-web-row-snapshot";
-  panel.appendChild(renderRowSnapshotValues(payload, cell.rowIndex, shownColumns));
+  panel.appendChild(renderRowSnapshotValues(payload, cell.rowIndex, shownColumns, state));
   if (visibleColumns.length > shownColumns.length) {
     const note = document.createElement("div");
     note.className = "stateframe-web-row-snapshot-note";
@@ -5837,16 +5928,16 @@ function renderSelectedRowSnapshot(payload, state, column) {
     panel.appendChild(note);
   }
   panel.appendChild(inlineControls(
-    button("Copy Row", (event) => copyTextToClipboard(JSON.stringify(rowObjectForIndex(payload, cell.rowIndex), null, 2), event.currentTarget)),
+    button("Copy Row", (event) => copyTextToClipboard(JSON.stringify(rowObjectForIndex(payload, cell.rowIndex, state), null, 2), event.currentTarget)),
   ));
   return panel;
 }
 
-function renderRowSnapshotValues(payload, rowIndex, columns) {
+function renderRowSnapshotValues(payload, rowIndex, columns, state = null) {
   const list = document.createElement("div");
   list.className = "stateframe-web-row-snapshot-list";
   for (const column of columns) {
-    const label = column.display_name || column.source_name || column.id;
+    const label = effectiveColumnName(column, state);
     const value = formatCell(valueFor(payload, rowIndex, column));
     if (value === "") continue;
     const item = document.createElement("div");
@@ -5863,7 +5954,7 @@ function renderRowSnapshotValues(payload, rowIndex, columns) {
   return list;
 }
 
-function renderSelectedValueOverview(payload, state, column, setViewerState, computed) {
+function renderSelectedValueOverview(payload, state, column, setViewerState, sendCommand, computed) {
   const cell = state.selectedCell;
   if (!cell || cell.columnId !== column.id) return null;
   const value = valueFor(payload, cell.rowIndex, column);
@@ -5879,7 +5970,7 @@ function renderSelectedValueOverview(payload, state, column, setViewerState, com
   stats.append(
     valueOverviewStat("Current view", formatInt(currentMatches.length), `${formatPercent(safeRatio(currentMatches.length, currentRows.length)) || "0.0%"} of visible rows`),
     valueOverviewStat("Loaded preview", formatInt(loadedMatches.length), `${formatPercent(safeRatio(loadedMatches.length, loadedRows.length)) || "0.0%"} of loaded rows`),
-    valueOverviewStat("Selected row", formatCell(payload.index?.[cell.rowIndex] ?? cell.rowIndex), column.display_name || column.source_name || column.id),
+    valueOverviewStat("Selected row", formatCell(payload.index?.[cell.rowIndex] ?? cell.rowIndex), effectiveColumnName(column, state)),
   );
   panel.appendChild(stats);
 
@@ -5904,11 +5995,68 @@ function renderSelectedValueOverview(payload, state, column, setViewerState, com
     panel.appendChild(empty("No comparable rows are loaded for this value."));
   }
 
+  const overview = selectedValueOverviewPayload({
+    payload,
+    state,
+    column,
+    cell,
+    value,
+    currentMatches,
+    currentRows,
+    loadedMatches,
+    loadedRows,
+    profile,
+  });
   panel.appendChild(inlineControls(
     button("Only This Value", () => setColumnFilter(column.id, valueFilterForColumn(column, value), state, setViewerState)),
     button("Exclude Value", () => setColumnFilter(column.id, valueFilterForColumn(column, value, { exclude: true }), state, setViewerState)),
+    button("Save Overview Leaf", () => sendCommand("save_value_overview_leaf", {
+      title: `${overview.label}: ${overview.formatted_value}`,
+      overview,
+      viewerState: state,
+    })),
   ));
   return panel;
+}
+
+function selectedValueOverviewPayload({
+  payload,
+  state,
+  column,
+  cell,
+  value,
+  currentMatches,
+  currentRows,
+  loadedMatches,
+  loadedRows,
+  profile,
+}) {
+  return {
+    kind: "selected_value_overview",
+    column: originalColumnName(column),
+    column_id: column.id,
+    label: effectiveColumnName(column, state),
+    value,
+    formatted_value: formatCell(value),
+    row_index: cell.rowIndex,
+    selected_row_label: formatCell(payload.index?.[cell.rowIndex] ?? cell.rowIndex),
+    current_match_count: currentMatches.length,
+    current_row_count: currentRows.length,
+    current_match_ratio: safeRatio(currentMatches.length, currentRows.length),
+    loaded_match_count: loadedMatches.length,
+    loaded_row_count: loadedRows.length,
+    loaded_match_ratio: safeRatio(loadedMatches.length, loadedRows.length),
+    preview_truncated: Boolean(payload.view?.truncated),
+    profile: profile.map((item) => ({
+      label: item.label,
+      value: item.value,
+      signal: item.signal || "",
+      tone: item.tone || "neutral",
+      detail: item.detail,
+      score: item.score,
+      title: item.title || "",
+    })),
+  };
 }
 
 function renderViewerFilter(column, state, setViewerState) {
@@ -6031,7 +6179,7 @@ function renderHistogram(histogram, column = null, state = null, setViewerState 
       bar.type = "button";
       bar.classList.add("is-clickable");
       if (histogramBinMatchesFilter(bin, activeFilter)) bar.classList.add("is-active");
-      bar.setAttribute("aria-label", `Filter ${column.display_name || column.source_name || column.id} from ${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}`);
+      bar.setAttribute("aria-label", `Filter ${effectiveColumnName(column, state)} from ${formatNumber(bin.lower)} to ${formatNumber(bin.upper)}`);
       bar.addEventListener("click", () => setColumnFilter(column.id, {
         kind: "numeric",
         mode: "between",
@@ -6115,19 +6263,19 @@ function selectedValueProfile(payload, state, selectedColumn, rowIndices) {
   const restRows = complementRows(payload, rowIndices).slice(0, VALUE_OVERVIEW_ROW_LIMIT);
   return visibleViewerColumns(payload, state)
     .filter((column) => column.id !== selectedColumn.id)
-    .map((column) => profileColumnForRows(payload, column, cohortRows, restRows))
+    .map((column) => profileColumnForRows(payload, state, column, cohortRows, restRows))
     .filter(Boolean)
     .sort((left, right) => right.score - left.score)
     .slice(0, VALUE_OVERVIEW_PROFILE_LIMIT);
 }
 
-function profileColumnForRows(payload, column, rowIndices, restRows) {
-  if (isNumericColumn(column)) return numericProfileColumnForRows(payload, column, rowIndices, restRows);
-  if (isDatetimeColumn(column)) return datetimeProfileColumnForRows(payload, column, rowIndices, restRows);
-  return categoricalProfileColumnForRows(payload, column, rowIndices, restRows);
+function profileColumnForRows(payload, state, column, rowIndices, restRows) {
+  if (isNumericColumn(column)) return numericProfileColumnForRows(payload, state, column, rowIndices, restRows);
+  if (isDatetimeColumn(column)) return datetimeProfileColumnForRows(payload, state, column, rowIndices, restRows);
+  return categoricalProfileColumnForRows(payload, state, column, rowIndices, restRows);
 }
 
-function categoricalProfileColumnForRows(payload, column, rowIndices, restRows) {
+function categoricalProfileColumnForRows(payload, state, column, rowIndices, restRows) {
   const counts = valueCountsForRows(payload, column, rowIndices);
   if (!counts.length) return null;
   const top = counts[0];
@@ -6136,17 +6284,17 @@ function categoricalProfileColumnForRows(payload, column, rowIndices, restRows) 
   const restRatio = safeRatio(restCount, restRows.length);
   const lift = ratio - restRatio;
   return {
-    label: column.display_name || column.source_name || column.id,
+    label: effectiveColumnName(column, state),
     value: formatCell(top.value),
     signal: formatSignedPercentPoints(lift),
     tone: deltaTone(lift),
     detail: `${formatInt(top.count)} rows (${formatPercent(ratio) || "0.0%"}) / rest ${formatPercent(restRatio) || "0.0%"}`,
     score: ratio + Math.abs(lift),
-    title: `Top value in selected cohort for ${column.source_name || column.id}`,
+    title: `Top value in selected cohort for ${effectiveColumnName(column, state)}`,
   };
 }
 
-function numericProfileColumnForRows(payload, column, rowIndices, restRows) {
+function numericProfileColumnForRows(payload, state, column, rowIndices, restRows) {
   const stats = numericStatsForRows(payload, column, rowIndices);
   if (!stats.count) return null;
   const restStats = numericStatsForRows(payload, column, restRows);
@@ -6155,22 +6303,22 @@ function numericProfileColumnForRows(payload, column, rowIndices, restRows) {
     ? `rest avg ${formatNumber(restStats.average)}`
     : `${formatInt(stats.count)} numeric rows`;
   return {
-    label: column.display_name || column.source_name || column.id,
+    label: effectiveColumnName(column, state),
     value: `avg ${formatNumber(stats.average)}`,
     signal: Number.isFinite(restStats.average) ? signedFormatNumber(delta) : "",
     tone: deltaTone(delta),
     detail,
     score: 0.35 + Math.min(2, Math.abs(delta) / Math.max(1, Math.abs(restStats.average || 0))),
-    title: `Numeric average in selected cohort for ${column.source_name || column.id}`,
+    title: `Numeric average in selected cohort for ${effectiveColumnName(column, state)}`,
   };
 }
 
-function datetimeProfileColumnForRows(payload, column, rowIndices, restRows) {
+function datetimeProfileColumnForRows(payload, state, column, rowIndices, restRows) {
   const range = datetimeRangeForRows(payload, column, rowIndices);
   if (!range) return null;
   const restRange = datetimeRangeForRows(payload, column, restRows);
   return {
-    label: column.display_name || column.source_name || column.id,
+    label: effectiveColumnName(column, state),
     value: formatShortDate(range.min),
     signal: "",
     tone: "neutral",
@@ -6178,7 +6326,7 @@ function datetimeProfileColumnForRows(payload, column, rowIndices, restRows) {
       ? `single date${restRange ? ` / rest ${formatShortDate(restRange.min)}-${formatShortDate(restRange.max)}` : ""}`
       : `to ${formatShortDate(range.max)}${restRange ? ` / rest ${formatShortDate(restRange.min)}-${formatShortDate(restRange.max)}` : ""}`,
     score: 0.25,
-    title: `Date range in selected cohort for ${column.source_name || column.id}`,
+    title: `Date range in selected cohort for ${effectiveColumnName(column, state)}`,
   };
 }
 
@@ -6306,10 +6454,10 @@ function valueOverviewStat(label, value, caption) {
   return item;
 }
 
-function rowObjectForIndex(payload, rowIndex) {
+function rowObjectForIndex(payload, rowIndex, state = null) {
   const result = {};
   for (const column of payload.columns || []) {
-    result[column.source_name || column.display_name || column.id] = valueFor(payload, rowIndex, column);
+    result[effectiveColumnName(column, state)] = valueFor(payload, rowIndex, column);
   }
   return result;
 }
@@ -6911,20 +7059,60 @@ function visibleViewerColumns(payload, state) {
   ];
 }
 
+function originalColumnName(column) {
+  return String(column?.source_name || column?.display_name || column?.name || column?.id || "");
+}
+
+function effectiveColumnName(column, state) {
+  const requested = String(state?.columnRenames?.[column?.id] || "").trim();
+  return requested || originalColumnName(column);
+}
+
+function columnIsRenamed(column, state) {
+  const requested = String(state?.columnRenames?.[column?.id] || "").trim();
+  return Boolean(requested && requested !== originalColumnName(column));
+}
+
+function setColumnRename(column, name, state, setViewerState) {
+  if (!column) return;
+  const next = { ...(state.columnRenames || {}) };
+  const requested = String(name || "").trim();
+  if (!requested || requested === originalColumnName(column)) {
+    delete next[column.id];
+  } else {
+    next[column.id] = requested;
+  }
+  setViewerState({ columnRenames: next });
+}
+
+function clearColumnRename(column, state, setViewerState) {
+  if (!column) return;
+  const next = { ...(state.columnRenames || {}) };
+  delete next[column.id];
+  setViewerState({ columnRenames: next });
+}
+
+function renderRenameBadge(column, state) {
+  if (!columnIsRenamed(column, state)) return null;
+  const badge = textSpan("*", "stateframe-web-rename-badge");
+  badge.title = `Renamed from ${originalColumnName(column)}`;
+  return badge;
+}
+
 function summaryViewerColumns(payload, state) {
   const query = String(state.columnSearch || "").trim().toLowerCase();
   let columns = orderedViewerColumns(payload, state);
   if (query) {
     columns = columns.filter((column) => [
-      column.display_name,
-      column.source_name,
+      effectiveColumnName(column, state),
+      originalColumnName(column),
       column.dtype,
       column.semantic_type,
       column.role,
     ].join(" ").toLowerCase().includes(query));
   }
   const sort = state.columnSort || "original";
-  const byName = (a, b) => String(a.display_name || a.source_name || "").localeCompare(String(b.display_name || b.source_name || ""));
+  const byName = (a, b) => effectiveColumnName(a, state).localeCompare(effectiveColumnName(b, state));
   const byType = (a, b) => String(a.semantic_type || a.dtype || "").localeCompare(String(b.semantic_type || b.dtype || ""));
   if (sort === "name_asc") columns = [...columns].sort(byName);
   else if (sort === "name_desc") columns = [...columns].sort((a, b) => byName(b, a));
@@ -7029,22 +7217,28 @@ function draftSummary(payload, state) {
   const pills = [];
   const filters = Object.entries(state.filters || {})
     .filter(([id, spec]) => byId.has(id) && spec && Object.keys(spec).length)
-    .map(([id, spec]) => ({ column: byId.get(id).source_name, spec }));
+    .map(([id, spec]) => ({ column: effectiveColumnName(byId.get(id), state), spec }));
   if (filters.length) pills.push({ kind: "filters", label: `${filters.length} filter${filters.length === 1 ? "" : "s"}`, details: filters });
   if (state.globalSearch) pills.push({ kind: "search", label: `search: ${state.globalSearch}`, details: state.globalSearch });
   if ((state.sorts || []).length) {
     const sorts = (state.sorts || []).map((sort) => ({
-      column: byId.get(sort.id)?.source_name || sort.id,
+      column: byId.has(sort.id) ? effectiveColumnName(byId.get(sort.id), state) : sort.id,
       direction: sort.direction,
     }));
     pills.push({ kind: "sorts", label: `${sorts.length} sort${sorts.length === 1 ? "" : "s"}`, details: sorts });
   }
   if ((state.hiddenColumnIds || []).length) {
-    const hidden = state.hiddenColumnIds.map((id) => byId.get(id)?.source_name || id);
+    const hidden = state.hiddenColumnIds.map((id) => (byId.has(id) ? effectiveColumnName(byId.get(id), state) : id));
     pills.push({ kind: "hidden_columns", label: `${hidden.length} offloaded`, details: hidden });
   }
   if (JSON.stringify(order) !== JSON.stringify(defaultOrder)) {
-    pills.push({ kind: "column_order", label: "reordered columns", details: order.map((id) => byId.get(id)?.source_name || id) });
+    pills.push({ kind: "column_order", label: "reordered columns", details: order.map((id) => (byId.has(id) ? effectiveColumnName(byId.get(id), state) : id)) });
+  }
+  const renames = Object.entries(state.columnRenames || {})
+    .filter(([id, name]) => byId.has(id) && String(name || "").trim() && String(name || "").trim() !== originalColumnName(byId.get(id)))
+    .map(([id, name]) => ({ from: originalColumnName(byId.get(id)), to: String(name).trim() }));
+  if (renames.length) {
+    pills.push({ kind: "column_renames", label: `${renames.length} renamed`, details: renames });
   }
   return { has_changes: Boolean(pills.length), pills };
 }

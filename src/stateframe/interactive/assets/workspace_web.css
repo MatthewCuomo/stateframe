@@ -1327,6 +1327,19 @@
   min-width: 0;
 }
 
+.stateframe-web-column-name-row,
+.stateframe-web-table-header-name-row,
+.stateframe-web-column-name-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stateframe-web-column-name-row {
+  flex: 1 1 auto;
+}
+
 .stateframe-web-column-summary-stats {
   min-height: 14px;
 }
@@ -1491,7 +1504,8 @@
 }
 
 .stateframe-web-sort-badge,
-.stateframe-web-pin-badge {
+.stateframe-web-pin-badge,
+.stateframe-web-rename-badge {
   width: fit-content;
   border-radius: 999px;
   color: #ffffff;
@@ -1507,6 +1521,12 @@
 
 .stateframe-web-pin-badge {
   background: #0f766e;
+}
+
+.stateframe-web-rename-badge {
+  min-width: 15px;
+  background: #7c3aed;
+  text-align: center;
 }
 
 .stateframe-web-table th.is-index-column,
@@ -1562,6 +1582,22 @@
   font-size: 14px;
   font-weight: 850;
   overflow-wrap: anywhere;
+}
+
+.stateframe-web-column-name-editor {
+  display: grid;
+  gap: 5px;
+}
+
+.stateframe-web-column-name-editor-row {
+  align-items: stretch;
+}
+
+.stateframe-web-column-name-input {
+  min-width: 0;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 850;
 }
 
 .stateframe-web-filter,

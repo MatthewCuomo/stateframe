@@ -11,6 +11,7 @@ from stateframe.interactive.serialize import (
     view_state_signature,
 )
 from stateframe.interactive.viewer import InteractiveDependencyError
+from stateframe.replay import apply_viewer_summary
 
 
 def test_viewer_payload_includes_rows_columns_and_column_intelligence():
@@ -125,6 +126,39 @@ def test_view_state_summary_uses_column_names_for_ledger_metadata():
     assert "team" in signature
 
 
+def test_column_renames_are_saved_as_data_affecting_view_state():
+    df = pd.DataFrame(
+        {
+            "name": ["Ada", "Grace", "Alan", "Katherine"],
+            "score": [10, 30, 20, 40],
+            "team": ["red", "blue", "red", "blue"],
+        }
+    )
+    profile = sf.scan(df)
+    payload = build_viewer_payload(profile)
+    ids = {column["display_name"]: column["id"] for column in payload["columns"]}
+
+    state = {
+        **initial_view_state(payload),
+        "columnOrder": [ids["score"], ids["name"], ids["team"]],
+        "hiddenColumnIds": [ids["team"]],
+        "columnRenames": {ids["score"]: "meter_score", ids["team"]: "segment"},
+        "selectedColumnId": ids["score"],
+    }
+
+    result = apply_view_state(df, payload, state)
+    summary = summarize_view_state(payload, state, result)
+    draft = summarize_draft_state(payload, state)
+    signature = view_state_signature(payload, state)
+    replayed = apply_viewer_summary(df, summary)
+
+    assert list(result.columns) == ["meter_score", "name"]
+    assert summary["column_renames"] == {"score": "meter_score", "team": "segment"}
+    assert {pill["kind"]: pill["label"] for pill in draft["pills"]}["column_renames"] == "2 renamed"
+    assert "meter_score" in signature
+    pd.testing.assert_frame_equal(result, replayed)
+
+
 def test_draft_summary_surfaces_unsaved_viewer_changes():
     df = pd.DataFrame({"name": ["Ada", "Grace"], "team": ["red", "blue"]})
     profile = sf.scan(df)
@@ -133,6 +167,7 @@ def test_draft_summary_surfaces_unsaved_viewer_changes():
     state = {
         "columnOrder": [ids["team"], ids["name"]],
         "hiddenColumnIds": [ids["team"]],
+        "columnRenames": {ids["name"]: "customer_name"},
         "sorts": [{"id": ids["name"], "direction": "asc"}],
         "filters": {ids["team"]: {"kind": "text", "mode": "equals", "value": "red"}},
         "globalSearch": "ada",
@@ -149,6 +184,7 @@ def test_draft_summary_surfaces_unsaved_viewer_changes():
     assert labels["search"] == "search: ada"
     assert labels["hidden_columns"] == "1 offloaded"
     assert labels["column_order"] == "reordered columns"
+    assert labels["column_renames"] == "1 renamed"
 
 
 def test_initial_view_state_includes_power_viewer_controls():
@@ -165,6 +201,7 @@ def test_initial_view_state_includes_power_viewer_controls():
 
     assert state["columnSearch"] == ""
     assert state["columnSort"] == "original"
+    assert state["columnRenames"] == {}
     assert state["pinnedColumnIds"] == []
     assert state["pinnedRowIndices"] == []
     assert state["selectedCell"] is None

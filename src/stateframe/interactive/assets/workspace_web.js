@@ -4292,6 +4292,8 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   const panel = document.createElement("section");
   panel.className = "stateframe-web-visual-canvas";
   panel.dataset.scrollKey = "visual-canvas";
+  const definition = visualDefinition(payload, visualState.kind);
+  const healthChecks = visualHealthChecks(payload, definition, visualState, setVisualizerState);
   const controls = document.createElement("div");
   controls.className = "stateframe-web-visual-savebar";
   const title = document.createElement("input");
@@ -4310,11 +4312,13 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
     visualState: { ...visualState, title: title.value },
     note: visualState.note || "",
   }));
-  render.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
-  save.disabled = commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
+  const hasBlockingHealthIssue = healthChecks.some((item) => item.severity === "blocker");
+  render.disabled = hasBlockingHealthIssue || commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
+  save.disabled = hasBlockingHealthIssue || commandIsLoading(commandStatus, "render_visualizer", "save_visualizer_leaf");
   controls.append(title, render, save);
   panel.appendChild(controls);
   panel.appendChild(section("Plot Recipe", renderVisualRecipe(payload, visualState)));
+  if (healthChecks.length) panel.appendChild(section("Visual Health", renderVisualHealthPanel(healthChecks)));
   panel.appendChild(renderVisualPreview(preview, commandStatus));
   const note = document.createElement("textarea");
   note.className = "stateframe-web-textarea stateframe-web-visual-note";
@@ -4324,6 +4328,173 @@ function renderVisualCanvas(payload, preview, visualState, setVisualizerState, s
   note.addEventListener("input", () => setVisualizerState({ note: note.value }));
   panel.appendChild(section("Leaf Notes", note));
   return panel;
+}
+
+function visualHealthChecks(payload, definition, visualState, setVisualizerState) {
+  const checks = [];
+  const fields = visualState.fields || {};
+  const options = visualState.options || {};
+  const columns = payload.columns || [];
+  const rowCount = Number(payload.view?.row_count || 0);
+  const sampleRows = Number(options.sample_rows || 0);
+  for (const field of definition.fields || []) {
+    if (!field.required) continue;
+    const value = fields[field.slot];
+    const missing = field.multiple ? !Array.isArray(value) || !value.length : !value;
+    if (!missing) continue;
+    checks.push({
+      severity: "blocker",
+      title: `Missing ${field.label}`,
+      detail: `${field.label} is required for ${definition.title || definition.id}.`,
+    });
+  }
+  if (rowCount > 50000 && !sampleRows) {
+    checks.push({
+      severity: "warning",
+      title: "Large render",
+      detail: `${formatInt(rowCount)} source rows may render slowly.`,
+      actions: [
+        visualOptionsAction("Sample 10k", visualState, setVisualizerState, {
+          sample_rows: 10000,
+          sample_method: "random",
+          sample_seed: 42,
+        }),
+        visualOptionsAction("Sample 25k", visualState, setVisualizerState, {
+          sample_rows: 25000,
+          sample_method: "random",
+          sample_seed: 42,
+        }),
+      ],
+    });
+  } else if (sampleRows > 0) {
+    checks.push({
+      severity: "info",
+      title: "Sampling active",
+      detail: `${formatInt(sampleRows)} ${options.sample_method || "random"} rows.`,
+      actions: [visualClearOptionsAction("Full rows", visualState, setVisualizerState, ["sample_rows", "sample_method", "sample_seed"])],
+    });
+  }
+  checks.push(...visualChannelHealthChecks(payload, "color", "Color", fields.color, options, visualState, setVisualizerState));
+  checks.push(...visualChannelHealthChecks(payload, "facet", "Facet", fields.facet || fields.facet_row, options, visualState, setVisualizerState));
+  const xColumn = columns.find((column) => column.id === fields.x);
+  const xDistinct = visualColumnDistinctCount(xColumn);
+  if (fields.x && visualColumnLooksCategorical(xColumn) && Number.isFinite(xDistinct) && xDistinct > 60 && Number(options.top_n || 0) <= 0) {
+    checks.push({
+      severity: "warning",
+      title: "Long X axis",
+      detail: `${formatInt(xDistinct)} X values can crowd labels.`,
+      actions: [
+        visualOptionsAction("Top 20 + Other", visualState, setVisualizerState, {
+          top_n: 20,
+          top_n_mode: "other",
+          top_n_direction: "top",
+          other_label: "Other",
+        }),
+        visualOptionsAction("Sort by value", visualState, setVisualizerState, { sort_by: "y_descending" }),
+      ],
+    });
+  }
+  if (["scatter", "strip"].includes(definition.id) && rowCount > 20000 && !sampleRows) {
+    checks.push({
+      severity: "warning",
+      title: "Dense marks",
+      detail: `${definition.title || definition.id} draws one mark per row.`,
+      actions: [
+        visualOptionsAction("Sample 10k", visualState, setVisualizerState, {
+          sample_rows: 10000,
+          sample_method: "random",
+          sample_seed: 42,
+        }),
+        visualOptionsAction("Lower opacity", visualState, setVisualizerState, { opacity: 0.45, marker_opacity: 0.45 }),
+      ],
+    });
+  }
+  return checks;
+}
+
+function visualChannelHealthChecks(payload, prefix, label, columnId, options, visualState, setVisualizerState) {
+  if (!columnId) return [];
+  const column = (payload.columns || []).find((item) => item.id === columnId);
+  const distinct = visualColumnDistinctCount(column);
+  if (!Number.isFinite(distinct)) return [];
+  const currentTop = Number(options[`${prefix}_top_n`] || 0);
+  if (currentTop > 0) {
+    return [{
+      severity: "info",
+      title: `${label} rollup active`,
+      detail: `${label} is limited to ${formatInt(currentTop)} values.`,
+      actions: [visualClearOptionsAction(`Clear ${label}`, visualState, setVisualizerState, [
+        `${prefix}_top_n`,
+        `${prefix}_top_n_mode`,
+        `${prefix}_top_n_direction`,
+        `${prefix}_other_label`,
+      ])],
+    }];
+  }
+  if (distinct <= (prefix === "facet" ? 12 : 24)) return [];
+  return [{
+    severity: "warning",
+    title: `High-cardinality ${label}`,
+    detail: `${formatInt(distinct)} distinct values can clutter the visual.`,
+    actions: [
+      visualOptionsAction("Top 12 + Other", visualState, setVisualizerState, {
+        [`${prefix}_top_n`]: 12,
+        [`${prefix}_top_n_mode`]: "other",
+        [`${prefix}_top_n_direction`]: "top",
+        [`${prefix}_other_label`]: "Other",
+      }),
+      visualOptionsAction("Top 24", visualState, setVisualizerState, {
+        [`${prefix}_top_n`]: 24,
+        [`${prefix}_top_n_mode`]: "filter",
+        [`${prefix}_top_n_direction`]: "top",
+      }),
+      ...(prefix === "color" ? [visualOptionsAction("Hide Legend", visualState, setVisualizerState, { show_legend: false })] : []),
+    ],
+  }];
+}
+
+function visualOptionsAction(label, visualState, setVisualizerState, patch) {
+  return {
+    label,
+    onClick: () => setVisualizerState({ options: { ...(visualState.options || {}), ...patch } }),
+  };
+}
+
+function visualClearOptionsAction(label, visualState, setVisualizerState, keys) {
+  return {
+    label,
+    onClick: () => {
+      const options = { ...(visualState.options || {}) };
+      for (const key of keys) delete options[key];
+      setVisualizerState({ options });
+    },
+  };
+}
+
+function renderVisualHealthPanel(checks) {
+  const wrap = document.createElement("div");
+  wrap.className = "stateframe-web-visual-health";
+  for (const check of checks) {
+    const item = document.createElement("div");
+    item.className = `stateframe-web-visual-health-item is-${check.severity || "info"}`;
+    const main = document.createElement("div");
+    main.className = "stateframe-web-visual-health-main";
+    main.append(
+      textSpan(check.title, "stateframe-web-visual-health-title"),
+      textSpan(check.detail || "", "stateframe-web-visual-health-detail"),
+    );
+    item.appendChild(main);
+    if (check.actions?.length) {
+      const actions = document.createElement("div");
+      actions.className = "stateframe-web-action-row";
+      for (const action of check.actions) {
+        actions.appendChild(tinyButton(action.label, action.onClick));
+      }
+      item.appendChild(actions);
+    }
+    wrap.appendChild(item);
+  }
+  return wrap;
 }
 
 function renderVisualRecipe(payload, visualState) {

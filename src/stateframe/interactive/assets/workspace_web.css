@@ -2113,6 +2113,57 @@
   padding: 12px;
 }
 
+.stateframe-web-visual-health {
+  display: grid;
+  gap: 7px;
+}
+
+.stateframe-web-visual-health-item {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.stateframe-web-visual-health-item.is-warning {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+.stateframe-web-visual-health-item.is-blocker {
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
+.stateframe-web-visual-health-item.is-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.stateframe-web-visual-health-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stateframe-web-visual-health-title {
+  color: #111827;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.stateframe-web-visual-health-detail {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
 .stateframe-web-visual-inspector {
   border-left: 1px solid #e5e7eb;
 }

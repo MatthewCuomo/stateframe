@@ -26,6 +26,9 @@ def test_interactive_assets_are_present():
     assert "assignVisualColumnToField" in workspace_js
     assert "wireVisualColumnPointerDrag" in workspace_js
     assert "renderVisualChannelGuardrail" in workspace_js
+    assert "renderVisualHealthPanel" in workspace_js
+    assert "visualHealthChecks" in workspace_js
+    assert "Visual Health" in workspace_js
     assert "color_top_n" in workspace_js
     assert "Sample 10k" in workspace_js
     assert "document.elementFromPoint" in workspace_js
@@ -33,6 +36,7 @@ def test_interactive_assets_are_present():
     assert "stateframe-web-visual-field-dropzone" in workspace_js
     assert "item.draggable = true" in workspace_js
     assert "is-drop-target" in workspace_css
+    assert "stateframe-web-visual-health" in workspace_css
 
 
 def test_release_scaffolding_exists():

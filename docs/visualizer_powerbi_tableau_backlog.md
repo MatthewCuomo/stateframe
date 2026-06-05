@@ -10,6 +10,7 @@ This backlog tracks the gap between the current stateframe visualizer and the ki
 - Compatibility gating: disable quick assignment actions when a column does not fit the target role.
 - Channel rollups: add Color and Facet top-N controls so overloaded legends or facet grids can be grouped or filtered without changing the X axis.
 - Field-well quick actions: expose clear, rollup, legend, and sampling actions directly where the field is assigned.
+- Visual health checks: show pre-render warnings for missing required fields, large renders, high-cardinality channels, crowded X axes, and dense mark charts.
 
 ## Near-Term Product Improvements
 
@@ -25,7 +26,7 @@ This backlog tracks the gap between the current stateframe visualizer and the ki
 - Calculated fields: add UI for bins, date parts, ratios, percent of total, rolling metrics, and conditional groupings.
 - Parameter controls: expose user-adjustable thresholds, top N limits, measure selectors, and reference lines.
 - Visual themes: reusable presets for axes, labels, color palettes, gridlines, legends, and density.
-- Performance controls: show row counts, sampling mode, aggregation level, and render cost before expensive visuals run. Basic sampling controls are now available in the field well, but pre-render cost estimates are still needed.
+- Performance controls: show row counts, sampling mode, aggregation level, and render cost before expensive visuals run. Basic sampling controls and pre-render health checks are now available, but deeper cost estimates are still needed.
 - Query summary: display a compact trace of filters, grouping, aggregation, sampling, and visual encoding decisions.
 - Keyboard flow: add command palette actions for assign field, clear shelf, switch visual, save view, and open value overview.
 
